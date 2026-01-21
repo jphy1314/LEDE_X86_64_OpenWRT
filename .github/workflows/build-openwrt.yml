@@ -104,6 +104,10 @@ jobs:
         echo "CONFIG_PACKAGE_luci-app-autoreboot=y" >> .config
         echo "CONFIG_PACKAGE_luci-app-filetransfer=y" >> .config
 
+        # --- Theme 主题设置 (Argon) ---
+        echo "CONFIG_PACKAGE_luci-theme-argon=y" >> .config
+        echo "CONFIG_PACKAGE_luci-app-argon-config=y" >> .config
+
         # 3. 再次扩展依赖，确保勾选的插件能找到底层的库
         make defconfig
 
