@@ -1,4 +1,4 @@
-name: Build LEDE Stable
+name: Build LEDE Stable (Cached)
 
 on:
   workflow_dispatch:
@@ -6,10 +6,6 @@ on:
 env:
   REPO_URL: https://github.com/coolsnowwolf/lede
   REPO_BRANCH: master
-  FEEDS_CONF: feeds.conf.default
-  CONFIG_FILE: .config
-  DIY_P1_SH: diy-part1.sh
-  DIY_P2_SH: diy-part2.sh
   TZ: Asia/Shanghai
 
 jobs:
@@ -27,7 +23,7 @@ jobs:
         sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
         sudo docker image prune --all --force
         sudo -E apt-get -qq update
-        # 修复点：移除了不存在的 full-proxy，添加了 LEDE 编译必须的依赖
+        # 安装 ccache 工具
         sudo -E apt-get -qq install -y build-essential git wget unzip python3 python3-setuptools ccache subversion time rsync patch libncurses5-dev libssl-dev zlib1g-dev gawk flex bison bc device-tree-compiler qemu-utils ack antlr3 asciidoc autoconf automake autopoint docbook docbook-xml xmlto libelf-dev
         sudo -E apt-get -qq autoremove --purge
         sudo -E apt-get -qq clean
@@ -40,75 +36,70 @@ jobs:
         git clone -b $REPO_BRANCH $REPO_URL openwrt
         ln -sf ${{ github.workspace }}/build/openwrt $GITHUB_WORKSPACE/openwrt
 
-    - name: Load Custom Feeds
+    # --- 新增：缓存设置 ---
+    - name: Cache Ccache and DL
+      uses: actions/cache@v4
+      with:
+        path: |
+          openwrt/dl
+          openwrt/staging_dir
+          ~/.ccache
+        key: ${{ runner.os }}-openwrt-${{ hashFiles('**/feeds.conf.default') }}-${{ github.run_id }}
+        restore-keys: |
+          ${{ runner.os }}-openwrt-${{ hashFiles('**/feeds.conf.default') }}-
+          ${{ runner.os }}-openwrt-
+
+    - name: Configure Feeds (Directly in YAML)
       run: |
-        [ -e $FEEDS_CONF ] && mv $FEEDS_CONF openwrt/feeds.conf.default
-        chmod +x $DIY_P1_SH
         cd openwrt
-        $GITHUB_WORKSPACE/$DIY_P1_SH
+        git checkout feeds.conf.default
+        echo 'src-git passwall_packages https://github.com/Openwrt-Passwall/packages.git;main' >> feeds.conf.default
+        echo 'src-git passwall https://github.com/Openwrt-Passwall/openwrt-passwall.git;main' >> feeds.conf.default
 
     - name: Update Feeds
       run: |
         cd openwrt
-        # 修复点：增加重试机制，防止网络波动导致 feeds 下载不全
         ./scripts/feeds update -a || (sleep 10 && ./scripts/feeds update -a)
 
     - name: Install Feeds
       run: |
         cd openwrt
-        # 修复点：使用 -f 强制安装，解决 'dependency does not exist' 问题
         ./scripts/feeds install -a -f
 
-    - name: Load Custom Configuration
+    - name: Load Custom Configuration (DIY Part 2)
       run: |
-        [ -e $CONFIG_FILE ] && mv $CONFIG_FILE openwrt/.config
-        chmod +x $DIY_P2_SH
+        chmod +x $GITHUB_WORKSPACE/diy-part2.sh
         cd openwrt
-        $GITHUB_WORKSPACE/$DIY_P2_SH
+        $GITHUB_WORKSPACE/diy-part2.sh
 
-    - name: Generate Configuration (Auto Select Packages)
+    - name: Generate Configuration
       run: |
         cd openwrt
-        # 1. 生成基础配置
         make defconfig
         
-        # 2. 自动勾选插件 (无需上传 .config)
+        # 1. 开启 CCACHE 加速 (关键)
+        echo "CONFIG_CCACHE=y" >> .config
         
-        # IPv6 (默认通常已开启，这里强制确认)
+        # 2. 插件设置
         sed -i 's/^# CONFIG_PACKAGE_ipv6helper is not set/CONFIG_PACKAGE_ipv6helper=y/' .config
-        
-        # PassWall (包含 Xray 和 SingBox 核心)
         echo "CONFIG_PACKAGE_luci-app-passwall=y" >> .config
         echo "CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Xray=y" >> .config
         echo "CONFIG_PACKAGE_luci-app-passwall_INCLUDE_SingBox=y" >> .config
-        
-        # DDNS (动态域名, 含阿里云/腾讯云插件)
         echo "CONFIG_PACKAGE_luci-app-ddns=y" >> .config
         echo "CONFIG_PACKAGE_ddns-scripts=y" >> .config
         echo "CONFIG_PACKAGE_ddns-scripts_aliyun=y" >> .config
         echo "CONFIG_PACKAGE_ddns-scripts_dnspod=y" >> .config
-        
-        # KMS (Windows 激活)
         echo "CONFIG_PACKAGE_luci-app-vlmcsd=y" >> .config
-        
-        # SmartDNS
         echo "CONFIG_PACKAGE_luci-app-smartdns=y" >> .config
-        
-        # IPsec VPN (VPND)
         echo "CONFIG_PACKAGE_luci-app-ipsec-vpnd=y" >> .config
-        
-        # USB 打印服务
         echo "CONFIG_PACKAGE_luci-app-usb-printer=y" >> .config
-        
-        # 其他实用工具 (定时重启, 文件传输)
         echo "CONFIG_PACKAGE_luci-app-autoreboot=y" >> .config
         echo "CONFIG_PACKAGE_luci-app-filetransfer=y" >> .config
-
-        # --- Theme 主题设置 (Argon) ---
+        
+        # 3. 主题设置
         echo "CONFIG_PACKAGE_luci-theme-argon=y" >> .config
         echo "CONFIG_PACKAGE_luci-app-argon-config=y" >> .config
 
-        # 3. 再次扩展依赖，确保勾选的插件能找到底层的库
         make defconfig
 
     - name: Download Packages
