@@ -53,7 +53,7 @@ jobs:
       run: |
         cd openwrt
         git checkout feeds.conf.default
-        echo 'src-git passwall_packages https://github.com/Openwrt-Passwall/packages.git;main' >> feeds.conf.default
+        echo 'src-git passwall_packages https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git;main' >> feeds.conf.default
         echo 'src-git passwall https://github.com/Openwrt-Passwall/openwrt-passwall.git;main' >> feeds.conf.default
 
     - name: Update Feeds
