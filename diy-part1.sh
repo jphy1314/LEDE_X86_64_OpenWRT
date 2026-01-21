@@ -5,8 +5,8 @@
 sed -i '/passwall/d' feeds.conf.default
 sed -i '/helloworld/d' feeds.conf.default
 
-# 2. 重新添加正确的 PassWall 源 (xiaorouji 源，包含 app 和 packages)
-echo 'src-git passwall passwall https://github.com/Openwrt-Passwall/openwrt-passwall.git;main' >> feeds.conf.default
+# 2. 重新添加正确的 PassWall 源 (包含 app 和 packages)
+echo 'src-git passwall https://github.com/Openwrt-Passwall/openwrt-passwall.git;main' >> feeds.conf.default
 echo 'src-git passwall_packages https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git;main' >> feeds.conf.default
 
 # 3. (可选) 如果你需要 SSR-Plus，可以使用下面这行，但通常 PassWall 足够了
