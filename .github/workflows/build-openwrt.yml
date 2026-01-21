@@ -1,0 +1,132 @@
+name: Build LEDE Stable
+
+on:
+  workflow_dispatch:
+
+env:
+  REPO_URL: https://github.com/coolsnowwolf/lede
+  REPO_BRANCH: master
+  FEEDS_CONF: feeds.conf.default
+  CONFIG_FILE: .config
+  DIY_P1_SH: diy-part1.sh
+  DIY_P2_SH: diy-part2.sh
+  TZ: Asia/Shanghai
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+
+    - name: Initialization Environment
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+        sudo docker image prune --all --force
+        sudo -E apt-get -qq update
+        sudo -E apt-get -qq install -y build-essential git wget unzip python3 python3-setuptools ccache subversion time rsync patch libncurses5-dev libssl-dev zlib1g-dev gawk flex bison bc full-proxy
+        sudo -E apt-get -qq autoremove --purge
+        sudo -E apt-get -qq clean
+        sudo timedatectl set-timezone "$TZ"
+        mkdir -p ${{ github.workspace }}/build
+
+    - name: Clone Source Code
+      working-directory: ${{ github.workspace }}/build
+      run: |
+        git clone -b $REPO_BRANCH $REPO_URL openwrt
+        ln -sf ${{ github.workspace }}/build/openwrt $GITHUB_WORKSPACE/openwrt
+
+    - name: Load Custom Feeds
+      run: |
+        [ -e $FEEDS_CONF ] && mv $FEEDS_CONF openwrt/feeds.conf.default
+        chmod +x $DIY_P1_SH
+        cd openwrt
+        $GITHUB_WORKSPACE/$DIY_P1_SH
+
+    - name: Update Feeds
+      run: |
+        cd openwrt
+        # 尝试更新，失败则重试，确保基础包下载成功
+        ./scripts/feeds update -a || (sleep 10 && ./scripts/feeds update -a)
+
+    - name: Install Feeds
+      run: |
+        cd openwrt
+        # 强制安装所有包，解决 dependency does not exist 问题
+        ./scripts/feeds install -a -f
+
+    - name: Load Custom Configuration
+      run: |
+        [ -e $CONFIG_FILE ] && mv $CONFIG_FILE openwrt/.config
+        chmod +x $DIY_P2_SH
+        cd openwrt
+        $GITHUB_WORKSPACE/$DIY_P2_SH
+
+    - name: Generate Configuration (Auto Select Packages)
+      run: |
+        cd openwrt
+        # 生成默认配置
+        make defconfig
+        
+        # --- 核心：自动写入你需要的插件 ---
+        # 1. 基础设置 (IPv6 默认开启)
+        sed -i 's/^# CONFIG_PACKAGE_ipv6helper is not set/CONFIG_PACKAGE_ipv6helper=y/' .config
+        
+        # 2. PassWall (及其核心依赖)
+        echo "CONFIG_PACKAGE_luci-app-passwall=y" >> .config
+        echo "CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Xray=y" >> .config
+        echo "CONFIG_PACKAGE_luci-app-passwall_INCLUDE_SingBox=y" >> .config
+        
+        # 3. DDNS (动态域名)
+        echo "CONFIG_PACKAGE_luci-app-ddns=y" >> .config
+        echo "CONFIG_PACKAGE_ddns-scripts=y" >> .config
+        echo "CONFIG_PACKAGE_ddns-scripts_aliyun=y" >> .config
+        echo "CONFIG_PACKAGE_ddns-scripts_dnspod=y" >> .config
+        
+        # 4. KMS (Windows激活)
+        echo "CONFIG_PACKAGE_luci-app-vlmcsd=y" >> .config
+        
+        # 5. SmartDNS
+        echo "CONFIG_PACKAGE_luci-app-smartdns=y" >> .config
+        
+        # 6. IPsec VPN (基于 strongswan 或 libreswan，这里选通用)
+        echo "CONFIG_PACKAGE_luci-app-ipsec-vpnd=y" >> .config
+        
+        # 7. USB 打印服务
+        echo "CONFIG_PACKAGE_luci-app-usb-printer=y" >> .config
+        echo "CONFIG_PACKAGE_kmod-usb-printer=y" >> .config
+        
+        # 8. 其他常用优化
+        echo "CONFIG_PACKAGE_luci-app-autoreboot=y" >> .config
+        echo "CONFIG_PACKAGE_luci-app-filetransfer=y" >> .config
+        
+        # 应用修改并补全依赖
+        make defconfig
+
+    - name: Download Packages
+      run: |
+        cd openwrt
+        make download -j8
+        find dl -size -1024c -exec ls -l {} \;
+        find dl -size -1024c -exec rm -f {} \;
+
+    - name: Compile Firmware
+      run: |
+        cd openwrt
+        echo -e "$(nproc) thread compile"
+        make -j$(nproc) || make -j1 V=s
+
+    - name: Organize Files
+      run: |
+        cd openwrt/bin/targets/*/*
+        rm -rf packages
+        echo "FIRMWARE=$PWD" >> $GITHUB_ENV
+
+    - name: Upload Firmware
+      uses: actions/upload-artifact@v4
+      with:
+        name: LEDE_Firmware
+        path: ${{ env.FIRMWARE }}
