@@ -1,4 +1,4 @@
-name: Build LEDE Stable (Cached)
+name: Build LEDE
 
 on:
   workflow_dispatch:
