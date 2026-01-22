@@ -1,4 +1,4 @@
-name: Build LEDE
+name: Build LEDE Stable
 
 on:
   workflow_dispatch:
