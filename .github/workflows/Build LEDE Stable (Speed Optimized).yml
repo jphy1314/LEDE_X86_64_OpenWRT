@@ -10,7 +10,7 @@ env:
   UPLOAD_BIN_DIR: false
   UPLOAD_FIRMWARE: true
   UPLOAD_RELEASE: true
-  # --- 优化1: 强制指定 Ccache 目录，确保缓存真正生效 ---
+  # --- 核心优化: 强制指定 Ccache 目录，确保缓存真正生效 ---
   CCACHE_DIR: /home/runner/.ccache
 
 jobs:
@@ -41,17 +41,20 @@ jobs:
         git clone -b $REPO_BRANCH $REPO_URL openwrt
         ln -sf ${{ github.workspace }}/build/openwrt $GITHUB_WORKSPACE/openwrt
 
+    # --- 优化后的缓存配置 ---
     - name: Cache Ccache and DL
       uses: actions/cache@v4
       with:
         path: |
           openwrt/dl
           /home/runner/.ccache
-        # 优化 Key：包含架构信息，防止不同架构缓存混用
+        # Key 包含 run_id 以确保每次成功构建都生成新快照
         key: ${{ runner.os }}-openwrt-${{ hashFiles('**/feeds.conf.default') }}-${{ github.run_id }}
         restore-keys: |
           ${{ runner.os }}-openwrt-${{ hashFiles('**/feeds.conf.default') }}-
           ${{ runner.os }}-openwrt-
+        # 关键参数：即使编译失败也保存缓存 (便于断点续传/调试)
+        save-always: true
 
     - name: Configure Feeds
       run: |
@@ -69,11 +72,13 @@ jobs:
     - name: Update Feeds
       run: |
         cd openwrt
+        # 三重重试机制
         ./scripts/feeds update -a || ./scripts/feeds update -a || ./scripts/feeds update -a
 
     - name: Install Feeds
       run: |
         cd openwrt
+        # 优先安装基础依赖
         ./scripts/feeds install -a -f -p packages
         ./scripts/feeds install -a -f -p luci
         ./scripts/feeds install -a -f -p routing
@@ -88,12 +93,12 @@ jobs:
         cd openwrt
         make defconfig
         
-        # --- 优化2: Ccache 核心配置 ---
+        # --- 优化: Ccache 核心配置 ---
         echo "CONFIG_CCACHE=y" >> .config
         
-        # --- 优化3: 禁用耗时的构建产物 (大幅提升速度) ---
-        echo "CONFIG_SDK=n" >> .config           # 禁止编译 SDK (省时 10-20分钟)
-        echo "CONFIG_IB=n" >> .config            # 禁止编译 Image Builder (省时 5-10分钟)
+        # --- 优化: 禁用耗时的构建产物 (大幅提升速度) ---
+        echo "CONFIG_SDK=n" >> .config           # 禁止编译 SDK
+        echo "CONFIG_IB=n" >> .config            # 禁止编译 Image Builder
         echo "CONFIG_KO_SYMBOLS=n" >> .config    # 禁止内核符号
         echo "CONFIG_BUILD_LOG=n" >> .config     # 禁止构建日志
         echo "CONFIG_SRC_TREE_OVERRIDE=n" >> .config
@@ -128,7 +133,7 @@ jobs:
       id: package
       run: |
         cd openwrt
-        # --- 优化4: 提高下载并发数 ---
+        # --- 优化: 提高下载并发数 ---
         make download -j50
         find dl -size -1024c -exec ls -l {} \;
         find dl -size -1024c -exec rm -f {} \;
