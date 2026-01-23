@@ -1,0 +1,208 @@
+name: Build LEDE Stable (Speed Optimized)
+
+on:
+  workflow_dispatch:
+
+env:
+  REPO_URL: https://github.com/coolsnowwolf/lede
+  REPO_BRANCH: master
+  TZ: Asia/Shanghai
+  UPLOAD_BIN_DIR: false
+  UPLOAD_FIRMWARE: true
+  UPLOAD_RELEASE: true
+  # --- 优化1: 强制指定 Ccache 目录，确保缓存真正生效 ---
+  CCACHE_DIR: /home/runner/.ccache
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Initialization Environment
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+        sudo docker image prune --all --force
+        sudo -E apt-get -qq update
+        # 移除部分非必须的大型软件包安装，精简时间
+        sudo -E apt-get -qq install -y build-essential git wget unzip python3 python3-setuptools ccache subversion time rsync patch libncurses5-dev libssl-dev zlib1g-dev gawk flex bison bc device-tree-compiler qemu-utils ack antlr3 asciidoc autoconf automake autopoint docbook docbook-xml xmlto libelf-dev
+        sudo -E apt-get -qq autoremove --purge
+        sudo -E apt-get -qq clean
+        sudo timedatectl set-timezone "$TZ"
+        mkdir -p ${{ github.workspace }}/build
+
+    - name: Clone Source Code
+      working-directory: ${{ github.workspace }}/build
+      run: |
+        git clone -b $REPO_BRANCH $REPO_URL openwrt
+        ln -sf ${{ github.workspace }}/build/openwrt $GITHUB_WORKSPACE/openwrt
+
+    - name: Cache Ccache and DL
+      uses: actions/cache@v4
+      with:
+        path: |
+          openwrt/dl
+          /home/runner/.ccache
+        # 优化 Key：包含架构信息，防止不同架构缓存混用
+        key: ${{ runner.os }}-openwrt-${{ hashFiles('**/feeds.conf.default') }}-${{ github.run_id }}
+        restore-keys: |
+          ${{ runner.os }}-openwrt-${{ hashFiles('**/feeds.conf.default') }}-
+          ${{ runner.os }}-openwrt-
+
+    - name: Configure Feeds
+      run: |
+        cd openwrt
+        git checkout feeds.conf.default
+        if [ ! -s "feeds.conf.default" ]; then
+          echo "src-git packages https://github.com/coolsnowwolf/packages" > feeds.conf.default
+          echo "src-git luci https://github.com/coolsnowwolf/luci" >> feeds.conf.default
+          echo "src-git routing https://github.com/coolsnowwolf/routing" >> feeds.conf.default
+          echo "src-git telephony https://git.openwrt.org/feed/telephony.git" >> feeds.conf.default
+        fi
+        echo 'src-git passwall_packages https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git;main' >> feeds.conf.default
+        echo 'src-git passwall https://github.com/Openwrt-Passwall/openwrt-passwall.git;main' >> feeds.conf.default
+
+    - name: Update Feeds
+      run: |
+        cd openwrt
+        ./scripts/feeds update -a || ./scripts/feeds update -a || ./scripts/feeds update -a
+
+    - name: Install Feeds
+      run: |
+        cd openwrt
+        ./scripts/feeds install -a -f -p packages
+        ./scripts/feeds install -a -f -p luci
+        ./scripts/feeds install -a -f -p routing
+        ./scripts/feeds install -a -f
+
+    - name: Load Custom Configuration (DIY Part 2)
+      run: |
+        [ -e $GITHUB_WORKSPACE/diy-part2.sh ] && chmod +x $GITHUB_WORKSPACE/diy-part2.sh && cd openwrt && $GITHUB_WORKSPACE/diy-part2.sh || echo "diy-part2.sh not found, skipping."
+
+    - name: Generate Configuration
+      run: |
+        cd openwrt
+        make defconfig
+        
+        # --- 优化2: Ccache 核心配置 ---
+        echo "CONFIG_CCACHE=y" >> .config
+        
+        # --- 优化3: 禁用耗时的构建产物 (大幅提升速度) ---
+        echo "CONFIG_SDK=n" >> .config           # 禁止编译 SDK (省时 10-20分钟)
+        echo "CONFIG_IB=n" >> .config            # 禁止编译 Image Builder (省时 5-10分钟)
+        echo "CONFIG_KO_SYMBOLS=n" >> .config    # 禁止内核符号
+        echo "CONFIG_BUILD_LOG=n" >> .config     # 禁止构建日志
+        echo "CONFIG_SRC_TREE_OVERRIDE=n" >> .config
+
+        # --- 修复 Geoview & UPX ---
+        echo "CONFIG_USE_UPX=n" >> .config
+        echo "CONFIG_PACKAGE_geoview=y" >> .config
+        
+        # 插件配置
+        cat >> .config <<EOF
+        CONFIG_PACKAGE_ipv6helper=y
+        CONFIG_PACKAGE_luci-app-passwall=y
+        CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Xray=y
+        CONFIG_PACKAGE_luci-app-passwall_INCLUDE_SingBox=y
+        CONFIG_PACKAGE_luci-app-ddns=y
+        CONFIG_PACKAGE_ddns-scripts=y
+        CONFIG_PACKAGE_ddns-scripts_aliyun=y
+        CONFIG_PACKAGE_ddns-scripts_dnspod=y
+        CONFIG_PACKAGE_luci-app-vlmcsd=y
+        CONFIG_PACKAGE_luci-app-smartdns=y
+        CONFIG_PACKAGE_luci-app-ipsec-vpnd=y
+        CONFIG_PACKAGE_luci-app-usb-printer=y
+        CONFIG_PACKAGE_luci-app-autoreboot=y
+        CONFIG_PACKAGE_luci-app-filetransfer=y
+        CONFIG_PACKAGE_luci-theme-argon=y
+        CONFIG_PACKAGE_luci-app-argon-config=y
+        EOF
+
+        make defconfig
+
+    - name: Download package
+      id: package
+      run: |
+        cd openwrt
+        # --- 优化4: 提高下载并发数 ---
+        make download -j50
+        find dl -size -1024c -exec ls -l {} \;
+        find dl -size -1024c -exec rm -f {} \;
+
+    - name: Compile the firmware
+      id: compile
+      run: |
+        cd openwrt
+        echo -e "$(nproc) thread compile"
+        # 首次运行 Ccache 命中率低，第二次运行会非常快
+        make -j$(nproc) || make -j1 || make -j1 V=s
+        
+        echo "status=success" >> $GITHUB_OUTPUT
+        grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*DEVICE_(.*)=y/\1/' > DEVICE_NAME
+        [ -s DEVICE_NAME ] && echo "DEVICE_NAME=_$(cat DEVICE_NAME)" >> $GITHUB_ENV
+        echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
+
+    - name: Check space usage
+      if: (!cancelled())
+      run: df -hT
+
+    - name: Upload bin directory
+      uses: actions/upload-artifact@v4
+      if: steps.compile.outputs.status == 'success' && env.UPLOAD_BIN_DIR == 'true'
+      with:
+        name: OpenWrt_bin${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
+        path: openwrt/bin
+
+    - name: Organize files
+      id: organize
+      if: env.UPLOAD_FIRMWARE == 'true' && !cancelled()
+      run: |
+        cd openwrt/bin/targets/*/*
+        rm -rf packages
+        echo "FIRMWARE=$PWD" >> $GITHUB_ENV
+        echo "status=success" >> $GITHUB_OUTPUT
+
+    - name: Upload firmware directory
+      uses: actions/upload-artifact@v4
+      if: steps.organize.outputs.status == 'success' && !cancelled()
+      with:
+        name: OpenWrt_firmware${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
+        path: ${{ env.FIRMWARE }}
+
+    - name: Generate release tag
+      id: tag
+      if: env.UPLOAD_RELEASE == 'true' && !cancelled()
+      run: |
+        echo "release_tag=$(date +"%Y.%m.%d-%H%M")" >> $GITHUB_OUTPUT
+        touch release.txt
+        echo "Auto Build by GitHub Actions" >> release.txt
+        echo "status=success" >> $GITHUB_OUTPUT
+
+    - name: Upload firmware to release
+      uses: softprops/action-gh-release@master
+      if: steps.tag.outputs.status == 'success' && !cancelled()
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ steps.tag.outputs.release_tag }}
+        body_path: release.txt
+        files: ${{ env.FIRMWARE }}/*
+
+    - name: Delete workflow runs
+      uses: Mattraks/delete-workflow-runs@main
+      with:
+        retain_days: 0
+        keep_minimum_runs: 2
+
+    - name: Remove old Releases
+      uses: dev-drprasad/delete-older-releases@master
+      if: env.UPLOAD_RELEASE == 'true' && !cancelled()
+      with:
+        keep_latest: 3
+        delete_tags: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
