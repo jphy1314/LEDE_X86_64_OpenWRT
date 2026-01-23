@@ -96,9 +96,14 @@ jobs:
         echo "CONFIG_BUILD_LOG=n" >> .config
         echo "CONFIG_SRC_TREE_OVERRIDE=n" >> .config
 
-        # --- Geoview 修复 ---
-        echo "CONFIG_USE_UPX=n" >> .config
-        echo "CONFIG_PACKAGE_geoview=y" >> .config
+        # --- ❌ 强制禁用 Geoview (解决 Go 依赖缺失导致的编译失败) ---
+        # 1. 删除任何可能开启 geoview 的配置
+        sed -i '/CONFIG_PACKAGE_geoview/d' .config
+        sed -i '/CONFIG_PACKAGE_luci-app-geoview/d' .config
+        
+        # 2. 显式写入 "不编译" 指令
+        echo "# CONFIG_PACKAGE_geoview is not set" >> .config
+        echo "# CONFIG_PACKAGE_luci-app-geoview is not set" >> .config
         
         # --- 插件配置 ---
         cat >> .config <<EOF
