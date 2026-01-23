@@ -100,7 +100,7 @@ jobs:
         echo "CONFIG_USE_UPX=n" >> .config
         echo "CONFIG_PACKAGE_geoview=y" >> .config
         
-        # --- 插件配置 (建议放入 diy-part2.sh 或者保留在这里) ---
+        # --- 插件配置 ---
         cat >> .config <<EOF
         CONFIG_PACKAGE_ipv6helper=y
         CONFIG_PACKAGE_luci-app-passwall=y
