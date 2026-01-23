@@ -1,9 +1,9 @@
-name: Build LEDE Stable (Speed Optimized)
+name: Build LEDE Stable (Standard DIY Mode)
 
 on:
   workflow_dispatch:
 
-# --- 添加权限声明 ---
+# 权限声明 (必须保留，否则无法发布 Release)
 permissions:
   contents: write
   actions: write
@@ -15,7 +15,7 @@ env:
   UPLOAD_BIN_DIR: false
   UPLOAD_FIRMWARE: true
   UPLOAD_RELEASE: true
-  # 核心优化: 强制指定 Ccache 目录
+  # Ccache 目录
   CCACHE_DIR: /home/runner/.ccache
 
 jobs:
@@ -45,32 +45,24 @@ jobs:
         git clone -b $REPO_BRANCH $REPO_URL openwrt
         ln -sf ${{ github.workspace }}/build/openwrt $GITHUB_WORKSPACE/openwrt
 
-    # --- 修改 1: 使用 cache/restore 专门读取缓存 ---
     - name: Restore Cache
       uses: actions/cache/restore@v4
       with:
         path: |
           openwrt/dl
           /home/runner/.ccache
-        # 这里的 Key 加上 run_id 是为了确保每次运行都有唯一的保存位置
         key: ${{ runner.os }}-openwrt-${{ hashFiles('**/feeds.conf.default') }}-${{ github.run_id }}
-        # restore-keys 用于匹配旧的缓存（去掉了 run_id）
         restore-keys: |
           ${{ runner.os }}-openwrt-${{ hashFiles('**/feeds.conf.default') }}-
           ${{ runner.os }}-openwrt-
 
-    - name: Configure Feeds
+    # --- 关键修改：调用 diy-part1.sh ---
+    - name: Load Custom Feeds (DIY Part 1)
       run: |
+        # 赋予脚本执行权限并运行
+        chmod +x $GITHUB_WORKSPACE/diy-part1.sh
         cd openwrt
-        git checkout feeds.conf.default
-        if [ ! -s "feeds.conf.default" ]; then
-          echo "src-git packages https://github.com/coolsnowwolf/packages" > feeds.conf.default
-          echo "src-git luci https://github.com/coolsnowwolf/luci" >> feeds.conf.default
-          echo "src-git routing https://github.com/coolsnowwolf/routing" >> feeds.conf.default
-          echo "src-git telephony https://git.openwrt.org/feed/telephony.git" >> feeds.conf.default
-        fi
-        echo 'src-git passwall_packages https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git;main' >> feeds.conf.default
-        echo 'src-git passwall https://github.com/Openwrt-Passwall/openwrt-passwall.git;main' >> feeds.conf.default
+        $GITHUB_WORKSPACE/diy-part1.sh
 
     - name: Update Feeds
       run: |
@@ -94,21 +86,21 @@ jobs:
         cd openwrt
         make defconfig
         
-        # --- 优化: Ccache 核心配置 ---
+        # --- Ccache 配置 ---
         echo "CONFIG_CCACHE=y" >> .config
         
-        # --- 优化: 禁用耗时的构建产物 ---
+        # --- 禁用 SDK/IB (加速) ---
         echo "CONFIG_SDK=n" >> .config
         echo "CONFIG_IB=n" >> .config
         echo "CONFIG_KO_SYMBOLS=n" >> .config
         echo "CONFIG_BUILD_LOG=n" >> .config
         echo "CONFIG_SRC_TREE_OVERRIDE=n" >> .config
 
-        # --- 修复 Geoview & UPX ---
+        # --- Geoview 修复 ---
         echo "CONFIG_USE_UPX=n" >> .config
         echo "CONFIG_PACKAGE_geoview=y" >> .config
         
-        # 插件配置
+        # --- 插件配置 (建议放入 diy-part2.sh 或者保留在这里) ---
         cat >> .config <<EOF
         CONFIG_PACKAGE_ipv6helper=y
         CONFIG_PACKAGE_luci-app-passwall=y
@@ -143,7 +135,6 @@ jobs:
       run: |
         cd openwrt
         echo -e "$(nproc) thread compile"
-        # 首次运行 Ccache 命中率低，第二次运行会非常快
         make -j$(nproc) || make -j1 || make -j1 V=s
         
         echo "status=success" >> $GITHUB_OUTPUT
@@ -151,9 +142,6 @@ jobs:
         [ -s DEVICE_NAME ] && echo "DEVICE_NAME=_$(cat DEVICE_NAME)" >> $GITHUB_ENV
         echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
 
-    # --- 修改 2: 使用 cache/save 专门保存缓存 ---
-    # 放在 Compile 之后。如果 Compile 成功，这里会保存；
-    # 关键点：if: always() 确保即使 Compile 失败，这里也会运行并保存进度。
     - name: Save Cache
       uses: actions/cache/save@v4
       if: always()
@@ -161,7 +149,6 @@ jobs:
         path: |
           openwrt/dl
           /home/runner/.ccache
-        # 保存时必须指定确切的 key (带 run_id)
         key: ${{ runner.os }}-openwrt-${{ hashFiles('**/feeds.conf.default') }}-${{ github.run_id }}
 
     - name: Check space usage
