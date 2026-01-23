@@ -3,6 +3,11 @@ name: Build LEDE Stable (Speed Optimized)
 on:
   workflow_dispatch:
 
+# --- 添加权限声明 ---
+permissions:
+  contents: write
+  actions: write
+
 env:
   REPO_URL: https://github.com/coolsnowwolf/lede
   REPO_BRANCH: master
