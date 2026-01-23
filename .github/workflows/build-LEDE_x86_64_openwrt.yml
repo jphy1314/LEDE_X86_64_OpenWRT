@@ -7,7 +7,6 @@ env:
   REPO_URL: https://github.com/coolsnowwolf/lede
   REPO_BRANCH: master
   TZ: Asia/Shanghai
-  # --- 环境变量补全 ---
   UPLOAD_BIN_DIR: false
   UPLOAD_FIRMWARE: true
   UPLOAD_RELEASE: true
@@ -18,7 +17,7 @@ jobs:
 
     steps:
     - name: Checkout
-      uses: actions/checkout@v4  # 升级到 v4
+      uses: actions/checkout@v4
 
     - name: Initialization Environment
       env:
@@ -40,7 +39,7 @@ jobs:
         ln -sf ${{ github.workspace }}/build/openwrt $GITHUB_WORKSPACE/openwrt
 
     - name: Cache Ccache and DL
-      uses: actions/cache@v4  # 保持 v4
+      uses: actions/cache@v4
       with:
         path: |
           openwrt/dl
@@ -53,18 +52,35 @@ jobs:
     - name: Configure Feeds
       run: |
         cd openwrt
+        # 1. 还原默认配置，防止被之前的运行污染
+        git checkout feeds.conf.default
+        
+        # 2. 确保 feeds.conf.default 里有内容，如果为空则手动写入 Lean 的源
+        if [ ! -s "feeds.conf.default" ]; then
+          echo "src-git packages https://github.com/coolsnowwolf/packages" > feeds.conf.default
+          echo "src-git luci https://github.com/coolsnowwolf/luci" >> feeds.conf.default
+          echo "src-git routing https://github.com/coolsnowwolf/routing" >> feeds.conf.default
+          echo "src-git telephony https://git.openwrt.org/feed/telephony.git" >> feeds.conf.default
+        fi
+
+        # 3. 添加自定义源 (Passwall)
         echo 'src-git passwall_packages https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git;main' >> feeds.conf.default
         echo 'src-git passwall https://github.com/Openwrt-Passwall/openwrt-passwall.git;main' >> feeds.conf.default
 
     - name: Update Feeds
       run: |
         cd openwrt
-        ./scripts/feeds update -a
+        # 尝试更新 feeds，如果失败则重试，最多尝试 3 次
+        ./scripts/feeds update -a || ./scripts/feeds update -a || ./scripts/feeds update -a
 
     - name: Install Feeds
       run: |
         cd openwrt
-        ./scripts/feeds install -a
+        # -f 强制安装，-p 安装所有包，避免依赖丢失
+        ./scripts/feeds install -a -f -p packages
+        ./scripts/feeds install -a -f -p luci
+        ./scripts/feeds install -a -f -p routing
+        ./scripts/feeds install -a -f
 
     - name: Load Custom Configuration (DIY Part 2)
       run: |
