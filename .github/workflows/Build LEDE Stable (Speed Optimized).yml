@@ -56,7 +56,7 @@ jobs:
           ${{ runner.os }}-openwrt-${{ hashFiles('**/feeds.conf.default') }}-
           ${{ runner.os }}-openwrt-
 
-    # --- 关键修改：调用 diy-part1.sh ---
+    # --- 调用 diy-part1.sh ---
     - name: Load Custom Feeds (DIY Part 1)
       run: |
         # 赋予脚本执行权限并运行
