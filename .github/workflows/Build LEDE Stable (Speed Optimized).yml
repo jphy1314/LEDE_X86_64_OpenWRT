@@ -53,8 +53,9 @@ jobs:
           /home/runner/.ccache
         key: ${{ runner.os }}-openwrt-${{ hashFiles('openwrt/feeds.conf.default') }}
         restore-keys: |
-          ${{ runner.os }}-openwrt-${{ hashFiles('**/feeds.conf.default') }}-
+          ${{ runner.os }}-openwrt-${{ hashFiles('openwrt/feeds.conf.default') }}-
           ${{ runner.os }}-openwrt-
+
 
     # --- 调用 diy-part1.sh ---
     - name: Load Custom Feeds (DIY Part 1)
@@ -131,7 +132,7 @@ jobs:
       id: package
       run: |
         cd openwrt
-        make download -j50
+        -j$(nproc)
         find dl -size -1024c -exec ls -l {} \;
         find dl -size -1024c -exec rm -f {} \;
 
@@ -139,7 +140,7 @@ jobs:
       id: compile
       run: |
         cd openwrt
-        echo -e "$(nproc) thread compile"
+        echo "$(nproc) thread compile"
         make -j$(nproc) || make -j1 || make -j1 V=s
         
         echo "status=success" >> $GITHUB_OUTPUT
