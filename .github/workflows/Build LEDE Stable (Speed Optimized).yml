@@ -51,7 +51,7 @@ jobs:
         path: |
           openwrt/dl
           /home/runner/.ccache
-        key: ${{ runner.os }}-openwrt-${{ hashFiles('**/feeds.conf.default') }}-${{ github.run_id }}
+        key: ${{ runner.os }}-openwrt-${{ hashFiles('openwrt/feeds.conf.default') }}
         restore-keys: |
           ${{ runner.os }}-openwrt-${{ hashFiles('**/feeds.conf.default') }}-
           ${{ runner.os }}-openwrt-
@@ -107,14 +107,14 @@ jobs:
         
         # --- 插件配置 ---
         cat >> .config <<EOF
-        CONFIG_PACKAGE_ipv6helper=y
+        CONFIG_PACKAGE_ipv6-helper=y
         CONFIG_PACKAGE_luci-app-passwall=y
         CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Xray=y
         CONFIG_PACKAGE_luci-app-passwall_INCLUDE_SingBox=y
         CONFIG_PACKAGE_luci-app-ddns=y
         CONFIG_PACKAGE_ddns-scripts=y
-        CONFIG_PACKAGE_ddns-scripts_aliyun=y
-        CONFIG_PACKAGE_ddns-scripts_dnspod=y
+        # CONFIG_PACKAGE_ddns-scripts_aliyun is not set
+        # CONFIG_PACKAGE_ddns-scripts_dnspod is not set
         CONFIG_PACKAGE_luci-app-vlmcsd=y
         CONFIG_PACKAGE_luci-app-smartdns=y
         CONFIG_PACKAGE_luci-app-ipsec-vpnd=y
@@ -125,7 +125,7 @@ jobs:
         CONFIG_PACKAGE_luci-app-argon-config=y
         EOF
 
-        make defconfig
+        make olddefconfig
 
     - name: Download package
       id: package
@@ -154,7 +154,7 @@ jobs:
         path: |
           openwrt/dl
           /home/runner/.ccache
-        key: ${{ runner.os }}-openwrt-${{ hashFiles('**/feeds.conf.default') }}-${{ github.run_id }}
+        key: ${{ runner.os }}-openwrt-${{ hashFiles('openwrt/feeds.conf.default') }}
 
     - name: Check space usage
       if: (!cancelled())
