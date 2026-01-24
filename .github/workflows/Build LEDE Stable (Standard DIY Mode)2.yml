@@ -245,7 +245,7 @@ jobs:
         keep_minimum_runs: 5
 
     - name: Remove old Releases
-      uses: dev-drprasad/delete-older-releases@v0
+      uses: dev-drprasad/delete-older-releases@master
       if: env.UPLOAD_RELEASE && !cancelled()
       with:
         keep_latest: 3
