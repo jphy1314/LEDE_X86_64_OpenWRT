@@ -1,4 +1,4 @@
-name: Build LEDE Stable (Standard DIY Mode)2
+name: Build LEDE Stable (Standard DIY Mode)
 
 on:
   workflow_dispatch:
@@ -28,13 +28,19 @@ jobs:
       env:
         DEBIAN_FRONTEND: noninteractive
       run: |
-        sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
-        sudo docker image prune --all --force
+        sudo timedatectl set-timezone "$TZ"
         sudo -E apt-get -qq update
-        sudo -E apt-get -qq install -y ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential bzip2 ccache clang cmake cpio curl device-tree-compiler flex gawk gcc-multilib g++-multilib gettext genisoimage git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libfuse-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev libpython3-dev libreadline-dev libssl-dev libtool llvm lrzsz libnsl-dev ninja-build p7zip p7zip-full patch pkgconf python3 python3-pyelftools python3-setuptools qemu-utils rsync scons squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev
+        sudo -E apt-get -qq full-upgrade -y
+        # 使用官方推荐的完整依赖包列表
+        sudo -E apt-get -qq install -y ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential \
+        bzip2 ccache cmake cpio curl device-tree-compiler flex gawk gcc-multilib g++-multilib gettext \
+        git gperf haveged help2man intltool libc6-dev libelf-dev libfuse-dev libglib2.0-dev \
+        libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev libpython3-dev \
+        libreadline-dev libssl-dev libtool lrzsz libnsl-dev ninja-build p7zip-full patch pkgconf \
+        python3 python3-pyelftools python3-setuptools qemu-utils rsync scons squashfs-tools subversion \
+        swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev
         sudo -E apt-get -qq autoremove --purge
         sudo -E apt-get -qq clean
-        sudo timedatectl set-timezone "$TZ"
         mkdir -p ${{ github.workspace }}/build
 
     - name: Clone Source Code
@@ -62,22 +68,12 @@ jobs:
           bash "$GITHUB_WORKSPACE/diy-part1.sh"
         fi
 
-    - name: Update Feeds
+    - name: Update and Install Feeds
       run: |
         cd openwrt
-        for i in {1..3}; do
-          ./scripts/feeds update -a && break
-          echo "Feeds update attempt $i failed, retrying in 5 seconds..."
-          sleep 5
-        done
-
-    - name: Install Feeds
-      run: |
-        cd openwrt
-        ./scripts/feeds install -a -f -p packages
-        ./scripts/feeds install -a -f -p luci
-        ./scripts/feeds install -a -f -p routing
-        ./scripts/feeds install -a -f
+        # 采用官方标准命令
+        ./scripts/feeds update -a
+        ./scripts/feeds install -a
 
     - name: Load Custom Configuration (DIY Part 2)
       run: |
@@ -93,30 +89,24 @@ jobs:
       run: |
         cd openwrt
         
-        # --- 修复 1: 必须先从源码切断依赖，否则 .config 里的禁用会被覆盖 ---
         echo "Removing broken geoview dependency from Passwall..."
         find feeds/passwall -name "Makefile" -exec sed -i 's/+geoview//g' {} +
         find feeds/passwall -name "Makefile" -exec sed -i 's/+luci-app-geoview//g' {} +
         
         make defconfig
         
-        # --- Ccache 配置 ---
         echo "CONFIG_CCACHE=y" >> .config
-        
-        # --- 禁用 SDK/IB (加速) ---
         echo "CONFIG_SDK=n" >> .config
         echo "CONFIG_IB=n" >> .config
         echo "CONFIG_KO_SYMBOLS=n" >> .config
         echo "CONFIG_BUILD_LOG=n" >> .config
         echo "CONFIG_SRC_TREE_OVERRIDE=n" >> .config
 
-        # --- 修复 2: 再次显式禁用 Geoview ---
         sed -i '/CONFIG_PACKAGE_geoview/d' .config
         sed -i '/CONFIG_PACKAGE_luci-app-geoview/d' .config
         echo "# CONFIG_PACKAGE_geoview is not set" >> .config
         echo "# CONFIG_PACKAGE_luci-app-geoview is not set" >> .config
         
-        # --- 插件配置 ---
         cat >> .config <<EOF
         CONFIG_PACKAGE_ipv6helper=y
         CONFIG_PACKAGE_luci-app-passwall=y
@@ -142,7 +132,6 @@ jobs:
       id: package
       run: |
         cd openwrt
-        # --- 修复 3: 补全 make download 命令 ---
         make download -j$(nproc)
         find dl -size -1024c -exec ls -l {} \;
         find dl -size -1024c -exec rm -f {} \;
@@ -151,13 +140,12 @@ jobs:
       id: compile
       run: |
         cd openwrt
-        echo "$(nproc) thread compile"
-        make -j$(($(nproc)+1)) || make -j1 V=s
+        # 首次编译使用详细单线程模式便于调试
+        echo "Starting compilation with detailed output (single thread)..."
+        make V=s -j1
         
-        # 设置编译状态
         echo "status=success" >> $GITHUB_OUTPUT
         
-        # 提取设备名称
         DEVICE_NAME=$(grep '^CONFIG_TARGET.*DEVICE.*=y' .config | head -1 | sed -r 's/.*DEVICE_(.*)=y/\1/')
         if [ -n "$DEVICE_NAME" ]; then
           echo "DEVICE_NAME=_${DEVICE_NAME}" >> $GITHUB_ENV
@@ -165,7 +153,6 @@ jobs:
           echo "DEVICE_NAME=" >> $GITHUB_ENV
         fi
         
-        # 设置文件日期
         echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
 
     - name: Save Cache
@@ -192,13 +179,10 @@ jobs:
       id: organize
       if: env.UPLOAD_FIRMWARE && !cancelled()
       run: |
-        # 进入固件目录
         if [ -d "openwrt/bin/targets" ]; then
-          # 查找固件目录
           FIRMWARE_DIR=$(find openwrt/bin/targets -maxdepth 2 -type d -name "*-*" | head -1)
           if [ -n "$FIRMWARE_DIR" ]; then
             cd "$FIRMWARE_DIR"
-            # 删除packages目录以节省空间
             rm -rf packages 2>/dev/null || true
             echo "FIRMWARE=$PWD" >> $GITHUB_ENV
             echo "status=success" >> $GITHUB_OUTPUT
@@ -245,7 +229,7 @@ jobs:
         keep_minimum_runs: 5
 
     - name: Remove old Releases
-      uses: dev-drprasad/delete-older-releases@master
+      uses: dev-drprasad/delete-older-releases@v0.8.0
       if: env.UPLOAD_RELEASE && !cancelled()
       with:
         keep_latest: 3
