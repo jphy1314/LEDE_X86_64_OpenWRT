@@ -3,7 +3,6 @@ name: Build LEDE Stable (Standard DIY Mode)
 on:
   workflow_dispatch:
 
-# 权限声明 (必须保留，否则无法发布 Release)
 permissions:
   contents: write
   actions: write
@@ -15,7 +14,6 @@ env:
   UPLOAD_BIN_DIR: false
   UPLOAD_FIRMWARE: true
   UPLOAD_RELEASE: true
-  # Ccache 目录
   CCACHE_DIR: /home/runner/.ccache
 
 jobs:
@@ -51,16 +49,14 @@ jobs:
         path: |
           openwrt/dl
           /home/runner/.ccache
-        key: ${{ runner.os }}-openwrt-${{ hashFiles('openwrt/feeds.conf.default') }}
+        # 恢复时尝试匹配包含 run_id 的最新缓存，或者回退到通用缓存
+        key: ${{ runner.os }}-openwrt-${{ hashFiles('openwrt/feeds.conf.default') }}-${{ github.run_id }}
         restore-keys: |
           ${{ runner.os }}-openwrt-${{ hashFiles('openwrt/feeds.conf.default') }}-
           ${{ runner.os }}-openwrt-
 
-
-    # --- 调用 diy-part1.sh ---
     - name: Load Custom Feeds (DIY Part 1)
       run: |
-        # 赋予脚本执行权限并运行
         chmod +x $GITHUB_WORKSPACE/diy-part1.sh
         cd openwrt
         $GITHUB_WORKSPACE/diy-part1.sh
@@ -85,6 +81,12 @@ jobs:
     - name: Generate Configuration
       run: |
         cd openwrt
+        
+        # --- 修复 1: 必须先从源码切断依赖，否则 .config 里的禁用会被覆盖 ---
+        echo "Removing broken geoview dependency from Passwall..."
+        find feeds/passwall -name "Makefile" -exec sed -i 's/+geoview//g' {} +
+        find feeds/passwall -name "Makefile" -exec sed -i 's/+luci-app-geoview//g' {} +
+        
         make defconfig
         
         # --- Ccache 配置 ---
@@ -97,18 +99,15 @@ jobs:
         echo "CONFIG_BUILD_LOG=n" >> .config
         echo "CONFIG_SRC_TREE_OVERRIDE=n" >> .config
 
-        # --- ❌ 强制禁用 Geoview (解决 Go 依赖缺失导致的编译失败) ---
-        # 1. 删除任何可能开启 geoview 的配置
+        # --- 修复 2: 再次显式禁用 Geoview ---
         sed -i '/CONFIG_PACKAGE_geoview/d' .config
         sed -i '/CONFIG_PACKAGE_luci-app-geoview/d' .config
-        
-        # 2. 显式写入 "不编译" 指令
         echo "# CONFIG_PACKAGE_geoview is not set" >> .config
         echo "# CONFIG_PACKAGE_luci-app-geoview is not set" >> .config
         
         # --- 插件配置 ---
         cat >> .config <<EOF
-        CONFIG_PACKAGE_ipv6-helper=y
+        CONFIG_PACKAGE_ipv6helper=y
         CONFIG_PACKAGE_luci-app-passwall=y
         CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Xray=y
         CONFIG_PACKAGE_luci-app-passwall_INCLUDE_SingBox=y
@@ -126,13 +125,14 @@ jobs:
         CONFIG_PACKAGE_luci-app-argon-config=y
         EOF
 
-        make olddefconfig
+        make defconfig
 
     - name: Download package
       id: package
       run: |
         cd openwrt
-        -j$(nproc)
+        # --- 修复 3: 补全 make download 命令 ---
+        make download -j$(nproc)
         find dl -size -1024c -exec ls -l {} \;
         find dl -size -1024c -exec rm -f {} \;
 
@@ -155,7 +155,8 @@ jobs:
         path: |
           openwrt/dl
           /home/runner/.ccache
-        key: ${{ runner.os }}-openwrt-${{ hashFiles('openwrt/feeds.conf.default') }}
+        # --- 修复 4: 必须加上 run_id 才能生成新的缓存快照 ---
+        key: ${{ runner.os }}-openwrt-${{ hashFiles('openwrt/feeds.conf.default') }}-${{ github.run_id }}
 
     - name: Check space usage
       if: (!cancelled())
