@@ -1,4 +1,4 @@
-name: Build LEDE Latest (Standard DIY Mode)
+name: Build LEDE Latest (Standard DIY Test 2 Mode)
 
 on:
   workflow_dispatch:
