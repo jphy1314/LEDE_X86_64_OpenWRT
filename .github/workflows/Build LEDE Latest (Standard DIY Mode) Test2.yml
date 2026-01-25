@@ -119,15 +119,16 @@ jobs:
         CONFIG_PACKAGE_luci-app-passwall_INCLUDE_SingBox=y
         CONFIG_PACKAGE_luci-app-ddns=y
         CONFIG_PACKAGE_ddns-scripts=y
+        CONFIG_PACKAGE_ddns-scripts_aliyun=y
+        CONFIG_PACKAGE_ddns-scripts_dnspod=y
         CONFIG_PACKAGE_luci-app-vlmcsd=y
         CONFIG_PACKAGE_luci-app-smartdns=y
+        CONFIG_PACKAGE_luci-app-ipsec-vpnd=y
+        CONFIG_PACKAGE_luci-app-usb-printer=y
         CONFIG_PACKAGE_luci-app-autoreboot=y
         CONFIG_PACKAGE_luci-app-filetransfer=y
         CONFIG_PACKAGE_luci-theme-argon=y
         CONFIG_PACKAGE_luci-app-argon-config=y
-        
-        # CONFIG_PACKAGE_geoview is not set
-        # CONFIG_PACKAGE_luci-app-geoview is not set
         EOF
         
         # 清理并生成最终配置
