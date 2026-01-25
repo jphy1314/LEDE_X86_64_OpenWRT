@@ -73,6 +73,11 @@ jobs:
     - name: Install Feeds
       run: |
         cd openwrt
+        # 显式安装核心源，顺序很重要
+        ./scripts/feeds install -a -p packages
+        ./scripts/feeds install -a -p luci
+        ./scripts/feeds install -a -p routing
+        # 最后再安装剩下的所有插件
         ./scripts/feeds install -a
 
     - name: Load Custom Configuration (DIY Part 2)
