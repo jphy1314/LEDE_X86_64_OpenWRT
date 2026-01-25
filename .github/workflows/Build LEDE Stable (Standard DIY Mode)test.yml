@@ -15,6 +15,10 @@ env:
   UPLOAD_FIRMWARE: true
   UPLOAD_RELEASE: true
   CCACHE_DIR: /home/runner/.ccache
+  # --- 预定义变量以消除编辑器的黄色警告 ---
+  DEVICE_NAME: ""
+  FILE_DATE: ""
+  FIRMWARE: ""
 
 jobs:
   build:
@@ -55,7 +59,6 @@ jobs:
         path: |
           openwrt/dl
           /home/runner/.ccache
-        # 恢复时不带 run_id，以便复用之前的缓存
         key: ${{ runner.os }}-openwrt-${{ hashFiles('openwrt/feeds.conf.default') }}
         restore-keys: |
           ${{ runner.os }}-openwrt-${{ hashFiles('openwrt/feeds.conf.default') }}-
@@ -73,20 +76,11 @@ jobs:
     - name: Install Feeds
       run: |
         cd openwrt
-        # --- 修复依赖警告的关键步骤：分层安装 ---
-        # 1. 先安装 Passwall 的依赖库 (对应你在 diy-part1.sh 添加的 passwall_packages)
+        # 分层安装策略
         ./scripts/feeds install -p passwall_packages -f -a
-        
-        # 2. 安装核心 Packages (解决 bc, libpam 等报错)
         ./scripts/feeds install -p packages -f -a
-        
-        # 3. 安装 LuCI (解决 luci-compat 等报错)
         ./scripts/feeds install -p luci -f -a
-        
-        # 4. 安装 Routing
         ./scripts/feeds install -p routing -f -a
-        
-        # 5. 最后全量安装确保无遗漏
         ./scripts/feeds install -f -a
 
     - name: Load Custom Configuration (DIY Part 2)
@@ -97,30 +91,29 @@ jobs:
       run: |
         cd openwrt
         
-        # --- 修复 Passwall 依赖 geoview 导致的编译失败 ---
+        # 移除 geoview 依赖
         echo "Removing broken geoview dependency..."
         find feeds -name "Makefile" -exec sed -i 's/+geoview//g' {} +
         find feeds -name "Makefile" -exec sed -i 's/+luci-app-geoview//g' {} +
         
-        # --- [关键] 设定版本号为 24.10 ---
+        # 设定版本号
         echo "CONFIG_IMAGEOPT=y" >> .config
         echo 'CONFIG_VERSION_NUMBER="24.10"' >> .config
         echo 'CONFIG_VERSION_CODE="24.10"' >> .config
         
-        # --- [重要] 在这里配置你的设备 Target ---
-        # 默认没有配置即为 x86_64。如果你是 K2P/AX6000 等，请取消下方对应注释！
+        # --- 目标设备配置 (x86如果不配置则默认, 路由器需取消注释) ---
         # echo "CONFIG_TARGET_ramips=y" >> .config
         # echo "CONFIG_TARGET_ramips_mt7621=y" >> .config
         # echo "CONFIG_TARGET_ramips_mt7621_DEVICE_phicomm_k2p=y" >> .config
 
-        # --- 编译优化参数 ---
+        # 编译优化
         echo "CONFIG_CCACHE=y" >> .config
         echo "CONFIG_SDK=n" >> .config
         echo "CONFIG_IB=n" >> .config
         echo "CONFIG_KO_SYMBOLS=n" >> .config
         echo "CONFIG_BUILD_LOG=n" >> .config
         
-        # --- 插件配置 (根据需求增减) ---
+        # 插件配置
         cat >> .config <<EOF
         CONFIG_PACKAGE_ipv6helper=y
         CONFIG_PACKAGE_luci-app-passwall=y
@@ -135,15 +128,14 @@ jobs:
         CONFIG_PACKAGE_luci-theme-argon=y
         CONFIG_PACKAGE_luci-app-argon-config=y
         
-        # 彻底禁用 Geoview
         # CONFIG_PACKAGE_geoview is not set
         # CONFIG_PACKAGE_luci-app-geoview is not set
         EOF
         
-        # 二次清理
+        # 清理并生成最终配置
         sed -i '/CONFIG_PACKAGE_geoview/d' .config
         sed -i '/CONFIG_PACKAGE_luci-app-geoview/d' .config
-
+        
         make defconfig
 
     - name: Download package
@@ -151,10 +143,7 @@ jobs:
       run: |
         cd openwrt
         echo "Downloading packages..."
-        # 允许下载偶尔失败，后续步骤会处理
         make download -j8 || true
-        
-        # 清理下载失败的空文件
         find dl -size -1024c -exec ls -l {} \;
         find dl -size -1024c -exec rm -f {} \;
 
@@ -164,21 +153,21 @@ jobs:
         cd openwrt
         echo "Starting build process..."
         
-        # --- 步骤 1: 编译主机工具 (解决 firmware-utils 错误) ---
         echo "1. Compiling host tools..."
         make tools/compile -j$(nproc) || make tools/compile -j1 V=s
         
-        # --- 步骤 2: 编译交叉编译链 (解决 libubox/libnl-tiny 错误) ---
         echo "2. Compiling toolchain..."
         make toolchain/compile -j$(nproc) || make toolchain/compile -j1 V=s
         
-        # --- 步骤 3: 编译固件 ---
         echo "3. Compiling firmware..."
         make -j$(nproc) || make -j1 || make -j1 V=s
         
         echo "status=success" >> $GITHUB_OUTPUT
+        
+        # --- 优化：提取设备名，如果没有具体DEVICE名则使用 Generic ---
         grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*DEVICE_(.*)=y/\1/' > DEVICE_NAME
-        [ -s DEVICE_NAME ] && echo "DEVICE_NAME=_$(cat DEVICE_NAME)" >> $GITHUB_ENV
+        [ -s DEVICE_NAME ] && echo "DEVICE_NAME=_$(cat DEVICE_NAME)" >> $GITHUB_ENV || echo "DEVICE_NAME=_Generic" >> $GITHUB_ENV
+        
         echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
 
     - name: Save Cache
@@ -188,7 +177,6 @@ jobs:
         path: |
           openwrt/dl
           /home/runner/.ccache
-        # 保存时带 run_id，生成新快照
         key: ${{ runner.os }}-openwrt-${{ hashFiles('openwrt/feeds.conf.default') }}-${{ github.run_id }}
 
     - name: Check space usage
@@ -206,7 +194,6 @@ jobs:
       id: organize
       if: env.UPLOAD_FIRMWARE == 'true' && !cancelled()
       run: |
-        # 增加判断防止目录不存在报错
         if [ -d "openwrt/bin/targets" ]; then
             cd openwrt/bin/targets/*/*
             rm -rf packages
