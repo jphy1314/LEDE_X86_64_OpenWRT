@@ -73,13 +73,21 @@ jobs:
     - name: Install Feeds
       run: |
         cd openwrt
-        # 显式安装核心源，顺序很重要
-        ./scripts/feeds install -a -p packages
-        ./scripts/feeds install -a -p luci
-        ./scripts/feeds install -a -p routing
-        # 最后再安装剩下的所有插件
-        ./scripts/feeds install -a
-
+        # 1. 先安装 Passwall 的依赖库 (对应你在 diy-part1.sh 加的第一行)
+        ./scripts/feeds install -p passwall_packages -f -a
+        
+        # 2. 安装官方标准基础库 (解决 bc, libpam, coreutils 等报错)
+        ./scripts/feeds install -p packages -f -a
+        
+        # 3. 安装 LuCI 基础组件 (解决 luci-compat 等报错)
+        ./scripts/feeds install -p luci -f -a
+        
+        # 4. 安装路由组件
+        ./scripts/feeds install -p routing -f -a
+        
+        # 5. 最后安装剩下的所有插件 (包括 Passwall 主程序)
+        ./scripts/feeds install -f -a
+        
     - name: Load Custom Configuration (DIY Part 2)
       run: |
         [ -e $GITHUB_WORKSPACE/diy-part2.sh ] && chmod +x $GITHUB_WORKSPACE/diy-part2.sh && cd openwrt && $GITHUB_WORKSPACE/diy-part2.sh || echo "diy-part2.sh not found"
