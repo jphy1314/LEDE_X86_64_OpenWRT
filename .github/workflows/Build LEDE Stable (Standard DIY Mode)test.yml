@@ -140,11 +140,11 @@ jobs:
         # CONFIG_PACKAGE_luci-app-geoview is not set
         EOF
         
-        make defconfig
-        
         # 二次清理
         sed -i '/CONFIG_PACKAGE_geoview/d' .config
         sed -i '/CONFIG_PACKAGE_luci-app-geoview/d' .config
+
+        make defconfig
 
     - name: Download package
       id: package
