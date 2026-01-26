@@ -105,11 +105,6 @@ jobs:
       run: |
         cd openwrt
         
-        # 移除 geoview 依赖
-        echo "Removing broken geoview dependency..."
-        find feeds -name "Makefile" -exec sed -i 's/+geoview//g' {} +
-        find feeds -name "Makefile" -exec sed -i 's/+luci-app-geoview//g' {} +
-        
         # --- 目标设备配置 ---
         # echo "CONFIG_TARGET_ramips=y" >> .config
         # echo "CONFIG_TARGET_ramips_mt7621=y" >> .config
@@ -130,8 +125,8 @@ jobs:
         CONFIG_PACKAGE_luci-app-passwall_INCLUDE_SingBox=y
         CONFIG_PACKAGE_luci-app-ddns=y
         CONFIG_PACKAGE_ddns-scripts=y
-        CONFIG_PACKAGE_ddns-scripts_aliyun=y
-        CONFIG_PACKAGE_ddns-scripts_dnspod=y
+        # CONFIG_PACKAGE_ddns-scripts_aliyun=y
+        # CONFIG_PACKAGE_ddns-scripts_dnspod=y
         CONFIG_PACKAGE_luci-app-vlmcsd=y
         CONFIG_PACKAGE_luci-app-smartdns=y
         CONFIG_PACKAGE_luci-app-ipsec-vpnd=y
@@ -147,22 +142,6 @@ jobs:
         sed -i '/CONFIG_PACKAGE_luci-app-geoview/d' .config
         
         make defconfig
-
-    # --- 修复 git.openwrt.org 503 错误 ---
-    - name: Fix git.openwrt.org 503 Error
-      run: |
-        cd openwrt
-        find package -name "Makefile" -exec sed -i 's/git\.openwrt\.org\/project/github\.com\/openwrt/g' {} +
-
-    # --- [关键修复 3] 修复 Ubuntu 22.04 下 libnl-tiny/udebug/uclient 编译失败 ---
-    # 原因：新版 GCC 将警告视为错误。解决方案：移除 -Werror 参数。
-    - name: Fix Compile Errors (Disable Werror)
-      run: |
-        cd openwrt
-        echo "Disabling -Werror for libs..."
-        find package/libs -name "Makefile" -exec sed -i 's/-Werror//g' {} +
-        # 针对特定包的额外加固
-        sed -i 's/ -Werror//g' package/libs/libnl-tiny/src/Makefile || true
 
     - name: Download package
       id: package
