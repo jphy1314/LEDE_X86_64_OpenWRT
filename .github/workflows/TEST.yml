@@ -77,10 +77,15 @@ jobs:
       run: |
         cd openwrt
         
-        # --- [关键修复] 替换 Golang 为最新版 (解决 sing-box 1.12+ 编译失败) ---
-        echo "Replacing Golang with newer version..."
+        # --- [关键修复 1] 替换 Golang 为 sbwml 版本 (兼容性更好, 解决 sing-box/xray 编译问题) ---
+        echo "Replacing Golang with sbwml version..."
         rm -rf feeds/packages/lang/golang
-        git clone https://github.com/kenzok8/golang feeds/packages/lang/golang
+        git clone https://github.com/sbwml/packages_lang_golang -b 23.x feeds/packages/lang/golang
+        
+        # --- [关键修复 2] 删除导致编译失败的 v2ray-plugin ---
+        # 错误提示要求 Go 1.25，目前环境不满足且该插件已有替代方案
+        echo "Removing broken v2ray-plugin..."
+        rm -rf feeds/passwall_packages/v2ray-plugin
         
         # 重新更新索引以识别新 Golang
         ./scripts/feeds update -a
