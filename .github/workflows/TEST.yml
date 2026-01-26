@@ -35,13 +35,14 @@ jobs:
         sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
         sudo docker image prune --all --force
         sudo -E apt-get -qq update
+        # --- 这里的 uuid-dev 是必须的，否则 firmware-utils 会报错 ---
         sudo -E apt-get -qq install -y ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential \
         bzip2 ccache clang cmake cpio curl device-tree-compiler flex gawk gcc-multilib g++-multilib gettext \
         genisoimage git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libfuse-dev libglib2.0-dev \
         libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev libpython3-dev \
         libreadline-dev libssl-dev libtool llvm lrzsz libnsl-dev ninja-build p7zip p7zip-full patch pkgconf \
         python3 python3-pyelftools python3-setuptools qemu-utils rsync scons squashfs-tools subversion \
-        swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev
+        swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev uuid-dev
         sudo -E apt-get -qq autoremove --purge
         sudo -E apt-get -qq clean
         sudo timedatectl set-timezone "$TZ"
@@ -77,20 +78,19 @@ jobs:
       run: |
         cd openwrt
         
-        # --- [关键修复 1] 替换 Golang 为 sbwml 版本 (兼容性更好, 解决 sing-box/xray 编译问题) ---
+        # --- [关键修复 1] 替换 Golang 为 sbwml 版本 (必须保留，否则 Passwall 会报错) ---
         echo "Replacing Golang with sbwml version..."
         rm -rf feeds/packages/lang/golang
         git clone https://github.com/sbwml/packages_lang_golang -b 23.x feeds/packages/lang/golang
         
-        # --- [关键修复 2] 删除导致编译失败的 v2ray-plugin ---
-        # 错误提示要求 Go 1.25，目前环境不满足且该插件已有替代方案
+        # --- [关键修复 2] 删除 v2ray-plugin (必须保留，否则报错) ---
         echo "Removing broken v2ray-plugin..."
         rm -rf feeds/passwall_packages/v2ray-plugin
         
-        # 重新更新索引以识别新 Golang
+        # 重新更新索引
         ./scripts/feeds update -a
         
-        # --- 分层安装策略 ---
+        # --- 分层安装 ---
         ./scripts/feeds install -p passwall_packages -f -a
         ./scripts/feeds install -p packages -f -a
         ./scripts/feeds install -p luci -f -a
@@ -110,7 +110,7 @@ jobs:
         find feeds -name "Makefile" -exec sed -i 's/+geoview//g' {} +
         find feeds -name "Makefile" -exec sed -i 's/+luci-app-geoview//g' {} +
         
-        # --- 目标设备配置 (x86如果不配置则默认, 路由器需取消注释) ---
+        # --- 目标设备配置 ---
         # echo "CONFIG_TARGET_ramips=y" >> .config
         # echo "CONFIG_TARGET_ramips_mt7621=y" >> .config
         # echo "CONFIG_TARGET_ramips_mt7621_DEVICE_phicomm_k2p=y" >> .config
@@ -148,11 +148,21 @@ jobs:
         
         make defconfig
 
-    # --- 修复 git.openwrt.org 503 错误 (保留此修复) ---
+    # --- 修复 git.openwrt.org 503 错误 ---
     - name: Fix git.openwrt.org 503 Error
       run: |
         cd openwrt
         find package -name "Makefile" -exec sed -i 's/git\.openwrt\.org\/project/github\.com\/openwrt/g' {} +
+
+    # --- [关键修复 3] 修复 Ubuntu 22.04 下 libnl-tiny/udebug/uclient 编译失败 ---
+    # 原因：新版 GCC 将警告视为错误。解决方案：移除 -Werror 参数。
+    - name: Fix Compile Errors (Disable Werror)
+      run: |
+        cd openwrt
+        echo "Disabling -Werror for libs..."
+        find package/libs -name "Makefile" -exec sed -i 's/-Werror//g' {} +
+        # 针对特定包的额外加固
+        sed -i 's/ -Werror//g' package/libs/libnl-tiny/src/Makefile || true
 
     - name: Download package
       id: package
