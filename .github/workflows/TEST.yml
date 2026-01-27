@@ -65,6 +65,13 @@ jobs:
           ${{ runner.os }}-openwrt-${{ hashFiles('openwrt/feeds.conf.default') }}-
           ${{ runner.os }}-openwrt-
 
+    - name: Clean known-bad downloads (wsdd2 etc.)
+      # remove any potentially-corrupted or mismatched downloaded archives to force re-download
+      run: |
+        # openwrt is cloned into build/openwrt; ensure we remove any problematic files from dl
+        rm -f ${{ github.workspace }}/build/openwrt/dl/wsdd2-* || true
+        rm -f ${{ github.workspace }}/build/openwrt/dl/*-corrupt* || true
+
     - name: Load Custom Feeds (DIY Part 1)
       run: |
         [ -e $GITHUB_WORKSPACE/diy-part1.sh ] && chmod +x $GITHUB_WORKSPACE/diy-part1.sh && cd openwrt && $GITHUB_WORKSPACE/diy-part1.sh || echo "diy-part1.sh not found"
@@ -85,7 +92,7 @@ jobs:
         
         # --- [关键修复 2] 删除 v2ray-plugin (必须保留，否则报错) ---
         echo "Removing broken v2ray-plugin..."
-        rm -rf feeds/passwall_packages/v2ray-plugin
+        rm -rf feeds/passwall_packages/v2ray-plugin || true
         
         # 重新更新索引
         ./scripts/feeds update -a
@@ -105,7 +112,7 @@ jobs:
       run: |
         cd openwrt
         
-        # --- 目标设备配置 ---
+        # --- 目标设备配置 (示例，按需修改) ---
         # echo "CONFIG_TARGET_ramips=y" >> .config
         # echo "CONFIG_TARGET_ramips_mt7621=y" >> .config
         # echo "CONFIG_TARGET_ramips_mt7621_DEVICE_phicomm_k2p=y" >> .config
@@ -118,7 +125,7 @@ jobs:
         echo "CONFIG_BUILD_LOG=n" >> .config
         
         # 插件配置
-        cat >> .config <<EOF
+        cat >> .config <<'EOF'
         CONFIG_PACKAGE_ipv6helper=y
         CONFIG_PACKAGE_luci-app-passwall=y
         CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Xray=y
@@ -137,10 +144,6 @@ jobs:
         CONFIG_PACKAGE_luci-app-argon-config=y
         EOF
         
-        # 清理并生成最终配置
-        sed -i '/CONFIG_PACKAGE_geoview/d' .config
-        sed -i '/CONFIG_PACKAGE_luci-app-geoview/d' .config
-        
         make defconfig
 
     - name: Download package
@@ -148,9 +151,16 @@ jobs:
       run: |
         cd openwrt
         echo "Downloading packages..."
+        # allow download step to continue even if some packages fail to download, we'll clean small files afterwards
         make download -j8 || true
+        # remove small/incomplete archives
         find dl -size -1024c -exec ls -l {} \;
         find dl -size -1024c -exec rm -f {} \;
+
+    - name: Set up Go 1.24 (required for some feed packages)
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.24'
 
     - name: Compile the firmware
       id: compile
@@ -166,12 +176,23 @@ jobs:
         
         echo "3. Compiling firmware..."
         # 尝试多线程编译，失败则切单线程
-        make -j$(nproc) || make -j1 || make -j1 V=s
-        
-        echo "status=success" >> $GITHUB_OUTPUT
+        if make -j$(nproc); then
+          echo "build_ok=1" >> $GITHUB_OUTPUT
+          echo "status=success" >> $GITHUB_OUTPUT
+        else
+          echo "Attempting single-threaded build for debugging..."
+          if make -j1; then
+            echo "build_ok=1" >> $GITHUB_OUTPUT
+            echo "status=success" >> $GITHUB_OUTPUT
+          else
+            echo "build_ok=0" >> $GITHUB_OUTPUT
+            echo "status=failure" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+        fi
         
         # --- 优化：提取设备名 ---
-        grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*DEVICE_(.*)=y/\1/' > DEVICE_NAME
+        grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*DEVICE_(.*)=y/\1/' > DEVICE_NAME || true
         [ -s DEVICE_NAME ] && echo "DEVICE_NAME=_$(cat DEVICE_NAME)" >> $GITHUB_ENV || echo "DEVICE_NAME=_Generic" >> $GITHUB_ENV
         
         echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
