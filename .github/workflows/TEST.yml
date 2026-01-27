@@ -124,15 +124,6 @@ jobs:
           set -eux
           cd "${{ github.workspace }}/build/openwrt"
 
-          # --- [关键修复 1] 替换 Golang 为 sbwml 版本 (必须保留，否则 Passwall 会报错) ---
-          echo "Replacing Golang with sbwml version..."
-          rm -rf feeds/packages/lang/golang
-          git clone https://github.com/sbwml/packages_lang_golang -b 23.x feeds/packages/lang/golang
-
-          # --- [关键修复 2] 删除 v2ray-plugin (已知有问题)
-          echo "Removing broken v2ray-plugin (if present)..."
-          rm -rf feeds/passwall_packages/v2ray-plugin || true
-
           # Re-update feeds and install by category (keeps previous behavior)
           ./scripts/feeds update -a || true
 
@@ -211,19 +202,33 @@ jobs:
           rm -f dl/wsdd2-*.tar.* || true
           find dl -type f -name "*-corrupt*" -delete || true
 
-      - name: Set up Go 1.24 (required for some feed packages)
-        uses: actions/setup-go@v4
+      - name: Set up Go 1.24.x (required for some feed packages)
+        uses: actions/setup-go@v5
         with:
           go-version: '1.24'
+
+      - name: Verify Go installation and ensure system go points to it
+        run: |
+          echo "which go: $(which go)"
+          go version
+          # Create system symlinks so build scripts that call /usr/local/bin/go or /usr/bin/go get the installed go
+          sudo ln -sf "$(which go)" /usr/local/bin/go || true
+          sudo ln -sf "$(which go)" /usr/bin/go || true
+          echo "Symlinks created:"
+          ls -l /usr/local/bin/go /usr/bin/go || true
+          go version
 
       - name: Compile the firmware
         id: compile
         working-directory: ${{ github.workspace }}/build/openwrt
+        env:
+          GOTOOLCHAIN: local
         run: |
           set -eux
           cd "${{ github.workspace }}/build/openwrt"
           echo "Starting build process..."
-
+          echo "Using go version:"
+          go version
           echo "1. Compiling host tools..."
           if ! make tools/compile -j$(nproc); then
             echo "tools_compile_failed=1" >> $GITHUB_OUTPUT
