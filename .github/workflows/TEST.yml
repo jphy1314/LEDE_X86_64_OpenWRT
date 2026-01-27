@@ -55,7 +55,7 @@ jobs:
         ln -sf ${{ github.workspace }}/build/openwrt $GITHUB_WORKSPACE/openwrt
 
     - name: Restore Cache
-      uses: actions/cache/restore@v6
+      uses: actions/cache/restore@v4
       with:
         path: |
           openwrt/dl
@@ -177,7 +177,7 @@ jobs:
         echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
 
     - name: Save Cache
-      uses: actions/cache/save@v6
+      uses: actions/cache/save@v4
       if: steps.compile.outputs.status == 'success'
       with:
         path: |
