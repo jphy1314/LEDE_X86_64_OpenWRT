@@ -15,269 +15,270 @@ env:
   UPLOAD_FIRMWARE: true
   UPLOAD_RELEASE: true
   CCACHE_DIR: /home/runner/.ccache
-  # --- 预定义变量以消除编辑器的黄色警告 ---
-  DEVICE_NAME: ""
-  FILE_DATE: ""
-  FIRMWARE: ""
 
 jobs:
   build:
     runs-on: ubuntu-22.04
 
     steps:
-    - name: Checkout
-      uses: actions/checkout@v6
+      - name: Checkout
+        uses: actions/checkout@v6
 
-    - name: Initialization Environment
-      env:
-        DEBIAN_FRONTEND: noninteractive
-      run: |
-        sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
-        sudo docker image prune --all --force
-        sudo -E apt-get -qq update
-        # --- 这里的 uuid-dev 是必须的，否则 firmware-utils 会报错 ---
-        sudo -E apt-get -qq install -y ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential \
-        bzip2 ccache clang cmake cpio curl device-tree-compiler flex gawk gcc-multilib g++-multilib gettext \
-        genisoimage git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libfuse-dev libglib2.0-dev \
-        libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev libpython3-dev \
-        libreadline-dev libssl-dev libtool llvm lrzsz libnsl-dev ninja-build p7zip p7zip-full patch pkgconf \
-        python3 python3-pyelftools python3-setuptools qemu-utils rsync scons squashfs-tools subversion \
-        swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev uuid-dev
-        sudo -E apt-get -qq autoremove --purge
-        sudo -E apt-get -qq clean
-        sudo timedatectl set-timezone "$TZ"
-        mkdir -p ${{ github.workspace }}/build
+      - name: Initialization Environment
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force
+          sudo -E apt-get -qq update
+          # --- 这里的 uuid-dev 是必须的，否则 firmware-utils 会报错 ---
+          sudo -E apt-get -qq install -y ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential \
+            bzip2 ccache clang cmake cpio curl device-tree-compiler flex gawk gcc-multilib g++-multilib gettext \
+            genisoimage git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libfuse-dev libglib2.0-dev \
+            libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev libpython3-dev \
+            libreadline-dev libssl-dev libtool llvm lrzsz libnsl-dev ninja-build p7zip p7zip-full patch pkgconf \
+            python3 python3-pyelftools python3-setuptools qemu-utils rsync scons squashfs-tools subversion \
+            swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev uuid-dev
+          sudo -E apt-get -qq autoremove --purge
+          sudo -E apt-get -qq clean
+          sudo timedatectl set-timezone "$TZ"
+          mkdir -p "${{ github.workspace }}/build"
 
-    - name: Clone Source Code
-      working-directory: ${{ github.workspace }}/build
-      run: |
-        git clone -b $REPO_BRANCH $REPO_URL openwrt
-        ln -sf ${{ github.workspace }}/build/openwrt $GITHUB_WORKSPACE/openwrt
+      - name: Clone Source Code
+        working-directory: ${{ github.workspace }}/build
+        run: |
+          git clone -b $REPO_BRANCH $REPO_URL openwrt
+          ln -sf "${{ github.workspace }}/build/openwrt" "$GITHUB_WORKSPACE/openwrt"
 
-    - name: Restore Cache
-      uses: actions/cache/restore@v4
-      with:
-        path: |
-          openwrt/dl
-          /home/runner/.ccache
-        key: ${{ runner.os }}-openwrt-${{ hashFiles('openwrt/feeds.conf.default') }}
-        restore-keys: |
-          ${{ runner.os }}-openwrt-${{ hashFiles('openwrt/feeds.conf.default') }}-
-          ${{ runner.os }}-openwrt-
+      - name: Restore Cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            openwrt/dl
+            /home/runner/.ccache
+          key: ${{ runner.os }}-openwrt-${{ hashFiles('openwrt/feeds.conf.default') }}
+          restore-keys: |
+            ${{ runner.os }}-openwrt-${{ hashFiles('openwrt/feeds.conf.default') }}-
+            ${{ runner.os }}-openwrt-
 
-    - name: Load Custom Feeds (DIY Part 1)
-      run: |
-        [ -e $GITHUB_WORKSPACE/diy-part1.sh ] && chmod +x $GITHUB_WORKSPACE/diy-part1.sh && cd openwrt && $GITHUB_WORKSPACE/diy-part1.sh || echo "diy-part1.sh not found"
+      - name: Clean known-bad downloads (dl)
+        run: |
+          # remove any previously cached small/corrupted archives so downloads start fresh
+          rm -f "${{ github.workspace }}/build/openwrt/dl/wsdd2-*" || true
+          find "${{ github.workspace }}/build/openwrt/dl" -type f -size -1024c -delete || true
 
-    - name: Update Feeds
-      run: |
-        cd openwrt
-        ./scripts/feeds update -a
+      - name: Load Custom Feeds (DIY Part 1)
+        run: |
+          [ -e "$GITHUB_WORKSPACE/diy-part1.sh" ] && chmod +x "$GITHUB_WORKSPACE/diy-part1.sh" && cd openwrt && "$GITHUB_WORKSPACE/diy-part1.sh" || echo "diy-part1.sh not found"
 
-    - name: Install Feeds
-      run: |
-        cd openwrt
+      - name: Update Feeds
+        run: |
+          cd openwrt
+          ./scripts/feeds update -a
 
-        # --- [关键修复 1] 替换 Golang 为 sbwml 版本 (必须保留，否则 Passwall 会报错) ---
-        echo "Replacing Golang with sbwml version..."
-        rm -rf feeds/packages/lang/golang
-        git clone https://github.com/sbwml/packages_lang_golang -b 23.x feeds/packages/lang/golang
+      - name: Install Feeds
+        run: |
+          cd openwrt
 
-        # --- [关键修复 2] 删除 v2ray-plugin (必须保留，否则报错) ---
-        echo "Removing broken v2ray-plugin..."
-        rm -rf feeds/passwall_packages/v2ray-plugin || true
+          # --- [关键修复 1] 替换 Golang 为 sbwml 版本 (必须保留，否则 Passwall 会报错) ---
+          echo "Replacing Golang with sbwml version..."
+          rm -rf feeds/packages/lang/golang
+          git clone https://github.com/sbwml/packages_lang_golang -b 23.x feeds/packages/lang/golang
 
-        # 重新更新索引（在替换 feed 后刷新）
-        ./scripts/feeds update -a
+          # --- [关键修复 2] 删除 v2ray-plugin (必须保留，否则报错) ---
+          echo "Removing broken v2ray-plugin..."
+          rm -rf feeds/passwall_packages/v2ray-plugin || true
 
-        # --- 分层安装 ---
-        ./scripts/feeds install -p passwall_packages -f -a
-        ./scripts/feeds install -p packages -f -a
-        ./scripts/feeds install -p luci -f -a
-        ./scripts/feeds install -p routing -f -a
-        ./scripts/feeds install -f -a
+          # 重新更新索引（在替换 feed 后刷新）
+          ./scripts/feeds update -a
 
-    - name: Load Custom Configuration (DIY Part 2)
-      run: |
-        [ -e $GITHUB_WORKSPACE/diy-part2.sh ] && chmod +x $GITHUB_WORKSPACE/diy-part2.sh && cd openwrt && $GITHUB_WORKSPACE/diy-part2.sh || echo "diy-part2.sh not found"
+          # --- 分层安装 ---
+          ./scripts/feeds install -p passwall_packages -f -a
+          ./scripts/feeds install -p packages -f -a
+          ./scripts/feeds install -p luci -f -a
+          ./scripts/feeds install -p routing -f -a
+          ./scripts/feeds install -f -a
 
-    - name: Generate Configuration
-      run: |
-        cd openwrt
+      - name: Load Custom Configuration (DIY Part 2)
+        run: |
+          [ -e "$GITHUB_WORKSPACE/diy-part2.sh" ] && chmod +x "$GITHUB_WORKSPACE/diy-part2.sh" && cd openwrt && "$GITHUB_WORKSPACE/diy-part2.sh" || echo "diy-part2.sh not found"
 
-        # --- 目标设备配置 (示例，按需修改) ---
-        # echo "CONFIG_TARGET_ramips=y" >> .config
-        # echo "CONFIG_TARGET_ramips_mt7621=y" >> .config
-        # echo "CONFIG_TARGET_ramips_mt7621_DEVICE_phicomm_k2p=y" >> .config
+      - name: Generate Configuration
+        run: |
+          cd openwrt
 
-        # 编译优化
-        echo "CONFIG_CCACHE=y" >> .config
-        echo "CONFIG_SDK=n" >> .config
-        echo "CONFIG_IB=n" >> .config
-        echo "CONFIG_KO_SYMBOLS=n" >> .config
-        echo "CONFIG_BUILD_LOG=n" >> .config
+          # --- 目标设备配置 (示例，按需修改) ---
+          # echo "CONFIG_TARGET_ramips=y" >> .config
+          # echo "CONFIG_TARGET_ramips_mt7621=y" >> .config
+          # echo "CONFIG_TARGET_ramips_mt7621_DEVICE_phicomm_k2p=y" >> .config
 
-        # 插件配置（注意：以下写入行前不能有缩进）
-cat >> .config <<'EOF'
-CONFIG_PACKAGE_ipv6helper=y
-CONFIG_PACKAGE_luci-app-passwall=y
-CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Xray=y
-CONFIG_PACKAGE_luci-app-passwall_INCLUDE_SingBox=y
-CONFIG_PACKAGE_luci-app-ddns=y
-CONFIG_PACKAGE_ddns-scripts=y
-# CONFIG_PACKAGE_ddns-scripts_aliyun=y
-# CONFIG_PACKAGE_ddns-scripts_dnspod=y
-CONFIG_PACKAGE_luci-app-vlmcsd=y
-CONFIG_PACKAGE_luci-app-smartdns=y
-CONFIG_PACKAGE_luci-app-ipsec-vpnd=y
-CONFIG_PACKAGE_luci-app-usb-printer=y
-CONFIG_PACKAGE_luci-app-autoreboot=y
-CONFIG_PACKAGE_luci-app-filetransfer=y
-CONFIG_PACKAGE_luci-theme-argon=y
-CONFIG_PACKAGE_luci-app-argon-config=y
-EOF
+          # 编译优化
+          echo "CONFIG_CCACHE=y" >> .config
+          echo "CONFIG_SDK=n" >> .config
+          echo "CONFIG_IB=n" >> .config
+          echo "CONFIG_KO_SYMBOLS=n" >> .config
+          echo "CONFIG_BUILD_LOG=n" >> .config
 
-        # 清理并生成最终配置：删除可能导致问题或不想自动构建的条目
-        sed -i '/CONFIG_PACKAGE_geoview/d' .config
-        sed -i '/CONFIG_PACKAGE_luci-app-geoview/d' .config
+          # 插件配置（heredoc lines must not be indented to avoid leading spaces)
+          cat >> .config <<'EOF'
+          CONFIG_PACKAGE_ipv6helper=y
+          CONFIG_PACKAGE_luci-app-passwall=y
+          CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Xray=y
+          CONFIG_PACKAGE_luci-app-passwall_INCLUDE_SingBox=y
+          CONFIG_PACKAGE_luci-app-ddns=y
+          CONFIG_PACKAGE_ddns-scripts=y
+          # CONFIG_PACKAGE_ddns-scripts_aliyun=y
+          # CONFIG_PACKAGE_ddns-scripts_dnspod=y
+          CONFIG_PACKAGE_luci-app-vlmcsd=y
+          CONFIG_PACKAGE_luci-app-smartdns=y
+          CONFIG_PACKAGE_luci-app-ipsec-vpnd=y
+          CONFIG_PACKAGE_luci-app-usb-printer=y
+          CONFIG_PACKAGE_luci-app-autoreboot=y
+          CONFIG_PACKAGE_luci-app-filetransfer=y
+          CONFIG_PACKAGE_luci-theme-argon=y
+          CONFIG_PACKAGE_luci-app-argon-config=y
+          EOF
 
-        make defconfig
+          # 清理并生成最终配置：删除可能导致问题或不想自动构建的条目
+          sed -i '/CONFIG_PACKAGE_geoview/d' .config
+          sed -i '/CONFIG_PACKAGE_luci-app-geoview/d' .config
 
-    - name: Download package
-      id: package
-      run: |
-        cd openwrt
-        echo "Downloading packages..."
-        # 允许部分包下载失败，后续会清理小/损坏文件并重新尝试构建
-        make download -j8 || true
-        # 列出并删除小于 1K 的文件（常为错误或占位文件）
-        find dl -type f -size -1024c -exec ls -l {} \; -exec rm -f {} \;
+          make defconfig
 
-    - name: Clean known-bad dl files (force re-download of problematic archives)
-      run: |
-        cd openwrt
-        # 若你知道特定包会变更（例如 wsdd2），可以删除其缓存文件以便重新拉取
-        rm -f dl/wsdd2-*.tar.* || true
-        # 清理其它可能的临时/损坏文件
-        find dl -type f -name "*-corrupt*" -delete || true
+      - name: Download package
+        id: package
+        run: |
+          cd openwrt
+          echo "Downloading packages..."
+          # allow download step to continue even if some packages fail to download
+          make download -j8 || true
+          # remove small/incomplete archives
+          find dl -type f -size -1024c -exec ls -l {} \; -exec rm -f {} \;
 
-    - name: Set up Go 1.24 (required for some feed packages)
-      uses: actions/setup-go@v4
-      with:
-        go-version: '1.24'
+      - name: Clean known-bad dl files (force re-download of problematic archives)
+        run: |
+          cd openwrt
+          # Remove specific cached archives that are known to produce hash mismatches (if present)
+          rm -f dl/wsdd2-*.tar.* || true
+          find dl -type f -name "*-corrupt*" -delete || true
 
-    - name: Compile the firmware
-      id: compile
-      run: |
-        cd openwrt
-        echo "Starting build process..."
+      - name: Set up Go 1.24 (required for some feed packages)
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.24'
 
-        echo "1. Compiling host tools..."
-        if ! make tools/compile -j$(nproc); then
-          echo "tools_compile_failed=1" >> $GITHUB_OUTPUT
-          echo "status=failure" >> $GITHUB_OUTPUT
-          exit 1
-        fi
+      - name: Compile the firmware
+        id: compile
+        run: |
+          cd openwrt
+          echo "Starting build process..."
 
-        echo "2. Compiling toolchain..."
-        if ! make toolchain/compile -j$(nproc); then
-          echo "toolchain_compile_failed=1" >> $GITHUB_OUTPUT
-          echo "status=failure" >> $GITHUB_OUTPUT
-          exit 1
-        fi
-
-        echo "3. Compiling firmware..."
-        # 优先多线程编译，失败时降级到单线程并输出详细日志
-        if make -j$(nproc); then
-          echo "status=success" >> $GITHUB_OUTPUT
-        else
-          echo "Multi-thread build failed, retrying single-threaded..."
-          if make -j1 V=s; then
-            echo "status=success" >> $GITHUB_OUTPUT
-          else
+          echo "1. Compiling host tools..."
+          if ! make tools/compile -j$(nproc); then
+            echo "tools_compile_failed=1" >> $GITHUB_OUTPUT
             echo "status=failure" >> $GITHUB_OUTPUT
             exit 1
           fi
-        fi
 
-        # --- 优化：提取设备名 ---
-        grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*DEVICE_(.*)=y/\1/' > DEVICE_NAME || true
-        [ -s DEVICE_NAME ] && echo "DEVICE_NAME=_$(cat DEVICE_NAME)" >> $GITHUB_ENV || echo "DEVICE_NAME=_Generic" >> $GITHUB_ENV
+          echo "2. Compiling toolchain..."
+          if ! make toolchain/compile -j$(nproc); then
+            echo "toolchain_compile_failed=1" >> $GITHUB_OUTPUT
+            echo "status=failure" >> $GITHUB_OUTPUT
+            exit 1
+          fi
 
-        echo "FILE_DATE=_$(date +\"%Y%m%d%H%M\")" >> $GITHUB_ENV
+          echo "3. Compiling firmware..."
+          # 优先多线程编译，失败时降级到单线程并输出详细日志
+          if make -j$(nproc); then
+            echo "status=success" >> $GITHUB_OUTPUT
+          else
+            echo "Multi-thread build failed, retrying single-threaded..."
+            if make -j1 V=s; then
+              echo "status=success" >> $GITHUB_OUTPUT
+            else
+              echo "status=failure" >> $GITHUB_OUTPUT
+              exit 1
+            fi
+          fi
 
-    - name: Save Cache
-      uses: actions/cache/save@v4
-      if: steps.compile.outputs.status == 'success'
-      with:
-        path: |
-          openwrt/dl
-          /home/runner/.ccache
-        key: ${{ runner.os }}-openwrt-${{ hashFiles('openwrt/feeds.conf.default') }}-${{ github.run_id }}
+          # --- 优化：提取设备名 ---
+          grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*DEVICE_(.*)=y/\1/' > DEVICE_NAME || true
+          [ -s DEVICE_NAME ] && echo "DEVICE_NAME=_$(cat DEVICE_NAME)" >> $GITHUB_ENV || echo "DEVICE_NAME=_Generic" >> $GITHUB_ENV
 
-    - name: Check space usage
-      if: (!cancelled())
-      run: df -hT
+          echo "FILE_DATE=_$(date +\"%Y%m%d%H%M\")" >> $GITHUB_ENV
 
-    - name: Upload bin directory
-      uses: actions/upload-artifact@v6
-      if: steps.compile.outputs.status == 'success' && env.UPLOAD_BIN_DIR == 'true'
-      with:
-        name: OpenWrt_bin${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
-        path: openwrt/bin
+      - name: Save Cache
+        uses: actions/cache/save@v4
+        if: steps.compile.outputs.status == 'success'
+        with:
+          path: |
+            openwrt/dl
+            /home/runner/.ccache
+          key: ${{ runner.os }}-openwrt-${{ hashFiles('openwrt/feeds.conf.default') }}-${{ github.run_id }}
 
-    - name: Organize files
-      id: organize
-      if: env.UPLOAD_FIRMWARE == 'true' && !cancelled()
-      run: |
-        if [ -d "openwrt/bin/targets" ]; then
+      - name: Check space usage
+        if: (!cancelled())
+        run: df -hT
+
+      - name: Upload bin directory
+        uses: actions/upload-artifact@v6
+        if: steps.compile.outputs.status == 'success' && env.UPLOAD_BIN_DIR == 'true'
+        with:
+          name: OpenWrt_bin${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
+          path: openwrt/bin
+
+      - name: Organize files
+        id: organize
+        if: env.UPLOAD_FIRMWARE == 'true' && !cancelled()
+        run: |
+          if [ -d "openwrt/bin/targets" ]; then
             cd openwrt/bin/targets/*/*
             rm -rf packages
             echo "FIRMWARE=$PWD" >> $GITHUB_ENV
             echo "status=success" >> $GITHUB_OUTPUT
-        else
+          else
             echo "Target directory not found. Build might have failed."
             echo "status=failure" >> $GITHUB_OUTPUT
-        fi
+          fi
 
-    - name: Upload firmware directory
-      uses: actions/upload-artifact@v6
-      if: steps.organize.outputs.status == 'success' && !cancelled()
-      with:
-        name: OpenWrt_firmware${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
-        path: ${{ env.FIRMWARE }}
+      - name: Upload firmware directory
+        uses: actions/upload-artifact@v6
+        if: steps.organize.outputs.status == 'success' && !cancelled()
+        with:
+          name: OpenWrt_firmware${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
+          path: ${{ env.FIRMWARE }}
 
-    - name: Generate release tag
-      id: tag
-      if: env.UPLOAD_RELEASE == 'true' && steps.organize.outputs.status == 'success' && !cancelled()
-      run: |
-        echo "release_tag=v$(date +"%Y.%m.%d-%H%M")" >> $GITHUB_OUTPUT
-        touch release.txt
-        echo "Auto Build by GitHub Actions" >> release.txt
-        echo "Lede OpenWrt Latest Build" >> release.txt
-        echo "status=success" >> $GITHUB_OUTPUT
+      - name: Generate release tag
+        id: tag
+        if: env.UPLOAD_RELEASE == 'true' && steps.organize.outputs.status == 'success' && !cancelled()
+        run: |
+          echo "release_tag=v$(date +"%Y.%m.%d-%H%M")" >> $GITHUB_OUTPUT
+          touch release.txt
+          echo "Auto Build by GitHub Actions" >> release.txt
+          echo "Lede OpenWrt Latest Build" >> release.txt
+          echo "status=success" >> $GITHUB_OUTPUT
 
-    - name: Upload firmware to release
-      uses: softprops/action-gh-release@master
-      if: steps.tag.outputs.status == 'success' && !cancelled()
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        tag_name: ${{ steps.tag.outputs.release_tag }}
-        body_path: release.txt
-        files: ${{ env.FIRMWARE }}/*
+      - name: Upload firmware to release
+        uses: softprops/action-gh-release@master
+        if: steps.tag.outputs.status == 'success' && !cancelled()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ steps.tag.outputs.release_tag }}
+          body_path: release.txt
+          files: ${{ env.FIRMWARE }}/*
 
-    - name: Delete workflow runs
-      uses: Mattraks/delete-workflow-runs@main
-      with:
-        retain_days: 0
-        keep_minimum_runs: 2
+      - name: Delete workflow runs
+        uses: Mattraks/delete-workflow-runs@main
+        with:
+          retain_days: 0
+          keep_minimum_runs: 2
 
-    - name: Remove old Releases
-      uses: dev-drprasad/delete-older-releases@master
-      if: env.UPLOAD_RELEASE == 'true' && !cancelled()
-      with:
-        keep_latest: 3
-        delete_tags: true
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Remove old Releases
+        uses: dev-drprasad/delete-older-releases@master
+        if: env.UPLOAD_RELEASE == 'true' && !cancelled()
+        with:
+          keep_latest: 3
+          delete_tags: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
