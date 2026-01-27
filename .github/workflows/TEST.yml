@@ -65,13 +65,6 @@ jobs:
           ${{ runner.os }}-openwrt-${{ hashFiles('openwrt/feeds.conf.default') }}-
           ${{ runner.os }}-openwrt-
 
-    - name: Clean known-bad downloads (wsdd2 etc.)
-      # remove any potentially-corrupted or mismatched downloaded archives to force re-download
-      run: |
-        # openwrt is cloned into build/openwrt; ensure we remove any problematic files from dl
-        rm -f ${{ github.workspace }}/build/openwrt/dl/wsdd2-* || true
-        rm -f ${{ github.workspace }}/build/openwrt/dl/*-corrupt* || true
-
     - name: Load Custom Feeds (DIY Part 1)
       run: |
         [ -e $GITHUB_WORKSPACE/diy-part1.sh ] && chmod +x $GITHUB_WORKSPACE/diy-part1.sh && cd openwrt && $GITHUB_WORKSPACE/diy-part1.sh || echo "diy-part1.sh not found"
@@ -84,19 +77,19 @@ jobs:
     - name: Install Feeds
       run: |
         cd openwrt
-        
+
         # --- [关键修复 1] 替换 Golang 为 sbwml 版本 (必须保留，否则 Passwall 会报错) ---
         echo "Replacing Golang with sbwml version..."
         rm -rf feeds/packages/lang/golang
         git clone https://github.com/sbwml/packages_lang_golang -b 23.x feeds/packages/lang/golang
-        
+
         # --- [关键修复 2] 删除 v2ray-plugin (必须保留，否则报错) ---
         echo "Removing broken v2ray-plugin..."
         rm -rf feeds/passwall_packages/v2ray-plugin || true
-        
-        # 重新更新索引
+
+        # 重新更新索引（在替换 feed 后刷新）
         ./scripts/feeds update -a
-        
+
         # --- 分层安装 ---
         ./scripts/feeds install -p passwall_packages -f -a
         ./scripts/feeds install -p packages -f -a
@@ -111,7 +104,7 @@ jobs:
     - name: Generate Configuration
       run: |
         cd openwrt
-        
+
         # --- 目标设备配置 (示例，按需修改) ---
         # echo "CONFIG_TARGET_ramips=y" >> .config
         # echo "CONFIG_TARGET_ramips_mt7621=y" >> .config
@@ -123,27 +116,31 @@ jobs:
         echo "CONFIG_IB=n" >> .config
         echo "CONFIG_KO_SYMBOLS=n" >> .config
         echo "CONFIG_BUILD_LOG=n" >> .config
-        
-        # 插件配置
-        cat >> .config <<'EOF'
-        CONFIG_PACKAGE_ipv6helper=y
-        CONFIG_PACKAGE_luci-app-passwall=y
-        CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Xray=y
-        CONFIG_PACKAGE_luci-app-passwall_INCLUDE_SingBox=y
-        CONFIG_PACKAGE_luci-app-ddns=y
-        CONFIG_PACKAGE_ddns-scripts=y
-        # CONFIG_PACKAGE_ddns-scripts_aliyun=y
-        # CONFIG_PACKAGE_ddns-scripts_dnspod=y
-        CONFIG_PACKAGE_luci-app-vlmcsd=y
-        CONFIG_PACKAGE_luci-app-smartdns=y
-        CONFIG_PACKAGE_luci-app-ipsec-vpnd=y
-        CONFIG_PACKAGE_luci-app-usb-printer=y
-        CONFIG_PACKAGE_luci-app-autoreboot=y
-        CONFIG_PACKAGE_luci-app-filetransfer=y
-        CONFIG_PACKAGE_luci-theme-argon=y
-        CONFIG_PACKAGE_luci-app-argon-config=y
-        EOF
-        
+
+        # 插件配置（注意：以下写入行前不能有缩进）
+cat >> .config <<'EOF'
+CONFIG_PACKAGE_ipv6helper=y
+CONFIG_PACKAGE_luci-app-passwall=y
+CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Xray=y
+CONFIG_PACKAGE_luci-app-passwall_INCLUDE_SingBox=y
+CONFIG_PACKAGE_luci-app-ddns=y
+CONFIG_PACKAGE_ddns-scripts=y
+# CONFIG_PACKAGE_ddns-scripts_aliyun=y
+# CONFIG_PACKAGE_ddns-scripts_dnspod=y
+CONFIG_PACKAGE_luci-app-vlmcsd=y
+CONFIG_PACKAGE_luci-app-smartdns=y
+CONFIG_PACKAGE_luci-app-ipsec-vpnd=y
+CONFIG_PACKAGE_luci-app-usb-printer=y
+CONFIG_PACKAGE_luci-app-autoreboot=y
+CONFIG_PACKAGE_luci-app-filetransfer=y
+CONFIG_PACKAGE_luci-theme-argon=y
+CONFIG_PACKAGE_luci-app-argon-config=y
+EOF
+
+        # 清理并生成最终配置：删除可能导致问题或不想自动构建的条目
+        sed -i '/CONFIG_PACKAGE_geoview/d' .config
+        sed -i '/CONFIG_PACKAGE_luci-app-geoview/d' .config
+
         make defconfig
 
     - name: Download package
@@ -151,11 +148,18 @@ jobs:
       run: |
         cd openwrt
         echo "Downloading packages..."
-        # allow download step to continue even if some packages fail to download, we'll clean small files afterwards
+        # 允许部分包下载失败，后续会清理小/损坏文件并重新尝试构建
         make download -j8 || true
-        # remove small/incomplete archives
-        find dl -size -1024c -exec ls -l {} \;
-        find dl -size -1024c -exec rm -f {} \;
+        # 列出并删除小于 1K 的文件（常为错误或占位文件）
+        find dl -type f -size -1024c -exec ls -l {} \; -exec rm -f {} \;
+
+    - name: Clean known-bad dl files (force re-download of problematic archives)
+      run: |
+        cd openwrt
+        # 若你知道特定包会变更（例如 wsdd2），可以删除其缓存文件以便重新拉取
+        rm -f dl/wsdd2-*.tar.* || true
+        # 清理其它可能的临时/损坏文件
+        find dl -type f -name "*-corrupt*" -delete || true
 
     - name: Set up Go 1.24 (required for some feed packages)
       uses: actions/setup-go@v4
@@ -167,35 +171,40 @@ jobs:
       run: |
         cd openwrt
         echo "Starting build process..."
-        
+
         echo "1. Compiling host tools..."
-        make tools/compile -j$(nproc) || make tools/compile -j1 V=s
-        
+        if ! make tools/compile -j$(nproc); then
+          echo "tools_compile_failed=1" >> $GITHUB_OUTPUT
+          echo "status=failure" >> $GITHUB_OUTPUT
+          exit 1
+        fi
+
         echo "2. Compiling toolchain..."
-        make toolchain/compile -j$(nproc) || make toolchain/compile -j1 V=s
-        
+        if ! make toolchain/compile -j$(nproc); then
+          echo "toolchain_compile_failed=1" >> $GITHUB_OUTPUT
+          echo "status=failure" >> $GITHUB_OUTPUT
+          exit 1
+        fi
+
         echo "3. Compiling firmware..."
-        # 尝试多线程编译，失败则切单线程
+        # 优先多线程编译，失败时降级到单线程并输出详细日志
         if make -j$(nproc); then
-          echo "build_ok=1" >> $GITHUB_OUTPUT
           echo "status=success" >> $GITHUB_OUTPUT
         else
-          echo "Attempting single-threaded build for debugging..."
-          if make -j1; then
-            echo "build_ok=1" >> $GITHUB_OUTPUT
+          echo "Multi-thread build failed, retrying single-threaded..."
+          if make -j1 V=s; then
             echo "status=success" >> $GITHUB_OUTPUT
           else
-            echo "build_ok=0" >> $GITHUB_OUTPUT
             echo "status=failure" >> $GITHUB_OUTPUT
             exit 1
           fi
         fi
-        
+
         # --- 优化：提取设备名 ---
         grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*DEVICE_(.*)=y/\1/' > DEVICE_NAME || true
         [ -s DEVICE_NAME ] && echo "DEVICE_NAME=_$(cat DEVICE_NAME)" >> $GITHUB_ENV || echo "DEVICE_NAME=_Generic" >> $GITHUB_ENV
-        
-        echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
+
+        echo "FILE_DATE=_$(date +\"%Y%m%d%H%M\")" >> $GITHUB_ENV
 
     - name: Save Cache
       uses: actions/cache/save@v4
