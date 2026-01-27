@@ -15,6 +15,10 @@ env:
   UPLOAD_FIRMWARE: true
   UPLOAD_RELEASE: true
   CCACHE_DIR: /home/runner/.ccache
+  # --- 预定义变量以消除编辑器的黄色警告 ---
+  DEVICE_NAME: ""
+  FILE_DATE: ""
+  FIRMWARE: ""
 
 jobs:
   build:
@@ -50,62 +54,103 @@ jobs:
           git clone -b $REPO_BRANCH $REPO_URL openwrt
           ln -sf "${{ github.workspace }}/build/openwrt" "$GITHUB_WORKSPACE/openwrt"
 
+      - name: Compute feeds.conf.default hash
+        id: feeds_hash
+        run: |
+          # compute a runtime hash of feeds.conf.default (handle possible locations)
+          if [ -f "${{ github.workspace }}/openwrt/feeds.conf.default" ]; then
+            FEED_HASH=$(sha256sum "${{ github.workspace }}/openwrt/feeds.conf.default" | cut -d' ' -f1)
+          elif [ -f "${{ github.workspace }}/build/openwrt/feeds.conf.default" ]; then
+            FEED_HASH=$(sha256sum "${{ github.workspace }}/build/openwrt/feeds.conf.default" | cut -d' ' -f1)
+          else
+            FEED_HASH="no-feeds-conf"
+          fi
+          echo "feed_hash=${FEED_HASH}" >> $GITHUB_OUTPUT
+          echo "Computed feed hash: ${FEED_HASH}"
+
       - name: Restore Cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache@v4
         with:
           path: |
             openwrt/dl
             /home/runner/.ccache
-          key: ${{ runner.os }}-openwrt-${{ hashFiles('openwrt/feeds.conf.default') }}
+          key: ${{ runner.os }}-openwrt-${{ steps.feeds_hash.outputs.feed_hash }}
           restore-keys: |
-            ${{ runner.os }}-openwrt-${{ hashFiles('openwrt/feeds.conf.default') }}-
             ${{ runner.os }}-openwrt-
 
-      - name: Clean known-bad downloads (dl)
+      - name: Enable / Pull missing official feeds (add if absent)
+        working-directory: ${{ github.workspace }}/build/openwrt
         run: |
-          # remove any previously cached small/corrupted archives so downloads start fresh
-          rm -f "${{ github.workspace }}/build/openwrt/dl/wsdd2-*" || true
-          find "${{ github.workspace }}/build/openwrt/dl" -type f -size -1024c -delete || true
+          set -eux
+          FEEDS_CONF="feeds.conf.default"
+
+          # Ensure file exists
+          [ -f "$FEEDS_CONF" ] || touch "$FEEDS_CONF"
+
+          add_feed() {
+            name="$1"
+            url="$2"
+            if grep -qE "^[[:space:]]*src-(git|svn)[[:space:]]+$name[[:space:]]" "$FEEDS_CONF"; then
+              echo "Feed '$name' already present in $FEEDS_CONF"
+            else
+              echo "Adding feed: $name -> $url"
+              echo "src-git $name $url" >> "$FEEDS_CONF"
+            fi
+          }
+
+          # Official OpenWrt feeds - these supply common packages (bc, pciutils, wsdd2, libpam, ddns-scripts, wget-ssl, etc.)
+          add_feed packages https://github.com/openwrt/packages
+          add_feed luci https://github.com/openwrt/luci
+          add_feed routing https://github.com/openwrt/routing
+          add_feed telephony https://github.com/openwrt/telephony
+
+          echo "Updated $FEEDS_CONF:"
+          sed -n '1,200p' "$FEEDS_CONF" || true
 
       - name: Load Custom Feeds (DIY Part 1)
         run: |
           [ -e "$GITHUB_WORKSPACE/diy-part1.sh" ] && chmod +x "$GITHUB_WORKSPACE/diy-part1.sh" && cd openwrt && "$GITHUB_WORKSPACE/diy-part1.sh" || echo "diy-part1.sh not found"
 
-      - name: Update Feeds
+      - name: Update Feeds (refresh after enabling feeds)
+        working-directory: ${{ github.workspace }}/build/openwrt
         run: |
-          cd openwrt
-          ./scripts/feeds update -a
+          set -eux
+          ./scripts/feeds update -a || true
+          ./scripts/feeds install -a || true
 
-      - name: Install Feeds
+      - name: Install Feeds (custom handling)
+        working-directory: ${{ github.workspace }}/build/openwrt
         run: |
-          cd openwrt
+          set -eux
+          cd "${{ github.workspace }}/build/openwrt"
 
           # --- [关键修复 1] 替换 Golang 为 sbwml 版本 (必须保留，否则 Passwall 会报错) ---
           echo "Replacing Golang with sbwml version..."
           rm -rf feeds/packages/lang/golang
           git clone https://github.com/sbwml/packages_lang_golang -b 23.x feeds/packages/lang/golang
 
-          # --- [关键修复 2] 删除 v2ray-plugin (必须保留，否则报错) ---
-          echo "Removing broken v2ray-plugin..."
+          # --- [关键修复 2] 删除 v2ray-plugin (已知有问题)
+          echo "Removing broken v2ray-plugin (if present)..."
           rm -rf feeds/passwall_packages/v2ray-plugin || true
 
-          # 重新更新索引（在替换 feed 后刷新）
-          ./scripts/feeds update -a
+          # Re-update feeds and install by category (keeps previous behavior)
+          ./scripts/feeds update -a || true
 
-          # --- 分层安装 ---
-          ./scripts/feeds install -p passwall_packages -f -a
-          ./scripts/feeds install -p packages -f -a
-          ./scripts/feeds install -p luci -f -a
-          ./scripts/feeds install -p routing -f -a
-          ./scripts/feeds install -f -a
+          ./scripts/feeds install -p passwall_packages -f -a || true
+          ./scripts/feeds install -p packages -f -a || true
+          ./scripts/feeds install -p luci -f -a || true
+          ./scripts/feeds install -p routing -f -a || true
+          ./scripts/feeds install -f -a || true
 
       - name: Load Custom Configuration (DIY Part 2)
         run: |
           [ -e "$GITHUB_WORKSPACE/diy-part2.sh" ] && chmod +x "$GITHUB_WORKSPACE/diy-part2.sh" && cd openwrt && "$GITHUB_WORKSPACE/diy-part2.sh" || echo "diy-part2.sh not found"
 
       - name: Generate Configuration
+        working-directory: ${{ github.workspace }}/build/openwrt
         run: |
-          cd openwrt
+          set -eux
+          cd "${{ github.workspace }}/build/openwrt"
 
           # --- 目标设备配置 (示例，按需修改) ---
           # echo "CONFIG_TARGET_ramips=y" >> .config
@@ -119,7 +164,7 @@ jobs:
           echo "CONFIG_KO_SYMBOLS=n" >> .config
           echo "CONFIG_BUILD_LOG=n" >> .config
 
-          # 插件配置（heredoc lines must not be indented to avoid leading spaces)
+          # 插件配置（heredoc lines must not be indented)
           cat >> .config <<'EOF'
           CONFIG_PACKAGE_ipv6helper=y
           CONFIG_PACKAGE_luci-app-passwall=y
@@ -147,8 +192,10 @@ jobs:
 
       - name: Download package
         id: package
+        working-directory: ${{ github.workspace }}/build/openwrt
         run: |
-          cd openwrt
+          set -eux
+          cd "${{ github.workspace }}/build/openwrt"
           echo "Downloading packages..."
           # allow download step to continue even if some packages fail to download
           make download -j8 || true
@@ -156,8 +203,10 @@ jobs:
           find dl -type f -size -1024c -exec ls -l {} \; -exec rm -f {} \;
 
       - name: Clean known-bad dl files (force re-download of problematic archives)
+        working-directory: ${{ github.workspace }}/build/openwrt
         run: |
-          cd openwrt
+          set -eux
+          cd "${{ github.workspace }}/build/openwrt"
           # Remove specific cached archives that are known to produce hash mismatches (if present)
           rm -f dl/wsdd2-*.tar.* || true
           find dl -type f -name "*-corrupt*" -delete || true
@@ -169,8 +218,10 @@ jobs:
 
       - name: Compile the firmware
         id: compile
+        working-directory: ${{ github.workspace }}/build/openwrt
         run: |
-          cd openwrt
+          set -eux
+          cd "${{ github.workspace }}/build/openwrt"
           echo "Starting build process..."
 
           echo "1. Compiling host tools..."
@@ -208,13 +259,13 @@ jobs:
           echo "FILE_DATE=_$(date +\"%Y%m%d%H%M\")" >> $GITHUB_ENV
 
       - name: Save Cache
-        uses: actions/cache/save@v4
         if: steps.compile.outputs.status == 'success'
+        uses: actions/cache@v4
         with:
           path: |
             openwrt/dl
             /home/runner/.ccache
-          key: ${{ runner.os }}-openwrt-${{ hashFiles('openwrt/feeds.conf.default') }}-${{ github.run_id }}
+          key: ${{ runner.os }}-openwrt-${{ steps.feeds_hash.outputs.feed_hash }}
 
       - name: Check space usage
         if: (!cancelled())
