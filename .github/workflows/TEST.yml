@@ -58,6 +58,8 @@ jobs:
           sudo -E apt-get -qq autoremove --purge
           sudo -E apt-get -qq clean
           sudo timedatectl set-timezone "$TZ"
+          + export CC="ccache gcc"
+          + export CXX="ccache g++"
           mkdir -p "${{ github.workspace }}/build"
 
       # --- 3. 克隆源码 ---
@@ -181,7 +183,7 @@ jobs:
       - name: Download package
         working-directory: ${{ github.workspace }}/build/openwrt
         run: |
-          make download -j8 || true
+          make download -j16 || true
           find dl -size -1024c -exec ls -l {} \;
           find dl -size -1024c -exec rm -f {} \;
 
@@ -192,7 +194,7 @@ jobs:
           echo "Starting build process..."
           make tools/compile -j$(nproc) || make tools/compile -j1 V=s
           make toolchain/compile -j$(nproc) || make toolchain/compile -j1 V=s
-          make -j$(nproc) || make -j1 || make -j1 V=s
+          make -j$(nproc) || make -j1 V=s
           
           echo "status=success" >> $GITHUB_OUTPUT
           
