@@ -1,4 +1,5 @@
-name: Build LEDE TEST
+name: Build LEDE Official Method 2
+
 on:
   workflow_dispatch:
 
@@ -58,8 +59,6 @@ jobs:
           sudo -E apt-get -qq autoremove --purge
           sudo -E apt-get -qq clean
           sudo timedatectl set-timezone "$TZ"
-          export CC="ccache gcc"
-          export CXX="ccache g++"
           mkdir -p "${{ github.workspace }}/build"
 
       # --- 3. 克隆源码 ---
@@ -73,47 +72,52 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            build/openwrt/dl
+            openwrt/dl
             /home/runner/.ccache
           key: ${{ runner.os }}-openwrt-${{ hashFiles('openwrt/feeds.conf.default') }}
           restore-keys: |
             ${{ runner.os }}-openwrt-
 
-      # --- 4. 修改 Feeds 源 (DIY Part 1) ---
+      # --- 4. 修改 Feeds (DIY Part 1) ---
+      # 注意：既然用了方法2，DIY Part 1 里其实不需要再添加 passwall 源了，但保留也没坏处
       - name: Load Custom Feeds (DIY Part 1)
         run: |
-          [ -e "$GITHUB_WORKSPACE/diy-part1.sh" ] && chmod +x "$GITHUB_WORKSPACE/diy-part1.sh" && cd build/openwrt && "$GITHUB_WORKSPACE/diy-part1.sh" || echo "diy-part1.sh not found"
+          [ -e "$GITHUB_WORKSPACE/diy-part1.sh" ] && chmod +x "$GITHUB_WORKSPACE/diy-part1.sh" && cd openwrt && "$GITHUB_WORKSPACE/diy-part1.sh" || echo "diy-part1.sh not found"
 
-      # --- 5. 更新 Feeds ---
-      - name: Update Feeds
-        working-directory: ${{ github.workspace }}/build/openwrt
-        run: ./scripts/feeds update -a
-
-      # --- 6. 替换组件 (Golang & 清理冲突) ---
-      - name: Replace Components
+      # --- 5. [核心步骤] 更新、安装并执行官方方法2 ---
+      - name: Update, Install & Patch Feeds (Method 2)
         working-directory: ${{ github.workspace }}/build/openwrt
         run: |
-          # 1. 替换 Golang (sbwml 23.x)
+          # 1. 常规更新和安装 (先让系统把基础依赖拉下来)
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+          # 2. --- [官方方法 2] 移除冲突包并克隆最新源码 ---
+          echo "Executing Official Method 2..."
+          
+          # 移除 feeds 中冲突的核心库 (xray, sing-box, hysteria, geoview 等)
+          rm -rf feeds/packages/net/{xray-core,v2ray-geodata,sing-box,chinadns-ng,dns2socks,hysteria,ipt2socks,microsocks,naiveproxy,shadowsocks-libev,shadowsocks-rust,shadowsocksr-libev,simple-obfs,tcping,trojan-plus,tuic-client,v2ray-plugin,xray-plugin,geoview,shadow-tls}
+          
+          # 移除 feeds 中过时的 luci app
+          rm -rf feeds/luci/applications/luci-app-passwall
+
+          # 克隆最新源码到 package/ 目录 (优先级最高)
+          git clone https://github.com/Openwrt-Passwall/openwrt-passwall-packages package/passwall-packages
+          git clone https://github.com/Openwrt-Passwall/openwrt-passwall package/passwall-luci
+
+          # 3. --- [必须保留] 替换 Golang ---
+          # 即使使用了官方方法2，新版 Passwall 仍强依赖 Go 1.23+，而 LEDE 自带的 Go 太老
           echo "Replacing Golang with sbwml version..."
           rm -rf feeds/packages/lang/golang
           git clone https://github.com/sbwml/packages_lang_golang -b 23.x feeds/packages/lang/golang
 
-          # 2. 清理 LEDE 自带的旧版插件
-          echo "Cleaning conflicting packages..."
-          rm -rf feeds/packages/net/xray-core
-          rm -rf feeds/packages/net/hysteria
-          rm -rf feeds/packages/net/sing-box
-          rm -rf feeds/packages/net/v2ray-plugin
+          # 4. 再次安装一次，确保所有新包被正确链接
+          ./scripts/feeds install -a
 
-      # --- 7. 安装 Feeds ---
-      - name: Install Feeds
-        working-directory: ${{ github.workspace }}/build/openwrt
-        run: ./scripts/feeds install -a
-
-      # --- 8. 配置生成 ---
+      # --- 6. 配置生成 ---
       - name: Load Custom Configuration (DIY Part 2)
         run: |
-          [ -e "$GITHUB_WORKSPACE/diy-part2.sh" ] && chmod +x "$GITHUB_WORKSPACE/diy-part2.sh" && cd build/openwrt && "$GITHUB_WORKSPACE/diy-part2.sh" || echo "diy-part2.sh not found"
+          [ -e "$GITHUB_WORKSPACE/diy-part2.sh" ] && chmod +x "$GITHUB_WORKSPACE/diy-part2.sh" && cd openwrt && "$GITHUB_WORKSPACE/diy-part2.sh" || echo "diy-part2.sh not found"
 
       - name: Generate Configuration
         working-directory: ${{ github.workspace }}/build/openwrt
@@ -148,7 +152,8 @@ jobs:
           CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Hysteria=y
           CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Hysteria2=y
           
-          # --- [关键修改] 启用 Geoview (Sing-box 分流需要) ---
+          # 启用 Geoview (Sing-box 分流需要)
+          # 注意：虽然我们在上面删除了 feeds 里的 geoview，但 package/passwall-packages 里自带了新的 geoview
           CONFIG_PACKAGE_geoview=y
           CONFIG_PACKAGE_luci-app-geoview=y
           
@@ -164,21 +169,21 @@ jobs:
           CONFIG_PACKAGE_luci-theme-argon=y
           CONFIG_PACKAGE_luci-app-argon-config=y
           EOF
-
+          
           make defconfig
 
-      # --- 9. 修复编译错误 ---
+      # --- 7. 修复编译错误 ---
       - name: Fix Compile Errors
         working-directory: ${{ github.workspace }}/build/openwrt
         run: |
           find package/libs -name "Makefile" -exec sed -i 's/-Werror//g' {} +
           find package -name "Makefile" -exec sed -i 's/git\.openwrt\.org\/project/github\.com\/openwrt/g' {} +
 
-      # --- 10. 下载与编译 ---
+      # --- 8. 下载与编译 ---
       - name: Download package
         working-directory: ${{ github.workspace }}/build/openwrt
         run: |
-          make download -j16 || true
+          make download -j8 || true
           find dl -size -1024c -exec ls -l {} \;
           find dl -size -1024c -exec rm -f {} \;
 
@@ -189,7 +194,7 @@ jobs:
           echo "Starting build process..."
           make tools/compile -j$(nproc) || make tools/compile -j1 V=s
           make toolchain/compile -j$(nproc) || make toolchain/compile -j1 V=s
-          make -j$(nproc) || make -j1 V=s
+          make -j$(nproc) || make -j1 || make -j1 V=s
           
           echo "status=success" >> $GITHUB_OUTPUT
           
@@ -198,13 +203,13 @@ jobs:
           
           echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
 
-      # --- 11. 收尾工作 ---
+      # --- 9. 收尾工作 ---
       - name: Save Cache
         if: steps.compile.outputs.status == 'success'
         uses: actions/cache@v4
         with:
           path: |
-            build/openwrt/dl
+            openwrt/dl
             /home/runner/.ccache
           key: ${{ runner.os }}-openwrt-${{ hashFiles('openwrt/feeds.conf.default') }}
 
@@ -217,14 +222,14 @@ jobs:
         if: steps.compile.outputs.status == 'success' && env.UPLOAD_BIN_DIR == 'true'
         with:
           name: OpenWrt_bin${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
-          path: build/openwrt/bin
+          path: openwrt/bin
 
       - name: Organize files
         id: organize
         if: env.UPLOAD_FIRMWARE == 'true' && !cancelled()
         run: |
-          if [ -d "build/openwrt/bin/targets" ]; then
-            cd build/openwrt/bin/targets/*/*
+          if [ -d "openwrt/bin/targets" ]; then
+            cd openwrt/bin/targets/*/*
             rm -rf packages
             echo "FIRMWARE=$PWD" >> $GITHUB_ENV
             echo "status=success" >> $GITHUB_OUTPUT
