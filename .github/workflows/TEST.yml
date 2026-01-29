@@ -1,5 +1,4 @@
 name: Build LEDE TEST
-
 on:
   workflow_dispatch:
 
@@ -29,22 +28,20 @@ jobs:
         with:
           fetch-depth: 1
 
-      # --- [替换方案] 使用原生命令清理磁盘 (不依赖第三方 Action) ---
+      # --- 1. 清理磁盘 ---
       - name: Free Disk Space
         run: |
           echo "Freeing disk space..."
           sudo -E apt-get -qq autoremove --purge
           sudo -E apt-get -qq clean
-          # 删除不再需要的巨型软件库
           sudo rm -rf /usr/share/dotnet
           sudo rm -rf /usr/local/lib/android
           sudo rm -rf /opt/ghc
           sudo rm -rf /opt/hostedtoolcache/CodeQL
-          # 清理 Docker 镜像
           sudo docker image prune --all --force
-          echo "Disk space freed."
           df -hT
 
+      # --- 2. 初始化环境 ---
       - name: Initialization Environment
         env:
           DEBIAN_FRONTEND: noninteractive
@@ -63,6 +60,7 @@ jobs:
           sudo timedatectl set-timezone "$TZ"
           mkdir -p "${{ github.workspace }}/build"
 
+      # --- 3. 克隆源码 ---
       - name: Clone Source Code
         working-directory: ${{ github.workspace }}/build
         run: |
@@ -79,26 +77,38 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-openwrt-
 
-      # 执行 diy-part1.sh (Passwall 源已在此脚本中添加)
+      # --- 4. 修改 Feeds 源 (DIY Part 1) ---
       - name: Load Custom Feeds (DIY Part 1)
         run: |
           [ -e "$GITHUB_WORKSPACE/diy-part1.sh" ] && chmod +x "$GITHUB_WORKSPACE/diy-part1.sh" && cd openwrt && "$GITHUB_WORKSPACE/diy-part1.sh" || echo "diy-part1.sh not found"
 
-      - name: Update and Install Feeds
+      # --- 5. 更新 Feeds ---
+      - name: Update Feeds
+        working-directory: ${{ github.workspace }}/build/openwrt
+        run: ./scripts/feeds update -a
+
+      # --- 6. 替换组件 (Golang & 清理冲突) ---
+      - name: Replace Components
         working-directory: ${{ github.workspace }}/build/openwrt
         run: |
-          # 1. 更新 Feeds
-          ./scripts/feeds update -a
-          
-          # 2. --- [必须保留] 替换 Golang 为 sbwml 版本 ---
+          # 1. 替换 Golang (sbwml 23.x)
           echo "Replacing Golang with sbwml version..."
           rm -rf feeds/packages/lang/golang
           git clone https://github.com/sbwml/packages_lang_golang -b 23.x feeds/packages/lang/golang
-          
-          # 3. 安装 Feeds
-          ./scripts/feeds update -a
-          ./scripts/feeds install -a
 
+          # 2. 清理 LEDE 自带的旧版插件
+          echo "Cleaning conflicting packages..."
+          rm -rf feeds/packages/net/xray-core
+          rm -rf feeds/packages/net/hysteria
+          rm -rf feeds/packages/net/sing-box
+          rm -rf feeds/packages/net/v2ray-plugin
+
+      # --- 7. 安装 Feeds ---
+      - name: Install Feeds
+        working-directory: ${{ github.workspace }}/build/openwrt
+        run: ./scripts/feeds install -a
+
+      # --- 8. 配置生成 ---
       - name: Load Custom Configuration (DIY Part 2)
         run: |
           [ -e "$GITHUB_WORKSPACE/diy-part2.sh" ] && chmod +x "$GITHUB_WORKSPACE/diy-part2.sh" && cd openwrt && "$GITHUB_WORKSPACE/diy-part2.sh" || echo "diy-part2.sh not found"
@@ -108,9 +118,8 @@ jobs:
         run: |
           cd "${{ github.workspace }}/build/openwrt"
 
-          # 移除 geoview
-          find feeds -name "Makefile" -exec sed -i 's/+geoview//g' {} +
-          find feeds -name "Makefile" -exec sed -i 's/+luci-app-geoview//g' {} +
+          # --- [关键修改] 这里不再删除 geoview 的依赖 ---
+          # 之前删除 geoview 的 sed 命令已移除
 
           echo "CONFIG_CCACHE=y" >> .config
           echo "CONFIG_SDK=n" >> .config
@@ -122,15 +131,29 @@ jobs:
           cat >> .config <<'EOF'
           CONFIG_PACKAGE_ipv6helper=y
           
-          # Passwall 配置
+          # 强制使用 nftables (Firewall4)
+          CONFIG_PACKAGE_firewall=n
+          CONFIG_PACKAGE_iptables=n
+          CONFIG_PACKAGE_ip6tables=n
+          CONFIG_PACKAGE_firewall4=y
+          CONFIG_PACKAGE_nftables=y
+          CONFIG_PACKAGE_kmod-nft-core=y
+          CONFIG_PACKAGE_kmod-nft-fib=y
+          CONFIG_PACKAGE_kmod-nft-nat=y
+          CONFIG_PACKAGE_kmod-nft-offload=y
+          
+          # Passwall 及组件
           CONFIG_PACKAGE_luci-app-passwall=y
           CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Xray=y
           CONFIG_PACKAGE_luci-app-passwall_INCLUDE_SingBox=y
-          # Hysteria 支持
           CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Hysteria=y
           CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Hysteria2=y
           
-          # 其他工具
+          # --- [关键修改] 启用 Geoview (Sing-box 分流需要) ---
+          CONFIG_PACKAGE_geoview=y
+          CONFIG_PACKAGE_luci-app-geoview=y
+          
+          # 工具
           CONFIG_PACKAGE_luci-app-ddns=y
           CONFIG_PACKAGE_ddns-scripts=y
           CONFIG_PACKAGE_luci-app-vlmcsd=y
@@ -143,19 +166,18 @@ jobs:
           CONFIG_PACKAGE_luci-app-argon-config=y
           EOF
 
-          sed -i '/CONFIG_PACKAGE_geoview/d' .config
-          sed -i '/CONFIG_PACKAGE_luci-app-geoview/d' .config
-
+          # --- [关键修改] 这里不再清理 geoview 配置 ---
+          
           make defconfig
 
+      # --- 9. 修复编译错误 ---
       - name: Fix Compile Errors
         working-directory: ${{ github.workspace }}/build/openwrt
         run: |
-          # 移除 -Werror (将警告视为错误)
           find package/libs -name "Makefile" -exec sed -i 's/-Werror//g' {} +
-          # 修复连接问题
           find package -name "Makefile" -exec sed -i 's/git\.openwrt\.org\/project/github\.com\/openwrt/g' {} +
 
+      # --- 10. 下载与编译 ---
       - name: Download package
         working-directory: ${{ github.workspace }}/build/openwrt
         run: |
@@ -170,7 +192,6 @@ jobs:
           echo "Starting build process..."
           make tools/compile -j$(nproc) || make tools/compile -j1 V=s
           make toolchain/compile -j$(nproc) || make toolchain/compile -j1 V=s
-          
           make -j$(nproc) || make -j1 || make -j1 V=s
           
           echo "status=success" >> $GITHUB_OUTPUT
@@ -178,9 +199,9 @@ jobs:
           grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*DEVICE_(.*)=y/\1/' > DEVICE_NAME
           [ -s DEVICE_NAME ] && echo "DEVICE_NAME=_$(cat DEVICE_NAME)" >> $GITHUB_ENV || echo "DEVICE_NAME=_Generic" >> $GITHUB_ENV
           
-          # 生成时间戳 (无引号，避免错误)
           echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
 
+      # --- 11. 收尾工作 ---
       - name: Save Cache
         if: steps.compile.outputs.status == 'success'
         uses: actions/cache@v4
