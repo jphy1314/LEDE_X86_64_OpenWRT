@@ -1,4 +1,4 @@
-name: Build LEDE Test
+name: Build LEDE TEST
 
 on:
   workflow_dispatch:
@@ -29,16 +29,21 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Free Disk Space (Ubuntu)
-        uses: jlumbroso/free-disk-space-action@v1.3.1
-        with:
-          tool-cache: true
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          docker-images: true
-          swap-storage: true
+      # --- [替换方案] 使用原生命令清理磁盘 (不依赖第三方 Action) ---
+      - name: Free Disk Space
+        run: |
+          echo "Freeing disk space..."
+          sudo -E apt-get -qq autoremove --purge
+          sudo -E apt-get -qq clean
+          # 删除不再需要的巨型软件库
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          # 清理 Docker 镜像
+          sudo docker image prune --all --force
+          echo "Disk space freed."
+          df -hT
 
       - name: Initialization Environment
         env:
@@ -74,7 +79,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-openwrt-
 
-      # 执行 diy-part1.sh (这里已经处理了 Passwall 的源替换)
+      # 执行 diy-part1.sh (Passwall 源已在此脚本中添加)
       - name: Load Custom Feeds (DIY Part 1)
         run: |
           [ -e "$GITHUB_WORKSPACE/diy-part1.sh" ] && chmod +x "$GITHUB_WORKSPACE/diy-part1.sh" && cd openwrt && "$GITHUB_WORKSPACE/diy-part1.sh" || echo "diy-part1.sh not found"
@@ -82,18 +87,15 @@ jobs:
       - name: Update and Install Feeds
         working-directory: ${{ github.workspace }}/build/openwrt
         run: |
-          # 1. 更新 Feeds (下载官方包和你在脚本里加的 Passwall)
+          # 1. 更新 Feeds
           ./scripts/feeds update -a
           
-          # 2. --- [必须保留] 替换 Golang ---
-          # 必须等 update 下载了旧 Golang 后，才能在这里删除并替换
+          # 2. --- [必须保留] 替换 Golang 为 sbwml 版本 ---
           echo "Replacing Golang with sbwml version..."
           rm -rf feeds/packages/lang/golang
           git clone https://github.com/sbwml/packages_lang_golang -b 23.x feeds/packages/lang/golang
           
-          # 3. --- [精简] 这里不再需要手动删除 Passwall 了，因为 part1 脚本已经阻止了旧版下载 ---
-          
-          # 4. 安装
+          # 3. 安装 Feeds
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
@@ -149,7 +151,9 @@ jobs:
       - name: Fix Compile Errors
         working-directory: ${{ github.workspace }}/build/openwrt
         run: |
+          # 移除 -Werror (将警告视为错误)
           find package/libs -name "Makefile" -exec sed -i 's/-Werror//g' {} +
+          # 修复连接问题
           find package -name "Makefile" -exec sed -i 's/git\.openwrt\.org\/project/github\.com\/openwrt/g' {} +
 
       - name: Download package
@@ -174,6 +178,7 @@ jobs:
           grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*DEVICE_(.*)=y/\1/' > DEVICE_NAME
           [ -s DEVICE_NAME ] && echo "DEVICE_NAME=_$(cat DEVICE_NAME)" >> $GITHUB_ENV || echo "DEVICE_NAME=_Generic" >> $GITHUB_ENV
           
+          # 生成时间戳 (无引号，避免错误)
           echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
 
       - name: Save Cache
