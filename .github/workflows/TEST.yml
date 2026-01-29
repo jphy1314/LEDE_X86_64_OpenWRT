@@ -71,7 +71,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            openwrt/dl
+            build/openwrt/dl
             /home/runner/.ccache
           key: ${{ runner.os }}-openwrt-${{ hashFiles('openwrt/feeds.conf.default') }}
           restore-keys: |
@@ -80,7 +80,7 @@ jobs:
       # --- 4. 修改 Feeds 源 (DIY Part 1) ---
       - name: Load Custom Feeds (DIY Part 1)
         run: |
-          [ -e "$GITHUB_WORKSPACE/diy-part1.sh" ] && chmod +x "$GITHUB_WORKSPACE/diy-part1.sh" && cd openwrt && "$GITHUB_WORKSPACE/diy-part1.sh" || echo "diy-part1.sh not found"
+          [ -e "$GITHUB_WORKSPACE/diy-part1.sh" ] && chmod +x "$GITHUB_WORKSPACE/diy-part1.sh" && cd build/openwrt && "$GITHUB_WORKSPACE/diy-part1.sh" || echo "diy-part1.sh not found"
 
       # --- 5. 更新 Feeds ---
       - name: Update Feeds
@@ -111,7 +111,7 @@ jobs:
       # --- 8. 配置生成 ---
       - name: Load Custom Configuration (DIY Part 2)
         run: |
-          [ -e "$GITHUB_WORKSPACE/diy-part2.sh" ] && chmod +x "$GITHUB_WORKSPACE/diy-part2.sh" && cd openwrt && "$GITHUB_WORKSPACE/diy-part2.sh" || echo "diy-part2.sh not found"
+          [ -e "$GITHUB_WORKSPACE/diy-part2.sh" ] && chmod +x "$GITHUB_WORKSPACE/diy-part2.sh" && cd build/openwrt && "$GITHUB_WORKSPACE/diy-part2.sh" || echo "diy-part2.sh not found"
 
       - name: Generate Configuration
         working-directory: ${{ github.workspace }}/build/openwrt
@@ -207,7 +207,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            openwrt/dl
+            build/openwrt/dl
             /home/runner/.ccache
           key: ${{ runner.os }}-openwrt-${{ hashFiles('openwrt/feeds.conf.default') }}
 
@@ -220,14 +220,14 @@ jobs:
         if: steps.compile.outputs.status == 'success' && env.UPLOAD_BIN_DIR == 'true'
         with:
           name: OpenWrt_bin${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
-          path: openwrt/bin
+          path: build/openwrt/bin
 
       - name: Organize files
         id: organize
         if: env.UPLOAD_FIRMWARE == 'true' && !cancelled()
         run: |
-          if [ -d "openwrt/bin/targets" ]; then
-            cd openwrt/bin/targets/*/*
+          if [ -d "build/openwrt/bin/targets" ]; then
+            cd build/openwrt/bin/targets/*/*
             rm -rf packages
             echo "FIRMWARE=$PWD" >> $GITHUB_ENV
             echo "status=success" >> $GITHUB_OUTPUT
