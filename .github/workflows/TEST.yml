@@ -120,9 +120,6 @@ jobs:
         run: |
           cd "${{ github.workspace }}/build/openwrt"
 
-          # --- [关键修改] 这里不再删除 geoview 的依赖 ---
-          # 之前删除 geoview 的 sed 命令已移除
-
           echo "CONFIG_CCACHE=y" >> .config
           echo "CONFIG_SDK=n" >> .config
           echo "CONFIG_IB=n" >> .config
@@ -168,8 +165,6 @@ jobs:
           CONFIG_PACKAGE_luci-app-argon-config=y
           EOF
 
-          # --- [关键修改] 这里不再清理 geoview 配置 ---
-          
           make defconfig
 
       # --- 9. 修复编译错误 ---
