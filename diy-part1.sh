@@ -7,4 +7,4 @@ sed -i '/helloworld/d' feeds.conf.default
 
 # 2. 添加 PassWall 源 (必须两个都加：packages 是依赖，passwall 是主程序)
 echo 'src-git passwall_packages https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git;main' >> feeds.conf.default
-echo 'src-git passwall https://github.com/Openwrt-Passwall/openwrt-passwall.git;main' >> feeds.conf.default
+echo 'src-git passwall_luci https://github.com/Openwrt-Passwall/openwrt-passwall.git;main' >> feeds.conf.default
