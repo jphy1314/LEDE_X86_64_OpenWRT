@@ -86,10 +86,19 @@ jobs:
           # 1. 先更新 feeds (下载所有默认源码)
           ./scripts/feeds update -a
 
-          # 2. --- [Patch 1] 替换 Golang (最优先) ---
-          echo "Replacing Golang with sbwml version..."
+          # 2. --- [修改] 替换为支持 Go 1.24+ 的 Golang 版本 ---
+          echo "Replacing Golang with version supporting Go 1.24+..."
           rm -rf feeds/packages/lang/golang
-          git clone https://github.com/sbwml/packages_lang_golang -b 23.x feeds/packages/lang/golang
+          
+          # 使用支持 Go 1.24 的版本，这里使用 24.x 分支
+          git clone https://github.com/sbwml/packages_lang_golang -b 24.x feeds/packages/lang/golang
+          
+          # 如果 24.x 分支不存在，则回退到 master 分支
+          if [ $? -ne 0 ]; then
+            echo "24.x branch not found, trying master branch..."
+            rm -rf feeds/packages/lang/golang
+            git clone https://github.com/sbwml/packages_lang_golang -b master feeds/packages/lang/golang
+          fi
 
           # 3. --- [Patch 2] 执行官方方法 2 (处理 Passwall) ---
           echo "Executing Official Method 2..."
@@ -164,14 +173,21 @@ jobs:
           
           make defconfig
 
-      # --- 7. 修复编译错误 ---
+      # --- 修复编译错误 ---
       - name: Fix Compile Errors
         working-directory: ${{ github.workspace }}/build/openwrt
         run: |
           find package/libs -name "Makefile" -exec sed -i 's/-Werror//g' {} +
           find package -name "Makefile" -exec sed -i 's/git\.openwrt\.org\/project/github\.com\/openwrt/g' {} +
+          
+          # 检查 Go 版本，如果仍然有问题，可以选择禁用 hysteria 或降级版本
+          echo "Checking Go version..."
+          if [ -f "feeds/packages/lang/golang/version.mk" ]; then
+            echo "Current Go version in feeds:"
+            grep -i "go_version" feeds/packages/lang/golang/version.mk || true
+          fi
 
-      # --- 8. 下载与编译 ---
+      # --- 下载与编译 ---
       - name: Download package
         working-directory: ${{ github.workspace }}/build/openwrt
         run: |
@@ -184,8 +200,20 @@ jobs:
         working-directory: ${{ github.workspace }}/build/openwrt
         run: |
           echo "Starting build process..."
+          
+          # 先编译工具链和 Go
+          echo "Building tools and Go compiler..."
           make tools/compile -j$(nproc) || make tools/compile -j1 V=s
           make toolchain/compile -j$(nproc) || make toolchain/compile -j1 V=s
+          
+          # 检查 Go 编译器版本
+          echo "Checking Go compiler version..."
+          if [ -f "staging_dir/host/bin/go" ]; then
+            staging_dir/host/bin/go version || true
+          fi
+          
+          # 完整编译
+          echo "Building full firmware..."
           make -j$(nproc) || make -j1 || make -j1 V=s
           
           echo "status=success" >> $GITHUB_OUTPUT
@@ -195,7 +223,7 @@ jobs:
           
           echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
 
-      # --- 9. 收尾工作 ---
+      # --- 收尾工作 ---
       - name: Save Cache
         if: steps.compile.outputs.status == 'success'
         uses: actions/cache@v4
