@@ -1,4 +1,4 @@
-name: Build LEDE Perfect Method
+name: Build LEDE TEST
 
 on:
   workflow_dispatch:
