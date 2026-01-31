@@ -177,10 +177,24 @@ jobs:
       - name: Fix Compile Errors
         working-directory: ${{ github.workspace }}/build/openwrt
         run: |
+          # 1. 移除 -Werror 标志以避免严格警告导致编译失败
           find package/libs -name "Makefile" -exec sed -i 's/-Werror//g' {} +
+          
+          # 2. 替换 git.openwrt.org 为 github.com/openwrt 以解决网络访问问题
+          echo "Replacing git.openwrt.org with github.com/openwrt..."
+          find feeds -name "Makefile" -exec sed -i 's/git\.openwrt\.org\/project/github\.com\/openwrt/g' {} + 2>/dev/null || true
           find package -name "Makefile" -exec sed -i 's/git\.openwrt\.org\/project/github\.com\/openwrt/g' {} +
           
-          # 检查 Go 版本，如果仍然有问题，可以选择禁用 hysteria 或降级版本
+          # 3. 特别处理 ustream-ssl 的下载问题
+          echo "Fixing ustream-ssl download URL..."
+          if [ -f "feeds/packages/libs/ustream-ssl/Makefile" ]; then
+            sed -i 's|git.openwrt.org/project/ustream-ssl.git|github.com/openwrt/ustream-ssl.git|g' feeds/packages/libs/ustream-ssl/Makefile
+          fi
+          if [ -f "package/feeds/packages/ustream-ssl/Makefile" ]; then
+            sed -i 's|git.openwrt.org/project/ustream-ssl.git|github.com/openwrt/ustream-ssl.git|g' package/feeds/packages/ustream-ssl/Makefile
+          fi
+          
+          # 4. 检查 Go 版本
           echo "Checking Go version..."
           if [ -f "feeds/packages/lang/golang/version.mk" ]; then
             echo "Current Go version in feeds:"
@@ -191,9 +205,18 @@ jobs:
       - name: Download package
         working-directory: ${{ github.workspace }}/build/openwrt
         run: |
+          # 尝试下载所有包
+          echo "Downloading packages..."
           make download -j8 || true
+          
+          # 检查并重新下载失败的小文件
+          echo "Checking for failed downloads..."
           find dl -size -1024c -exec ls -l {} \;
           find dl -size -1024c -exec rm -f {} \;
+          
+          # 重试下载
+          echo "Retrying downloads..."
+          make download -j4 || true
 
       - name: Compile the firmware
         id: compile
@@ -215,6 +238,12 @@ jobs:
           # 完整编译
           echo "Building full firmware..."
           make -j$(nproc) || make -j1 || make -j1 V=s
+          
+          # 如果编译失败，尝试单独编译失败的包
+          if [ $? -ne 0 ]; then
+            echo "Build failed, trying to compile failed packages individually..."
+            make -j1 V=s 2>&1 | grep -A5 -B5 "ERROR:" || true
+          fi
           
           echo "status=success" >> $GITHUB_OUTPUT
           
