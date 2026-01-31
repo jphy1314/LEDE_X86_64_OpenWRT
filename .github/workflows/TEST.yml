@@ -79,42 +79,57 @@ jobs:
         run: |
           [ -e "${{ github.workspace }}/diy-part1.sh" ] && chmod +x "${{ github.workspace }}/diy-part1.sh" && cd openwrt && "${{ github.workspace }}/diy-part1.sh" || echo "diy-part1.sh not found"
 
-      # --- [重构] 采用 Update -> Clean -> Install 线性策略 ---
+      # --- [核心修复] 逻辑调整：Update -> Install(Base) -> Delete/Replace -> Install(Force) ---
       - name: Update, Patch & Install Feeds
         working-directory: ${{ github.workspace }}/build/openwrt
         run: |
-          # 1. 更新 Feeds (下载源码，但不安装)
+          # 1. 更新 Feeds
           ./scripts/feeds update -a
 
-          # 2. 替换 Golang (sbwml 23.x 对应 Go 1.23)
-          echo "Patching Golang..."
+          # 2. [关键] 先安装所有包。确保 bc, coreutils, libev 等基础依赖被正确安装和索引
+          # 此时会有冲突包被安装，但没关系，我们在下一步清理
+          echo "Installing base feeds..."
+          ./scripts/feeds install -a
+
+          # 3. 执行替换与清理工作
+          echo "Replacing custom packages..."
+          
+          # 3.1 替换 Golang
+          # 删除 feeds 源码
           rm -rf feeds/packages/lang/golang
+          # 删除已安装的软链接 (如果有)
+          rm -rf package/feeds/packages/golang
+          # 克隆新版 Go
           git clone https://github.com/sbwml/packages_lang_golang -b 23.x feeds/packages/lang/golang
 
-          # 3. 清理冲突包
-          # 直接在 feeds 目录中删除冲突的源码，这样后续 install 时就不会建立这些包的索引
-          # 从而避免 "Not overriding" 警告，同时确保基础包 (bc, coreutils) 不被误删
-          echo "Removing conflicting packages from feeds..."
+          # 3.2 清理冲突的 Passwall 相关包
+          CONFLICTS="xray-core v2ray-geodata sing-box chinadns-ng dns2socks hysteria ipt2socks microsocks naiveproxy shadowsocks-libev shadowsocks-rust shadowsocksr-libev simple-obfs tcping trojan-plus tuic-client v2ray-plugin xray-plugin geoview shadow-tls"
           
-          # 移除 feeds/packages/net 下的冲突包
-          rm -rf feeds/packages/net/{xray-core,v2ray-geodata,sing-box,chinadns-ng,dns2socks,hysteria,ipt2socks,microsocks,naiveproxy,shadowsocks-libev,shadowsocks-rust,shadowsocksr-libev,simple-obfs,tcping,trojan-plus,tuic-client,v2ray-plugin,xray-plugin,geoview,shadow-tls}
+          for pkg in $CONFLICTS; do
+            # 1. 删除 feeds 下的源码
+            find feeds/packages -name "$pkg" -type d -exec rm -rf {} + || true
+            # 2. 删除 package/feeds/ 下已安装的软链接 (这步至关重要，防止残留)
+            find package/feeds/packages -name "$pkg" -type l -exec rm -f {} + || true
+          done
           
-          # 移除旧的 Passwall Luci
+          # 移除旧的 passwall APP
           rm -rf feeds/luci/applications/luci-app-passwall
+          rm -rf package/feeds/luci/luci-app-passwall
 
-          # 4. 克隆 Passwall 到 package 目录 (优先级最高)
-          echo "Cloning Passwall..."
+          # 4. 克隆新版 Passwall 到 package/ 目录
+          echo "Cloning Passwall packages..."
           git clone https://github.com/Openwrt-Passwall/openwrt-passwall-packages package/passwall-packages
           git clone https://github.com/Openwrt-Passwall/openwrt-passwall package/passwall-luci
           
-          # 移除必定报错的旧插件 (v2ray-plugin 等)
+          # 移除必定报错的旧插件
+          echo "Removing broken legacy plugins..."
           rm -rf package/passwall-packages/v2ray-plugin
           rm -rf package/passwall-packages/xray-plugin
 
-          # 5. 安装所有 Feeds
-          # 使用 -f 强制安装，确保新添加的包被正确索引
-          # 此时因为 feeds 下的冲突包已被删除，所以不会有冲突警告，且基础依赖会被正常安装
-          echo "Installing feeds..."
+          # 5. [关键] 强制刷新安装
+          # 这次 install -a -f 会识别到新克隆的包，并更新索引
+          # 由于基础包(bc, libev)在第2步已经安装好了且未被删除，所以不会报 "dependency not exist"
+          echo "Force installing updated feeds..."
           ./scripts/feeds install -a -f
 
       - name: Load Custom Configuration (DIY Part 2)
