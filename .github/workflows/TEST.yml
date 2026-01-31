@@ -65,7 +65,6 @@ jobs:
           git clone -b $REPO_BRANCH --single-branch --depth 1 $REPO_URL openwrt
           ln -sf "${{ github.workspace }}/build/openwrt" "${{ github.workspace }}/openwrt"
 
-      # --- [修正] 移除 working-directory，直接使用完整路径以消除红色警告 ---
       - name: Restore Cache
         uses: actions/cache@v4
         with:
@@ -83,27 +82,28 @@ jobs:
       - name: Update, Patch & Install Feeds
         working-directory: ${{ github.workspace }}/build/openwrt
         run: |
-          # 1. 更新 Feeds 下载默认源码
+          # 1. 更新 Feeds
           ./scripts/feeds update -a
 
-          # 2. 替换 Golang (sbwml 仓库推荐使用 23.x 对应 Go 1.23)
+          # 2. 替换 Golang (使用 23.x 分支)
           rm -rf feeds/packages/lang/golang
           git clone https://github.com/sbwml/packages_lang_golang -b 23.x feeds/packages/lang/golang
 
-          # 3. 处理 Passwall 冲突与替换
-          echo "Executing Official Method 2..."
+          # 3. 清理冲突包 (解决 Not overriding 警告)
+          echo "Cleaning conflicting packages..."
+          CONFLICTS="xray-core v2ray-geodata sing-box chinadns-ng dns2socks hysteria ipt2socks microsocks naiveproxy shadowsocks-libev shadowsocks-rust shadowsocksr-libev simple-obfs tcping trojan-plus tuic-client v2ray-plugin xray-plugin geoview shadow-tls"
+          for pkg in $CONFLICTS; do
+            find feeds/packages -name "$pkg" -type d -exec rm -rf {} + || true
+          done
           
-          # 移除 feeds 里的冲突包
-          rm -rf feeds/packages/net/{xray-core,v2ray-geodata,sing-box,chinadns-ng,dns2socks,hysteria,ipt2socks,microsocks,naiveproxy,shadowsocks-libev,shadowsocks-rust,shadowsocksr-libev,simple-obfs,tcping,trojan-plus,tuic-client,v2ray-plugin,xray-plugin,geoview,shadow-tls}
-          
-          # 移除 feeds 里的旧 luci app
           rm -rf feeds/luci/applications/luci-app-passwall
 
-          # 克隆新源码到 package/ (优先级最高)
+          # 4. 克隆 Passwall
+          echo "Cloning Passwall packages..."
           git clone https://github.com/Openwrt-Passwall/openwrt-passwall-packages package/passwall-packages
           git clone https://github.com/Openwrt-Passwall/openwrt-passwall package/passwall-luci
 
-          # 4. 安装 Feeds
+          # 5. 安装 Feeds
           ./scripts/feeds install -a -f
 
       - name: Load Custom Configuration (DIY Part 2)
@@ -113,20 +113,14 @@ jobs:
       - name: Generate Configuration
         working-directory: ${{ github.workspace }}/build/openwrt
         run: |
-          # 开启 Ccache
           echo "CONFIG_CCACHE=y" >> .config
-          
-          # 关闭不必要的构建选项
           echo "CONFIG_SDK=n" >> .config
           echo "CONFIG_IB=n" >> .config
           echo "CONFIG_KO_SYMBOLS=n" >> .config
           echo "CONFIG_BUILD_LOG=n" >> .config
 
-          # --- 插件配置 ---
           cat >> .config <<'EOF'
           CONFIG_PACKAGE_ipv6helper=y
-          
-          # Firewall4 配置
           CONFIG_PACKAGE_firewall=n
           CONFIG_PACKAGE_iptables=n
           CONFIG_PACKAGE_ip6tables=n
@@ -136,15 +130,9 @@ jobs:
           CONFIG_PACKAGE_kmod-nft-fib=y
           CONFIG_PACKAGE_kmod-nft-nat=y
           CONFIG_PACKAGE_kmod-nft-offload=y
-          
-          # Passwall 及组件
           CONFIG_PACKAGE_luci-app-passwall=y
-          
-          # 启用 Geoview
           CONFIG_PACKAGE_geoview=y
           CONFIG_PACKAGE_luci-app-geoview=y
-          
-          # 常用工具
           CONFIG_PACKAGE_luci-app-ddns=y
           CONFIG_PACKAGE_ddns-scripts=y
           CONFIG_PACKAGE_luci-app-vlmcsd=y
@@ -162,71 +150,94 @@ jobs:
       - name: Fix Compile Errors
         working-directory: ${{ github.workspace }}/build/openwrt
         run: |
-          # 1. 扩大移除 -Werror 的范围
           find package -name "Makefile" -exec sed -i 's/-Werror//g' {} +
           
-          # 2. 替换 git.openwrt.org
-          echo "Replacing git.openwrt.org with github.com/openwrt..."
+          echo "Replacing git.openwrt.org..."
           find feeds -name "Makefile" -exec sed -i 's/git\.openwrt\.org\/project/github\.com\/openwrt/g' {} + 2>/dev/null || true
           find package -name "Makefile" -exec sed -i 's/git\.openwrt\.org\/project/github\.com\/openwrt/g' {} +
           
-          # 3. 修复 ustream-ssl 下载链接
-          echo "Fixing ustream-ssl download URL..."
+          echo "Fixing ustream-ssl..."
           grep -r "git.openwrt.org/project/ustream-ssl.git" package feeds || true
           find package feeds -name "Makefile" -exec sed -i 's|git.openwrt.org/project/ustream-ssl.git|github.com/openwrt/ustream-ssl.git|g' {} +
           
-          # 4. 检查 Go 版本
           echo "Checking Go version..."
-          if [ -d "feeds/packages/lang/golang" ]; then
-             ls -l feeds/packages/lang/golang
-          fi
+          if [ -d "feeds/packages/lang/golang" ]; then ls -l feeds/packages/lang/golang; fi
 
       - name: Download package
         working-directory: ${{ github.workspace }}/build/openwrt
         run: |
           echo "Downloading packages..."
           make download -j8 || true
-          
-          echo "Checking for failed downloads..."
-          find dl -size -1024c -exec ls -l {} \;
           find dl -size -1024c -exec rm -f {} \;
-          
-          echo "Retrying downloads..."
           make download -j4 || true
 
+      # --- [核心修改] 编译步骤：智能重试与错误日志提取 ---
       - name: Compile the firmware
         id: compile
         working-directory: ${{ github.workspace }}/build/openwrt
         run: |
           echo "Starting build process..."
           
-          # 优先编译工具链和 Go
+          # 1. 预编译工具链 (Toolchain)
+          # 工具链通常比较稳定，直接编译，失败则报错
+          echo "Building Tools & Toolchain..."
           make tools/compile -j$(nproc) || make tools/compile -j1 V=s
           make toolchain/compile -j$(nproc) || make toolchain/compile -j1 V=s
-          
-          # 检查 Go 编译器
+
+          # 2. 检查 Go 编译器
           if [ -f "staging_dir/host/bin/go" ]; then
             staging_dir/host/bin/go version || true
           fi
           
-          # 完整编译
+          # 3. 完整固件编译 (智能错误处理)
           echo "Building full firmware..."
-          make -j$(nproc) || make -j1 || make -j1 V=s
           
-          if [ $? -ne 0 ]; then
-            echo "Build failed!"
-            echo "status=failure" >> $GITHUB_OUTPUT
-            exit 1
+          # 尝试多线程编译
+          if make -j$(nproc); then
+            echo "::notice::Multi-thread build successful!"
+            echo "status=success" >> $GITHUB_OUTPUT
+          else
+            echo "::warning::Multi-thread build failed. Retrying single-thread with verbose logging to debug..."
+            
+            # 失败后，使用单线程 + 详细日志 (V=s)，并使用 tee 将日志同时输出到文件
+            # pipefail 确保如果 make 失败，整个命令返回失败
+            set -o pipefail
+            if ! make -j1 V=s 2>&1 | tee build.log; then
+              echo "::error::Build FAILED!"
+              
+              # --- 错误日志提取逻辑 ---
+              echo "========================================================"
+              echo "             ERROR LOG ANALYSIS                         "
+              echo "========================================================"
+              
+              # 1. 提取最后 100 行日志 (通常包含最后的报错)
+              echo "--- Last 100 lines of build.log ---"
+              tail -n 100 build.log
+              
+              echo ""
+              echo "--- Matched Errors (grep 'Error') ---"
+              # 2. 提取带有 Error 关键字的行 (忽略大小写)
+              grep -i "error" build.log | tail -n 20 || true
+              
+              echo ""
+              echo "--- Matched Make Failures (grep 'make[*:') ---"
+              # 3. 提取 Make 特定的错误标记
+              grep "make\[.*\]: \*\*\*" build.log | tail -n 20 || true
+              
+              echo "========================================================"
+              echo "status=failure" >> $GITHUB_OUTPUT
+              exit 1
+            else
+              echo "::notice::Single-thread build successful!"
+              echo "status=success" >> $GITHUB_OUTPUT
+            fi
           fi
-          
-          echo "status=success" >> $GITHUB_OUTPUT
           
           # 提取设备名称
           grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*DEVICE_(.*)=y/\1/' > DEVICE_NAME
           [ -s DEVICE_NAME ] && echo "DEVICE_NAME=_$(cat DEVICE_NAME)" >> $GITHUB_ENV || echo "DEVICE_NAME=_Generic" >> $GITHUB_ENV
           echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
 
-      # --- [修正] 移除 working-directory，直接使用完整路径以消除红色警告 ---
       - name: Save Cache
         if: steps.compile.outputs.status == 'success'
         uses: actions/cache@v4
@@ -257,7 +268,7 @@ jobs:
             echo "FIRMWARE=$PWD" >> $GITHUB_ENV
             echo "status=success" >> $GITHUB_OUTPUT
           else
-            echo "Target directory not found."
+            echo "Target directory not found. Build failed."
             echo "status=failure" >> $GITHUB_OUTPUT
           fi
 
