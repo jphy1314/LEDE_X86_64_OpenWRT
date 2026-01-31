@@ -79,58 +79,48 @@ jobs:
         run: |
           [ -e "${{ github.workspace }}/diy-part1.sh" ] && chmod +x "${{ github.workspace }}/diy-part1.sh" && cd openwrt && "${{ github.workspace }}/diy-part1.sh" || echo "diy-part1.sh not found"
 
-      # --- [核心修复] 策略：Update -> Install Baseline -> Replace -> Update Index -> Install New ---
       - name: Update, Patch & Install Feeds
         working-directory: ${{ github.workspace }}/build/openwrt
         run: |
-          # 1. Update Feeds (下载源码)
+          # 1. 更新 Feeds
+          echo "Updating feeds..."
           ./scripts/feeds update -a
 
-          # 2. [关键] 先安装所有默认包 (建立基准)
-          # 这一步确保 bc, coreutils, libev 等基础依赖被正确安装和索引
-          # 此时还没有删除任何包，所以不会报 "dependency missing"
-          echo "Installing baseline packages..."
-          ./scripts/feeds install -a
-
-          # 3. 执行修改 (删除旧包，克隆新包)
-          echo "Replacing Golang and cleaning conflicts..."
-          
-          # 3.1 替换 Golang
-          # 删除 feeds 下的源码
+          # 2. 替换 Golang (必须在 install 前)
+          echo "Replacing Golang..."
           rm -rf feeds/packages/lang/golang
-          # 删除 package/feeds/ 下已安装的软链接 (这一步必须做，否则后续不会重新链接新版)
-          rm -rf package/feeds/packages/golang
-          # 克隆新版 Golang
           git clone https://github.com/sbwml/packages_lang_golang -b 23.x feeds/packages/lang/golang
 
-          # 3.2 清理冲突的 Passwall 相关包
-          # 同样需要删除源码 + 删除已安装的软链接
+          # 3. 清理冲突包
+          echo "Cleaning conflicting packages..."
           CONFLICTS="xray-core v2ray-geodata sing-box chinadns-ng dns2socks hysteria ipt2socks microsocks naiveproxy shadowsocks-libev shadowsocks-rust shadowsocksr-libev simple-obfs tcping trojan-plus tuic-client v2ray-plugin xray-plugin geoview shadow-tls"
           
           for pkg in $CONFLICTS; do
             rm -rf feeds/packages/net/$pkg
-            rm -rf package/feeds/packages/$pkg
           done
           
           rm -rf feeds/luci/applications/luci-app-passwall
-          rm -rf package/feeds/luci/luci-app-passwall
 
-          # 3.3 克隆 Passwall 到 package/ (最高优先级)
-          echo "Cloning Passwall..."
+          # 4. 克隆 Passwall
+          echo "Cloning Passwall packages..."
           git clone https://github.com/Openwrt-Passwall/openwrt-passwall-packages package/passwall-packages
           git clone https://github.com/Openwrt-Passwall/openwrt-passwall package/passwall-luci
           
-          # 移除必定报错的旧插件
+          # 5. [核心修复] 删除编译失败的组件 (geoview 和 v2ray-plugin)
+          # 直接物理删除源码，确保编译系统直接跳过它们
+          echo "Removing broken packages..."
+          rm -rf package/passwall-packages/geoview
           rm -rf package/passwall-packages/v2ray-plugin
           rm -rf package/passwall-packages/xray-plugin
+          # 同时也删除 luci-app-geoview 以免依赖报错
+          rm -rf package/passwall-luci/luci-app-geoview
 
-          # 4. 刷新索引并重装
-          # update -i: 告诉 feeds 脚本，我们刚才删了一些包，加了一些包，请更新索引 (修复 golang/host 依赖问题)
-          echo "Refreshing feeds index..."
-          ./scripts/feeds update -i
-          
-          # install -a -f: 再次安装。由于基础包在第2步已经装好，这里主要负责安装新加入的 Golang 和 Passwall 依赖
-          echo "Installing new packages..."
+          # 6. 优先安装 Golang
+          echo "Installing Golang first..."
+          ./scripts/feeds install -p packages -f golang
+
+          # 7. 安装剩余包
+          echo "Installing all feeds..."
           ./scripts/feeds install -a -f
 
       - name: Load Custom Configuration (DIY Part 2)
@@ -149,6 +139,7 @@ jobs:
           cat >> .config <<'EOF'
           CONFIG_PACKAGE_ipv6helper=y
           
+          # Firewall4
           CONFIG_PACKAGE_firewall=n
           CONFIG_PACKAGE_iptables=n
           CONFIG_PACKAGE_ip6tables=n
@@ -159,13 +150,16 @@ jobs:
           CONFIG_PACKAGE_kmod-nft-nat=y
           CONFIG_PACKAGE_kmod-nft-offload=y
           
+          # Passwall
           CONFIG_PACKAGE_luci-app-passwall=y
-          # 禁用废弃插件
+          
+          # 显式禁用故障包
           CONFIG_PACKAGE_v2ray-plugin=n
           CONFIG_PACKAGE_xray-plugin=n
+          CONFIG_PACKAGE_geoview=n
+          CONFIG_PACKAGE_luci-app-geoview=n
           
-          CONFIG_PACKAGE_geoview=y
-          CONFIG_PACKAGE_luci-app-geoview=y
+          # 常用工具
           CONFIG_PACKAGE_luci-app-ddns=y
           CONFIG_PACKAGE_ddns-scripts=y
           CONFIG_PACKAGE_luci-app-vlmcsd=y
@@ -183,12 +177,15 @@ jobs:
       - name: Fix Compile Errors
         working-directory: ${{ github.workspace }}/build/openwrt
         run: |
+          # 移除 -Werror
           find package -name "Makefile" -exec sed -i 's/-Werror//g' {} +
           
+          # 替换 git.openwrt.org
           echo "Replacing git.openwrt.org..."
           find feeds -name "Makefile" -exec sed -i 's/git\.openwrt\.org\/project/github\.com\/openwrt/g' {} + 2>/dev/null || true
           find package -name "Makefile" -exec sed -i 's/git\.openwrt\.org\/project/github\.com\/openwrt/g' {} +
           
+          # 修复 ustream-ssl
           echo "Fixing ustream-ssl..."
           grep -r "git.openwrt.org/project/ustream-ssl.git" package feeds || true
           find package feeds -name "Makefile" -exec sed -i 's|git.openwrt.org/project/ustream-ssl.git|github.com/openwrt/ustream-ssl.git|g' {} +
@@ -210,44 +207,35 @@ jobs:
         run: |
           echo "Starting build process..."
           
-          # 1. 预编译工具链
           echo "Building Tools & Toolchain..."
           make tools/compile -j$(nproc) || make tools/compile -j1 V=s
           make toolchain/compile -j$(nproc) || make toolchain/compile -j1 V=s
 
-          # 2. 检查 Go 编译器
           if [ -f "staging_dir/host/bin/go" ]; then
+            echo "Go compiler:"
             staging_dir/host/bin/go version || true
           fi
           
-          # 3. 完整固件编译 (智能错误处理)
           echo "Building full firmware..."
-          
           if make -j$(nproc); then
             echo "::notice::Multi-thread build successful!"
             echo "status=success" >> $GITHUB_OUTPUT
           else
-            echo "::warning::Multi-thread build failed. Retrying single-thread with verbose logging to debug..."
-            
+            echo "::warning::Multi-thread build failed. Retrying single-thread with verbose logging..."
             set -o pipefail
             if ! make -j1 V=s 2>&1 | tee build.log; then
               echo "::error::Build FAILED!"
-              
               echo "========================================================"
               echo "             ERROR LOG ANALYSIS                         "
               echo "========================================================"
-              
-              echo "--- Last 100 lines of build.log ---"
-              tail -n 100 build.log
-              
+              echo "--- Last 50 lines of build.log ---"
+              tail -n 50 build.log
               echo ""
               echo "--- Matched Errors (grep 'Error') ---"
               grep -i "error" build.log | tail -n 20 || true
-              
               echo ""
               echo "--- Matched Make Failures (grep 'make[*:') ---"
               grep "make\[.*\]: \*\*\*" build.log | tail -n 20 || true
-              
               echo "========================================================"
               echo "status=failure" >> $GITHUB_OUTPUT
               exit 1
