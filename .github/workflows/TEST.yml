@@ -86,16 +86,16 @@ jobs:
           # 1. 先更新 feeds (下载所有默认源码)
           ./scripts/feeds update -a
 
-          # 2. --- [修改] 替换为支持 Go 1.24+ 的 Golang 版本 ---
-          echo "Replacing Golang with version supporting Go 1.24+..."
+          # 2. --- [修改] 替换为支持 Go 1.26+ 的 Golang 版本 ---
+          echo "Replacing Golang with version supporting Go 1.26+..."
           rm -rf feeds/packages/lang/golang
           
-          # 使用支持 Go 1.24 的版本，这里使用 24.x 分支
-          git clone https://github.com/sbwml/packages_lang_golang -b 24.x feeds/packages/lang/golang
+          # 使用支持 Go 1.26 的版本，这里使用 26.x 分支
+          git clone https://github.com/sbwml/packages_lang_golang -b 26.x feeds/packages/lang/golang
           
-          # 如果 24.x 分支不存在，则回退到 master 分支
+          # 如果 26.x 分支不存在，则回退到 master 分支
           if [ $? -ne 0 ]; then
-            echo "24.x branch not found, trying master branch..."
+            echo "26.x branch not found, trying master branch..."
             rm -rf feeds/packages/lang/golang
             git clone https://github.com/sbwml/packages_lang_golang -b master feeds/packages/lang/golang
           fi
@@ -149,10 +149,6 @@ jobs:
           
           # Passwall 及组件
           CONFIG_PACKAGE_luci-app-passwall=y
-          CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Xray=y
-          CONFIG_PACKAGE_luci-app-passwall_INCLUDE_SingBox=y
-          CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Hysteria=y
-          CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Hysteria2=y
           
           # 启用 Geoview
           CONFIG_PACKAGE_geoview=y
