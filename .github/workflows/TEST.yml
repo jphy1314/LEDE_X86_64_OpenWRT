@@ -79,46 +79,58 @@ jobs:
         run: |
           [ -e "${{ github.workspace }}/diy-part1.sh" ] && chmod +x "${{ github.workspace }}/diy-part1.sh" && cd openwrt && "${{ github.workspace }}/diy-part1.sh" || echo "diy-part1.sh not found"
 
-      # --- [核心修复] 逻辑：Update -> Replace -> Install Golang First -> Install All ---
+      # --- [核心修复] 策略：Update -> Install Baseline -> Replace -> Update Index -> Install New ---
       - name: Update, Patch & Install Feeds
         working-directory: ${{ github.workspace }}/build/openwrt
         run: |
-          # 1. 更新 Feeds (只下载源码)
+          # 1. Update Feeds (下载源码)
           ./scripts/feeds update -a
 
-          # 2. 替换 Golang 源码
-          # 注意：必须在 install 之前完成替换
-          echo "Replacing Golang..."
+          # 2. [关键] 先安装所有默认包 (建立基准)
+          # 这一步确保 bc, coreutils, libev 等基础依赖被正确安装和索引
+          # 此时还没有删除任何包，所以不会报 "dependency missing"
+          echo "Installing baseline packages..."
+          ./scripts/feeds install -a
+
+          # 3. 执行修改 (删除旧包，克隆新包)
+          echo "Replacing Golang and cleaning conflicts..."
+          
+          # 3.1 替换 Golang
+          # 删除 feeds 下的源码
           rm -rf feeds/packages/lang/golang
+          # 删除 package/feeds/ 下已安装的软链接 (这一步必须做，否则后续不会重新链接新版)
+          rm -rf package/feeds/packages/golang
+          # 克隆新版 Golang
           git clone https://github.com/sbwml/packages_lang_golang -b 23.x feeds/packages/lang/golang
 
-          # 3. 清理冲突的 Passwall 相关包
-          echo "Cleaning conflicts..."
+          # 3.2 清理冲突的 Passwall 相关包
+          # 同样需要删除源码 + 删除已安装的软链接
           CONFLICTS="xray-core v2ray-geodata sing-box chinadns-ng dns2socks hysteria ipt2socks microsocks naiveproxy shadowsocks-libev shadowsocks-rust shadowsocksr-libev simple-obfs tcping trojan-plus tuic-client v2ray-plugin xray-plugin geoview shadow-tls"
           
           for pkg in $CONFLICTS; do
             rm -rf feeds/packages/net/$pkg
+            rm -rf package/feeds/packages/$pkg
           done
           
           rm -rf feeds/luci/applications/luci-app-passwall
+          rm -rf package/feeds/luci/luci-app-passwall
 
-          # 4. 克隆 Passwall 到 package/
+          # 3.3 克隆 Passwall 到 package/ (最高优先级)
           echo "Cloning Passwall..."
           git clone https://github.com/Openwrt-Passwall/openwrt-passwall-packages package/passwall-packages
           git clone https://github.com/Openwrt-Passwall/openwrt-passwall package/passwall-luci
           
-          # 移除旧插件
+          # 移除必定报错的旧插件
           rm -rf package/passwall-packages/v2ray-plugin
           rm -rf package/passwall-packages/xray-plugin
 
-          # 5. [关键步骤] 优先安装 Golang
-          # 这一步解决了 "dependency on 'golang/host', which does not exist" 的问题
-          # 只有先安装了 golang，后续安装依赖 golang 的包时才能正确解析依赖
-          echo "Installing Golang first..."
-          ./scripts/feeds install -p packages -f golang
-
-          # 6. 安装所有剩余包
-          echo "Installing all feeds..."
+          # 4. 刷新索引并重装
+          # update -i: 告诉 feeds 脚本，我们刚才删了一些包，加了一些包，请更新索引 (修复 golang/host 依赖问题)
+          echo "Refreshing feeds index..."
+          ./scripts/feeds update -i
+          
+          # install -a -f: 再次安装。由于基础包在第2步已经装好，这里主要负责安装新加入的 Golang 和 Passwall 依赖
+          echo "Installing new packages..."
           ./scripts/feeds install -a -f
 
       - name: Load Custom Configuration (DIY Part 2)
@@ -302,3 +314,25 @@ jobs:
 
       - name: Upload firmware to release
         uses: softprops/action-gh-release@master
+        if: ${{ steps.tag.outputs.status == 'success' && !cancelled() }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ steps.tag.outputs.release_tag }}
+          body_path: release.txt
+          files: ${{ env.FIRMWARE }}/*
+
+      - name: Delete workflow runs
+        uses: Mattraks/delete-workflow-runs@main
+        with:
+          retain_days: 0
+          keep_minimum_runs: 2
+
+      - name: Remove old Releases
+        uses: dev-drprasad/delete-older-releases@master
+        if: ${{ fromJSON(env.UPLOAD_RELEASE) && !cancelled() }}
+        with:
+          keep_latest: 3
+          delete_tags: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
