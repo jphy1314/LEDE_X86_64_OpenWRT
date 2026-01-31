@@ -79,36 +79,52 @@ jobs:
         run: |
           [ -e "${{ github.workspace }}/diy-part1.sh" ] && chmod +x "${{ github.workspace }}/diy-part1.sh" && cd openwrt && "${{ github.workspace }}/diy-part1.sh" || echo "diy-part1.sh not found"
 
+      # --- [核心修复] 采用双重安装策略解决依赖丢失警告 ---
       - name: Update, Patch & Install Feeds
         working-directory: ${{ github.workspace }}/build/openwrt
         run: |
           # 1. 更新 Feeds
           ./scripts/feeds update -a
 
-          # 2. 替换 Golang (使用 23.x 分支)
+          # 2. [关键步骤] 第一次安装：安装所有官方包
+          # 这确保了 libev, bc, boost, golang 等基础库被正确索引
+          ./scripts/feeds install -a
+
+          # 3. 执行替换与清理工作
+          echo "Processing custom packages..."
+          
+          # 3.1 替换 Golang (先删后克隆)
           rm -rf feeds/packages/lang/golang
           git clone https://github.com/sbwml/packages_lang_golang -b 23.x feeds/packages/lang/golang
 
-          # 3. 清理冲突包 (解决 Not overriding 警告)
-          echo "Cleaning conflicting packages..."
+          # 3.2 清理冲突的 Passwall 相关包 (解决 Not overriding 警告)
+          # 注意：这里我们同时清理 feeds/ 下的源码和 package/feeds/ 下的已安装链接
           CONFLICTS="xray-core v2ray-geodata sing-box chinadns-ng dns2socks hysteria ipt2socks microsocks naiveproxy shadowsocks-libev shadowsocks-rust shadowsocksr-libev simple-obfs tcping trojan-plus tuic-client v2ray-plugin xray-plugin geoview shadow-tls"
+          
           for pkg in $CONFLICTS; do
+            # 删除源码
             find feeds/packages -name "$pkg" -type d -exec rm -rf {} + || true
+            # 删除已安装的链接 (防止残留)
+            find package/feeds/packages -name "$pkg" -type l -exec rm -f {} + || true
           done
           
+          # 移除旧的 passwall APP
           rm -rf feeds/luci/applications/luci-app-passwall
+          rm -rf package/feeds/luci/luci-app-passwall
 
-          # 4. 克隆 Passwall
+          # 4. 克隆新版 Passwall
           echo "Cloning Passwall packages..."
           git clone https://github.com/Openwrt-Passwall/openwrt-passwall-packages package/passwall-packages
           git clone https://github.com/Openwrt-Passwall/openwrt-passwall package/passwall-luci
           
-          # --- [修复] 删除容易编译失败的旧插件 ---
-          echo "Removing broken legacy plugins (v2ray-plugin/xray-plugin)..."
+          # 移除必定报错的旧插件
+          echo "Removing broken legacy plugins..."
           rm -rf package/passwall-packages/v2ray-plugin
           rm -rf package/passwall-packages/xray-plugin
 
-          # 5. 安装 Feeds
+          # 5. [关键步骤] 第二次安装：更新索引
+          # 这次安装会将新克隆的包加入索引，并重新链接正确的依赖
+          ./scripts/feeds update -i
           ./scripts/feeds install -a -f
 
       - name: Load Custom Configuration (DIY Part 2)
@@ -137,7 +153,7 @@ jobs:
           CONFIG_PACKAGE_kmod-nft-offload=y
           CONFIG_PACKAGE_luci-app-passwall=y
           
-          # 显式禁用 v2ray-plugin 防止报错
+          # 显式禁用 v2ray-plugin
           CONFIG_PACKAGE_v2ray-plugin=n
           CONFIG_PACKAGE_xray-plugin=n
           
@@ -206,12 +222,10 @@ jobs:
           else
             echo "::warning::Multi-thread build failed. Retrying single-thread with verbose logging to debug..."
             
-            # 使用 pipefail 确保 tee 不会掩盖错误码
             set -o pipefail
             if ! make -j1 V=s 2>&1 | tee build.log; then
               echo "::error::Build FAILED!"
               
-              # --- 错误日志提取逻辑 ---
               echo "========================================================"
               echo "             ERROR LOG ANALYSIS                         "
               echo "========================================================"
@@ -236,7 +250,6 @@ jobs:
             fi
           fi
           
-          # 提取设备名称
           grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*DEVICE_(.*)=y/\1/' > DEVICE_NAME
           [ -s DEVICE_NAME ] && echo "DEVICE_NAME=_$(cat DEVICE_NAME)" >> $GITHUB_ENV || echo "DEVICE_NAME=_Generic" >> $GITHUB_ENV
           echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
