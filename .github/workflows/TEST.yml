@@ -49,7 +49,7 @@ jobs:
           sudo -E apt-get -qq update
           sudo -E apt-get -qq install -y ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential \
             bzip2 ccache clang cmake cpio curl device-tree-compiler flex gawk gcc-multilib g++-multilib gettext \
-            genisoimage git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libfuse-dev libglib2.0-dev \
+            genisoimage git gperf haveged help2man intltool libelf-dev libfuse-dev libglib2.0-dev \
             libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev libpython3-dev \
             libreadline-dev libssl-dev libtool llvm lrzsz libnsl-dev ninja-build p7zip p7zip-full patch pkgconf \
             python3 python3-pyelftools python3-setuptools qemu-utils rsync scons squashfs-tools subversion \
@@ -63,34 +63,34 @@ jobs:
         working-directory: ${{ github.workspace }}/build
         run: |
           git clone -b $REPO_BRANCH --single-branch --depth 1 $REPO_URL openwrt
-          ln -sf "${{ github.workspace }}/build/openwrt" "$GITHUB_WORKSPACE/openwrt"
+          ln -sf "${{ github.workspace }}/build/openwrt" "${{ github.workspace }}/openwrt"
 
+      # --- [修正] 移除 working-directory，直接使用完整路径以消除红色警告 ---
       - name: Restore Cache
         uses: actions/cache@v4
         with:
           path: |
-            openwrt/dl
+            build/openwrt/dl
             /home/runner/.ccache
-          key: ${{ runner.os }}-openwrt-${{ hashFiles('openwrt/feeds.conf.default') }}
+          key: ${{ runner.os }}-openwrt-${{ hashFiles('build/openwrt/feeds.conf.default') }}
           restore-keys: |
             ${{ runner.os }}-openwrt-
 
       - name: Load Custom Feeds (DIY Part 1)
         run: |
-          [ -e "$GITHUB_WORKSPACE/diy-part1.sh" ] && chmod +x "$GITHUB_WORKSPACE/diy-part1.sh" && cd openwrt && "$GITHUB_WORKSPACE/diy-part1.sh" || echo "diy-part1.sh not found"
+          [ -e "${{ github.workspace }}/diy-part1.sh" ] && chmod +x "${{ github.workspace }}/diy-part1.sh" && cd openwrt && "${{ github.workspace }}/diy-part1.sh" || echo "diy-part1.sh not found"
 
-      # --- [重构] 核心步骤：Update -> Patch -> Install ---
       - name: Update, Patch & Install Feeds
         working-directory: ${{ github.workspace }}/build/openwrt
         run: |
-          # 1. 先更新 feeds (下载所有默认源码)
+          # 1. 更新 Feeds 下载默认源码
           ./scripts/feeds update -a
 
-          # 2. --- [修改] 替换为支持 Go 1.26+ 的 Golang 版本 ---
+          # 2. 替换 Golang (sbwml 仓库推荐使用 23.x 对应 Go 1.23)
           rm -rf feeds/packages/lang/golang
-          git clone https://github.com/sbwml/packages_lang_golang -b 26.x feeds/packages/lang/golang
+          git clone https://github.com/sbwml/packages_lang_golang -b 23.x feeds/packages/lang/golang
 
-          # 3. --- [Patch 2] 执行官方方法 2 (处理 Passwall) ---
+          # 3. 处理 Passwall 冲突与替换
           echo "Executing Official Method 2..."
           
           # 移除 feeds 里的冲突包
@@ -103,20 +103,20 @@ jobs:
           git clone https://github.com/Openwrt-Passwall/openwrt-passwall-packages package/passwall-packages
           git clone https://github.com/Openwrt-Passwall/openwrt-passwall package/passwall-luci
 
-          # 4. --- [Install] 强制安装所有包 ---
-          # 使用 -f (force) 参数，确保新克隆的包覆盖掉原有的索引
+          # 4. 安装 Feeds
           ./scripts/feeds install -a -f
 
       - name: Load Custom Configuration (DIY Part 2)
         run: |
-          [ -e "$GITHUB_WORKSPACE/diy-part2.sh" ] && chmod +x "$GITHUB_WORKSPACE/diy-part2.sh" && cd openwrt && "$GITHUB_WORKSPACE/diy-part2.sh" || echo "diy-part2.sh not found"
+          [ -e "${{ github.workspace }}/diy-part2.sh" ] && chmod +x "${{ github.workspace }}/diy-part2.sh" && cd openwrt && "${{ github.workspace }}/diy-part2.sh" || echo "diy-part2.sh not found"
 
       - name: Generate Configuration
         working-directory: ${{ github.workspace }}/build/openwrt
         run: |
-          cd "${{ github.workspace }}/build/openwrt"
-
+          # 开启 Ccache
           echo "CONFIG_CCACHE=y" >> .config
+          
+          # 关闭不必要的构建选项
           echo "CONFIG_SDK=n" >> .config
           echo "CONFIG_IB=n" >> .config
           echo "CONFIG_KO_SYMBOLS=n" >> .config
@@ -126,7 +126,7 @@ jobs:
           cat >> .config <<'EOF'
           CONFIG_PACKAGE_ipv6helper=y
           
-          # 强制使用 nftables (Firewall4)
+          # Firewall4 配置
           CONFIG_PACKAGE_firewall=n
           CONFIG_PACKAGE_iptables=n
           CONFIG_PACKAGE_ip6tables=n
@@ -144,7 +144,7 @@ jobs:
           CONFIG_PACKAGE_geoview=y
           CONFIG_PACKAGE_luci-app-geoview=y
           
-          # 工具
+          # 常用工具
           CONFIG_PACKAGE_luci-app-ddns=y
           CONFIG_PACKAGE_ddns-scripts=y
           CONFIG_PACKAGE_luci-app-vlmcsd=y
@@ -159,48 +159,38 @@ jobs:
           
           make defconfig
 
-      # --- 修复编译错误 ---
       - name: Fix Compile Errors
         working-directory: ${{ github.workspace }}/build/openwrt
         run: |
-          # 1. 移除 -Werror 标志以避免严格警告导致编译失败
-          find package/libs -name "Makefile" -exec sed -i 's/-Werror//g' {} +
+          # 1. 扩大移除 -Werror 的范围
+          find package -name "Makefile" -exec sed -i 's/-Werror//g' {} +
           
-          # 2. 替换 git.openwrt.org 为 github.com/openwrt 以解决网络访问问题
+          # 2. 替换 git.openwrt.org
           echo "Replacing git.openwrt.org with github.com/openwrt..."
           find feeds -name "Makefile" -exec sed -i 's/git\.openwrt\.org\/project/github\.com\/openwrt/g' {} + 2>/dev/null || true
           find package -name "Makefile" -exec sed -i 's/git\.openwrt\.org\/project/github\.com\/openwrt/g' {} +
           
-          # 3. 特别处理 ustream-ssl 的下载问题
+          # 3. 修复 ustream-ssl 下载链接
           echo "Fixing ustream-ssl download URL..."
-          if [ -f "feeds/packages/libs/ustream-ssl/Makefile" ]; then
-            sed -i 's|git.openwrt.org/project/ustream-ssl.git|github.com/openwrt/ustream-ssl.git|g' feeds/packages/libs/ustream-ssl/Makefile
-          fi
-          if [ -f "package/feeds/packages/ustream-ssl/Makefile" ]; then
-            sed -i 's|git.openwrt.org/project/ustream-ssl.git|github.com/openwrt/ustream-ssl.git|g' package/feeds/packages/ustream-ssl/Makefile
-          fi
+          grep -r "git.openwrt.org/project/ustream-ssl.git" package feeds || true
+          find package feeds -name "Makefile" -exec sed -i 's|git.openwrt.org/project/ustream-ssl.git|github.com/openwrt/ustream-ssl.git|g' {} +
           
           # 4. 检查 Go 版本
           echo "Checking Go version..."
-          if [ -f "feeds/packages/lang/golang/version.mk" ]; then
-            echo "Current Go version in feeds:"
-            grep -i "go_version" feeds/packages/lang/golang/version.mk || true
+          if [ -d "feeds/packages/lang/golang" ]; then
+             ls -l feeds/packages/lang/golang
           fi
 
-      # --- 下载与编译 ---
       - name: Download package
         working-directory: ${{ github.workspace }}/build/openwrt
         run: |
-          # 尝试下载所有包
           echo "Downloading packages..."
           make download -j8 || true
           
-          # 检查并重新下载失败的小文件
           echo "Checking for failed downloads..."
           find dl -size -1024c -exec ls -l {} \;
           find dl -size -1024c -exec rm -f {} \;
           
-          # 重试下载
           echo "Retrying downloads..."
           make download -j4 || true
 
@@ -210,13 +200,11 @@ jobs:
         run: |
           echo "Starting build process..."
           
-          # 先编译工具链和 Go
-          echo "Building tools and Go compiler..."
+          # 优先编译工具链和 Go
           make tools/compile -j$(nproc) || make tools/compile -j1 V=s
           make toolchain/compile -j$(nproc) || make toolchain/compile -j1 V=s
           
-          # 检查 Go 编译器版本
-          echo "Checking Go compiler version..."
+          # 检查 Go 编译器
           if [ -f "staging_dir/host/bin/go" ]; then
             staging_dir/host/bin/go version || true
           fi
@@ -225,64 +213,64 @@ jobs:
           echo "Building full firmware..."
           make -j$(nproc) || make -j1 || make -j1 V=s
           
-          # 如果编译失败，尝试单独编译失败的包
           if [ $? -ne 0 ]; then
-            echo "Build failed, trying to compile failed packages individually..."
-            make -j1 V=s 2>&1 | grep -A5 -B5 "ERROR:" || true
+            echo "Build failed!"
+            echo "status=failure" >> $GITHUB_OUTPUT
+            exit 1
           fi
           
           echo "status=success" >> $GITHUB_OUTPUT
           
+          # 提取设备名称
           grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*DEVICE_(.*)=y/\1/' > DEVICE_NAME
           [ -s DEVICE_NAME ] && echo "DEVICE_NAME=_$(cat DEVICE_NAME)" >> $GITHUB_ENV || echo "DEVICE_NAME=_Generic" >> $GITHUB_ENV
-          
           echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
 
-      # --- 收尾工作 ---
+      # --- [修正] 移除 working-directory，直接使用完整路径以消除红色警告 ---
       - name: Save Cache
         if: steps.compile.outputs.status == 'success'
         uses: actions/cache@v4
         with:
           path: |
-            openwrt/dl
+            build/openwrt/dl
             /home/runner/.ccache
-          key: ${{ runner.os }}-openwrt-${{ hashFiles('openwrt/feeds.conf.default') }}
+          key: ${{ runner.os }}-openwrt-${{ hashFiles('build/openwrt/feeds.conf.default') }}
 
       - name: Check space usage
-        if: (!cancelled())
+        if: ${{ !cancelled() }}
         run: df -hT
 
       - name: Upload bin directory
         uses: actions/upload-artifact@v4
-        if: steps.compile.outputs.status == 'success' && env.UPLOAD_BIN_DIR == 'true'
+        if: ${{ steps.compile.outputs.status == 'success' && fromJSON(env.UPLOAD_BIN_DIR) }}
         with:
           name: OpenWrt_bin${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
-          path: openwrt/bin
+          path: ${{ github.workspace }}/build/openwrt/bin
 
       - name: Organize files
         id: organize
-        if: env.UPLOAD_FIRMWARE == 'true' && !cancelled()
+        if: ${{ fromJSON(env.UPLOAD_FIRMWARE) && !cancelled() }}
         run: |
-          if [ -d "openwrt/bin/targets" ]; then
-            cd openwrt/bin/targets/*/*
+          if [ -d "${{ github.workspace }}/build/openwrt/bin/targets" ]; then
+            cd "${{ github.workspace }}/build/openwrt/bin/targets"/*/*
             rm -rf packages
             echo "FIRMWARE=$PWD" >> $GITHUB_ENV
             echo "status=success" >> $GITHUB_OUTPUT
           else
-            echo "Target directory not found. Build might have failed."
+            echo "Target directory not found."
             echo "status=failure" >> $GITHUB_OUTPUT
           fi
 
       - name: Upload firmware directory
         uses: actions/upload-artifact@v4
-        if: steps.organize.outputs.status == 'success' && !cancelled()
+        if: ${{ steps.organize.outputs.status == 'success' && !cancelled() }}
         with:
           name: OpenWrt_firmware${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
           path: ${{ env.FIRMWARE }}
 
       - name: Generate release tag
         id: tag
-        if: env.UPLOAD_RELEASE == 'true' && steps.organize.outputs.status == 'success' && !cancelled()
+        if: ${{ fromJSON(env.UPLOAD_RELEASE) && steps.organize.outputs.status == 'success' && !cancelled() }}
         run: |
           echo "release_tag=v$(date +"%Y.%m.%d-%H%M")" >> $GITHUB_OUTPUT
           touch release.txt
@@ -292,7 +280,7 @@ jobs:
 
       - name: Upload firmware to release
         uses: softprops/action-gh-release@master
-        if: steps.tag.outputs.status == 'success' && !cancelled()
+        if: ${{ steps.tag.outputs.status == 'success' && !cancelled() }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
@@ -308,7 +296,7 @@ jobs:
 
       - name: Remove old Releases
         uses: dev-drprasad/delete-older-releases@master
-        if: env.UPLOAD_RELEASE == 'true' && !cancelled()
+        if: ${{ fromJSON(env.UPLOAD_RELEASE) && !cancelled() }}
         with:
           keep_latest: 3
           delete_tags: true
