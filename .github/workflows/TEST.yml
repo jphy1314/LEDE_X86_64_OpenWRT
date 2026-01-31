@@ -102,6 +102,11 @@ jobs:
           echo "Cloning Passwall packages..."
           git clone https://github.com/Openwrt-Passwall/openwrt-passwall-packages package/passwall-packages
           git clone https://github.com/Openwrt-Passwall/openwrt-passwall package/passwall-luci
+          
+          # --- [修复] 删除容易编译失败的旧插件 ---
+          echo "Removing broken legacy plugins (v2ray-plugin/xray-plugin)..."
+          rm -rf package/passwall-packages/v2ray-plugin
+          rm -rf package/passwall-packages/xray-plugin
 
           # 5. 安装 Feeds
           ./scripts/feeds install -a -f
@@ -131,6 +136,11 @@ jobs:
           CONFIG_PACKAGE_kmod-nft-nat=y
           CONFIG_PACKAGE_kmod-nft-offload=y
           CONFIG_PACKAGE_luci-app-passwall=y
+          
+          # 显式禁用 v2ray-plugin 防止报错
+          CONFIG_PACKAGE_v2ray-plugin=n
+          CONFIG_PACKAGE_xray-plugin=n
+          
           CONFIG_PACKAGE_geoview=y
           CONFIG_PACKAGE_luci-app-geoview=y
           CONFIG_PACKAGE_luci-app-ddns=y
@@ -171,15 +181,13 @@ jobs:
           find dl -size -1024c -exec rm -f {} \;
           make download -j4 || true
 
-      # --- [核心修改] 编译步骤：智能重试与错误日志提取 ---
       - name: Compile the firmware
         id: compile
         working-directory: ${{ github.workspace }}/build/openwrt
         run: |
           echo "Starting build process..."
           
-          # 1. 预编译工具链 (Toolchain)
-          # 工具链通常比较稳定，直接编译，失败则报错
+          # 1. 预编译工具链
           echo "Building Tools & Toolchain..."
           make tools/compile -j$(nproc) || make tools/compile -j1 V=s
           make toolchain/compile -j$(nproc) || make toolchain/compile -j1 V=s
@@ -192,15 +200,13 @@ jobs:
           # 3. 完整固件编译 (智能错误处理)
           echo "Building full firmware..."
           
-          # 尝试多线程编译
           if make -j$(nproc); then
             echo "::notice::Multi-thread build successful!"
             echo "status=success" >> $GITHUB_OUTPUT
           else
             echo "::warning::Multi-thread build failed. Retrying single-thread with verbose logging to debug..."
             
-            # 失败后，使用单线程 + 详细日志 (V=s)，并使用 tee 将日志同时输出到文件
-            # pipefail 确保如果 make 失败，整个命令返回失败
+            # 使用 pipefail 确保 tee 不会掩盖错误码
             set -o pipefail
             if ! make -j1 V=s 2>&1 | tee build.log; then
               echo "::error::Build FAILED!"
@@ -210,18 +216,15 @@ jobs:
               echo "             ERROR LOG ANALYSIS                         "
               echo "========================================================"
               
-              # 1. 提取最后 100 行日志 (通常包含最后的报错)
               echo "--- Last 100 lines of build.log ---"
               tail -n 100 build.log
               
               echo ""
               echo "--- Matched Errors (grep 'Error') ---"
-              # 2. 提取带有 Error 关键字的行 (忽略大小写)
               grep -i "error" build.log | tail -n 20 || true
               
               echo ""
               echo "--- Matched Make Failures (grep 'make[*:') ---"
-              # 3. 提取 Make 特定的错误标记
               grep "make\[.*\]: \*\*\*" build.log | tail -n 20 || true
               
               echo "========================================================"
