@@ -87,18 +87,8 @@ jobs:
           ./scripts/feeds update -a
 
           # 2. --- [修改] 替换为支持 Go 1.26+ 的 Golang 版本 ---
-          echo "Replacing Golang with version supporting Go 1.26+..."
           rm -rf feeds/packages/lang/golang
-          
-          # 使用支持 Go 1.26 的版本，这里使用 26.x 分支
           git clone https://github.com/sbwml/packages_lang_golang -b 26.x feeds/packages/lang/golang
-          
-          # 如果 26.x 分支不存在，则回退到 master 分支
-          if [ $? -ne 0 ]; then
-            echo "26.x branch not found, trying master branch..."
-            rm -rf feeds/packages/lang/golang
-            git clone https://github.com/sbwml/packages_lang_golang -b master feeds/packages/lang/golang
-          fi
 
           # 3. --- [Patch 2] 执行官方方法 2 (处理 Passwall) ---
           echo "Executing Official Method 2..."
