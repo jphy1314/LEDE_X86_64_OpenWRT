@@ -79,52 +79,42 @@ jobs:
         run: |
           [ -e "${{ github.workspace }}/diy-part1.sh" ] && chmod +x "${{ github.workspace }}/diy-part1.sh" && cd openwrt && "${{ github.workspace }}/diy-part1.sh" || echo "diy-part1.sh not found"
 
-      # --- [核心修复] 采用双重安装策略解决依赖丢失警告 ---
+      # --- [重构] 采用 Update -> Clean -> Install 线性策略 ---
       - name: Update, Patch & Install Feeds
         working-directory: ${{ github.workspace }}/build/openwrt
         run: |
-          # 1. 更新 Feeds
+          # 1. 更新 Feeds (下载源码，但不安装)
           ./scripts/feeds update -a
 
-          # 2. [关键步骤] 第一次安装：安装所有官方包
-          # 这确保了 libev, bc, boost, golang 等基础库被正确索引
-          ./scripts/feeds install -a
-
-          # 3. 执行替换与清理工作
-          echo "Processing custom packages..."
-          
-          # 3.1 替换 Golang (先删后克隆)
+          # 2. 替换 Golang (sbwml 23.x 对应 Go 1.23)
+          echo "Patching Golang..."
           rm -rf feeds/packages/lang/golang
           git clone https://github.com/sbwml/packages_lang_golang -b 23.x feeds/packages/lang/golang
 
-          # 3.2 清理冲突的 Passwall 相关包 (解决 Not overriding 警告)
-          # 注意：这里我们同时清理 feeds/ 下的源码和 package/feeds/ 下的已安装链接
-          CONFLICTS="xray-core v2ray-geodata sing-box chinadns-ng dns2socks hysteria ipt2socks microsocks naiveproxy shadowsocks-libev shadowsocks-rust shadowsocksr-libev simple-obfs tcping trojan-plus tuic-client v2ray-plugin xray-plugin geoview shadow-tls"
+          # 3. 清理冲突包
+          # 直接在 feeds 目录中删除冲突的源码，这样后续 install 时就不会建立这些包的索引
+          # 从而避免 "Not overriding" 警告，同时确保基础包 (bc, coreutils) 不被误删
+          echo "Removing conflicting packages from feeds..."
           
-          for pkg in $CONFLICTS; do
-            # 删除源码
-            find feeds/packages -name "$pkg" -type d -exec rm -rf {} + || true
-            # 删除已安装的链接 (防止残留)
-            find package/feeds/packages -name "$pkg" -type l -exec rm -f {} + || true
-          done
+          # 移除 feeds/packages/net 下的冲突包
+          rm -rf feeds/packages/net/{xray-core,v2ray-geodata,sing-box,chinadns-ng,dns2socks,hysteria,ipt2socks,microsocks,naiveproxy,shadowsocks-libev,shadowsocks-rust,shadowsocksr-libev,simple-obfs,tcping,trojan-plus,tuic-client,v2ray-plugin,xray-plugin,geoview,shadow-tls}
           
-          # 移除旧的 passwall APP
+          # 移除旧的 Passwall Luci
           rm -rf feeds/luci/applications/luci-app-passwall
-          rm -rf package/feeds/luci/luci-app-passwall
 
-          # 4. 克隆新版 Passwall
-          echo "Cloning Passwall packages..."
+          # 4. 克隆 Passwall 到 package 目录 (优先级最高)
+          echo "Cloning Passwall..."
           git clone https://github.com/Openwrt-Passwall/openwrt-passwall-packages package/passwall-packages
           git clone https://github.com/Openwrt-Passwall/openwrt-passwall package/passwall-luci
           
-          # 移除必定报错的旧插件
-          echo "Removing broken legacy plugins..."
+          # 移除必定报错的旧插件 (v2ray-plugin 等)
           rm -rf package/passwall-packages/v2ray-plugin
           rm -rf package/passwall-packages/xray-plugin
 
-          # 5. [关键步骤] 第二次安装：更新索引
-          # 这次安装会将新克隆的包加入索引，并重新链接正确的依赖
-          ./scripts/feeds update -i
+          # 5. 安装所有 Feeds
+          # 使用 -f 强制安装，确保新添加的包被正确索引
+          # 此时因为 feeds 下的冲突包已被删除，所以不会有冲突警告，且基础依赖会被正常安装
+          echo "Installing feeds..."
           ./scripts/feeds install -a -f
 
       - name: Load Custom Configuration (DIY Part 2)
@@ -142,6 +132,7 @@ jobs:
 
           cat >> .config <<'EOF'
           CONFIG_PACKAGE_ipv6helper=y
+          
           CONFIG_PACKAGE_firewall=n
           CONFIG_PACKAGE_iptables=n
           CONFIG_PACKAGE_ip6tables=n
@@ -151,9 +142,9 @@ jobs:
           CONFIG_PACKAGE_kmod-nft-fib=y
           CONFIG_PACKAGE_kmod-nft-nat=y
           CONFIG_PACKAGE_kmod-nft-offload=y
-          CONFIG_PACKAGE_luci-app-passwall=y
           
-          # 显式禁用 v2ray-plugin
+          CONFIG_PACKAGE_luci-app-passwall=y
+          # 禁用废弃插件
           CONFIG_PACKAGE_v2ray-plugin=n
           CONFIG_PACKAGE_xray-plugin=n
           
