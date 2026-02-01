@@ -154,17 +154,36 @@ jobs:
       - name: Check PassWall Dependencies
         working-directory: ${{ github.workspace }}/build/openwrt
         run: |
+          set -euo pipefail
           echo "Checking PassWall dependencies..."
+          
           if [ ! -f .config ]; then
             echo "::error:: .config not found. Generate Configuration must run first."
             exit 1
           fi
 
           MISSING_DEPS=""
-          for dep in xray-core sing-box v2ray-core v2ray-plugin naiveproxy trojan-plus tuic-client; do
+          DEPS_LIST="xray-core sing-box v2ray-core v2ray-plugin naiveproxy trojan-plus tuic-client"
+
+          for dep in $DEPS_LIST; do
             if grep -q "CONFIG_PACKAGE_$dep=y" .config; then
-              if ! find feeds packages package -type d -name "$dep" | grep -q .; then
-                echo "::error::$dep is enabled in .config but not found in feeds!"
+              FOUND=0
+              
+              # 检查 package/ 目录
+              if [ -d "package/$dep" ]; then
+                FOUND=1
+              fi
+              
+              # 检查 feeds/*/packages/ 目录
+              for feed_dir in feeds/*/packages; do
+                if [ -d "$feed_dir/$dep" ]; then
+                  FOUND=1
+                  break
+                fi
+              done
+
+              if [ "$FOUND" -eq 0 ]; then
+                echo "::error::$dep is enabled in .config but not found in feeds/package directories!"
                 MISSING_DEPS="$MISSING_DEPS $dep"
               fi
             fi
@@ -175,7 +194,7 @@ jobs:
             echo "⚠️  PassWall dependency missing packages:$MISSING_DEPS"
             echo "💡 建议解决方案："
             echo "  1. 删除 .config 中相关 CONFIG_PACKAGE_*"
-            echo "  2. 或确保 feeds 中存在这些包（手动 clone 对应 repo）"
+            echo "  2. 或确保 feeds/package 中存在这些包（手动 clone 对应 repo）"
             echo "========================================================"
             exit 1
           else
