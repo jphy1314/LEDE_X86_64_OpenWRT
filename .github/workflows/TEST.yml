@@ -104,32 +104,6 @@ jobs:
           ./scripts/feeds install -p packages -f golang
           ./scripts/feeds install -a -f
 
-      - name: Check PassWall Dependencies
-        working-directory: ${{ github.workspace }}/build/openwrt
-        run: |
-          echo "Checking PassWall dependencies..."
-          MISSING_DEPS=""
-          for dep in xray-core sing-box v2ray-core v2ray-plugin naiveproxy trojan-plus tuic-client; do
-            if grep -q "CONFIG_PACKAGE_$dep=y" .config; then
-              if ! find feeds packages package -type d -name "$dep" | grep -q .; then
-                echo "::error::$dep is enabled in .config but not found in feeds!"
-                MISSING_DEPS="$MISSING_DEPS $dep"
-              fi
-            fi
-          done
-
-          if [ -n "$MISSING_DEPS" ]; then
-            echo "========================================================"
-            echo "⚠️  PassWall dependency missing packages:$MISSING_DEPS"
-            echo "💡 建议解决方案："
-            echo "  1. 删除 .config 中相关 CONFIG_PACKAGE_*"
-            echo "  2. 或确保 feeds 中存在这些包（手动 clone 对应 repo）"
-            echo "========================================================"
-            exit 1
-          else
-            echo "✅ All PassWall dependencies satisfied."
-          fi
-
       - name: Load Custom Configuration (DIY Part 2)
         run: |
           [ -e "${{ github.workspace }}/diy-part2.sh" ] && \
@@ -176,6 +150,52 @@ jobs:
           EOF
 
           make defconfig
+
+      - name: Check PassWall Dependencies
+        working-directory: ${{ github.workspace }}/build/openwrt
+        run: |
+          echo "Checking PassWall dependencies..."
+          if [ ! -f .config ]; then
+            echo "::error:: .config not found. Generate Configuration must run first."
+            exit 1
+          fi
+
+          MISSING_DEPS=""
+          for dep in xray-core sing-box v2ray-core v2ray-plugin naiveproxy trojan-plus tuic-client; do
+            if grep -q "CONFIG_PACKAGE_$dep=y" .config; then
+              if ! find feeds packages package -type d -name "$dep" | grep -q .; then
+                echo "::error::$dep is enabled in .config but not found in feeds!"
+                MISSING_DEPS="$MISSING_DEPS $dep"
+              fi
+            fi
+          done
+
+          if [ -n "$MISSING_DEPS" ]; then
+            echo "========================================================"
+            echo "⚠️  PassWall dependency missing packages:$MISSING_DEPS"
+            echo "💡 建议解决方案："
+            echo "  1. 删除 .config 中相关 CONFIG_PACKAGE_*"
+            echo "  2. 或确保 feeds 中存在这些包（手动 clone 对应 repo）"
+            echo "========================================================"
+            exit 1
+          else
+            echo "✅ All PassWall dependencies satisfied."
+
+      - name: Fix Compile Errors
+        working-directory: ${{ github.workspace }}/build/openwrt
+        run: |
+          find package -name "Makefile" -exec sed -i 's/-Werror//g' {} +
+          find feeds -name "Makefile" -exec sed -i 's/git\.openwrt\.org\/project/github\.com\/openwrt/g' {} + 2>/dev/null || true
+          find package -name "Makefile" -exec sed -i 's/git\.openwrt\.org\/project/github\.com\/openwrt/g' {} +
+          find package feeds -name "Makefile" -exec sed -i 's|git.openwrt.org/project/ustream-ssl.git|github.com/openwrt/ustream-ssl.git|g' {} +
+          if [ -d "feeds/packages/lang/golang" ]; then ls -l feeds/packages/lang/golang; fi
+
+      - name: Download package
+        working-directory: ${{ github.workspace }}/build/openwrt
+        run: |
+          make download -j8 || true
+          find dl -size -1024c -exec rm -f {} \;
+          make download -j4 || true
 
       - name: Compile the firmware
         id: compile
