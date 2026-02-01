@@ -151,30 +151,36 @@ jobs:
           fi
 
           MISSING_DEPS=""
+          # 核心组件列表
           DEPS_LIST="xray-core sing-box v2ray-core v2ray-plugin naiveproxy trojan-plus tuic-client"
 
           for dep in $DEPS_LIST; do
+            # 只有当配置文件中启用了该包时才检查
             if grep -q "CONFIG_PACKAGE_$dep=y" .config; then
               FOUND=0
               
-              # 检查 package/ 目录
-              if [ -d "package/$dep" ]; then
+              # 方案A: 使用 find 查找 package 下任意深度的子目录 (修复路径层级问题)
+              if find package -type d -name "$dep" -print -quit | grep -q .; then
                 FOUND=1
               fi
               
-              # 检查 feeds/*/packages/ 目录
-              for feed_dir in feeds/*/packages; do
-                if [ -d "$feed_dir/$dep" ]; then
-                  FOUND=1
-                  break
-                fi
-              done
+              # 方案B: 如果 package 下没找到，继续检查 feeds
+              if [ "$FOUND" -eq 0 ]; then
+                for feed_dir in feeds/*/packages; do
+                  if [ -d "$feed_dir/$dep" ]; then
+                    FOUND=1
+                    break
+                  fi
+                done
+              fi
 
-              # 如果缺失，注释掉 .config 中启用的包
+              # 如果确实缺失，注释掉 .config 中启用的包，避免编译报错
               if [ "$FOUND" -eq 0 ]; then
                 echo "⚠️  $dep is enabled in .config but not found in feeds/package directories!"
                 sed -i "s/CONFIG_PACKAGE_$dep=y/# CONFIG_PACKAGE_$dep is missing and commented out/" .config
                 MISSING_DEPS="$MISSING_DEPS $dep"
+              else
+                echo "  👉 Found $dep"
               fi
             fi
           done
@@ -182,13 +188,11 @@ jobs:
           if [ -n "$MISSING_DEPS" ]; then
             echo "========================================================"
             echo "⚠️  Missing PassWall packages:$MISSING_DEPS"
-            echo "💡 建议解决方案："
-            echo "  1. 删除 .config 中相关 CONFIG_PACKAGE_*"
-            echo "  2. 或确保 feeds/package 中存在这些包（手动 clone 对应 repo）"
-            echo "  3. 当前 workflow 已自动注释掉缺失包，继续编译其他包"
+            echo "   (这些包已被自动禁用以防止编译失败)"
             echo "========================================================"
           else
             echo "✅ All PassWall dependencies satisfied."
+          fi
 
       - name: Fix Compile Errors
         working-directory: ${{ github.workspace }}/build/openwrt
