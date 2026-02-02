@@ -87,12 +87,16 @@ jobs:
         working-directory: ${{ github.workspace }}/build/openwrt
         run: |
           ./scripts/feeds update -a
-
+          ./scripts/feeds install -a
+          
           # Passwall
+          # 移除 openwrt feeds 自带的核心库
+          rm -rf feeds/packages/net/{xray-core,v2ray-geodata,sing-box,chinadns-ng,dns2socks,hysteria,ipt2socks,microsocks,naiveproxy,shadowsocks-libev,shadowsocks-rust,shadowsocksr-libev,simple-obfs,tcping,trojan-plus,tuic-client,v2ray-plugin,xray-plugin,geoview,shadow-tls}
           git clone https://github.com/Openwrt-Passwall/openwrt-passwall-packages package/passwall-packages
-          git clone https://github.com/Openwrt-Passwall/openwrt-passwall package/passwall-luci
 
-          ./scripts/feeds install -a -f
+          # 移除 openwrt feeds 过时的luci版本
+          rm -rf feeds/luci/applications/luci-app-passwall
+          git clone https://github.com/Openwrt-Passwall/openwrt-passwall package/passwall-luci
 
       - name: Load Custom Configuration (DIY Part 2)
         run: |
@@ -111,17 +115,6 @@ jobs:
 
           cat >> .config <<'EOF'
           CONFIG_PACKAGE_ipv6helper=y
-          
-          # Firewall4
-          CONFIG_PACKAGE_firewall=n
-          CONFIG_PACKAGE_iptables=n
-          CONFIG_PACKAGE_ip6tables=n
-          CONFIG_PACKAGE_firewall4=y
-          CONFIG_PACKAGE_nftables=y
-          CONFIG_PACKAGE_kmod-nft-core=y
-          CONFIG_PACKAGE_kmod-nft-fib=y
-          CONFIG_PACKAGE_kmod-nft-nat=y
-          CONFIG_PACKAGE_kmod-nft-offload=y
           
           # 常用工具
           CONFIG_PACKAGE_luci-app-passwall=y
