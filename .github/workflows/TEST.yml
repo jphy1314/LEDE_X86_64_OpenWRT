@@ -190,15 +190,6 @@ jobs:
             echo "✅ All PassWall dependencies satisfied."
           fi
 
-      - name: Fix Compile Errors
-        working-directory: ${{ github.workspace }}/build/openwrt
-        run: |
-          find package -name "Makefile" -exec sed -i 's/-Werror//g' {} +
-          find feeds -name "Makefile" -exec sed -i 's/git\.openwrt\.org\/project/github\.com\/openwrt/g' {} + 2>/dev/null || true
-          find package -name "Makefile" -exec sed -i 's/git\.openwrt\.org\/project/github\.com\/openwrt/g' {} +
-          find package feeds -name "Makefile" -exec sed -i 's|git.openwrt.org/project/ustream-ssl.git|github.com/openwrt/ustream-ssl.git|g' {} +
-          if [ -d "feeds/packages/lang/golang" ]; then ls -l feeds/packages/lang/golang; fi
-
       - name: Download package
         working-directory: ${{ github.workspace }}/build/openwrt
         run: |
