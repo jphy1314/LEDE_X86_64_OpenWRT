@@ -152,6 +152,7 @@ jobs:
           CONFIG_PACKAGE_luci-app-passwall_Iptables_Transparent_Proxy=n
           CONFIG_PACKAGE_luci-app-passwall_Nftables_Transparent_Proxy=y
           CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Nftables=y
+          CONFIG_PACKAGE_luci-app-ttyd=y
           CONFIG_PACKAGE_luci-app-ddns=y
           CONFIG_PACKAGE_ddns-scripts=y
           CONFIG_PACKAGE_luci-app-vlmcsd=y
