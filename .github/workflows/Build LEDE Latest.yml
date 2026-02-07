@@ -27,15 +27,20 @@ jobs:
           fetch-depth: 1
 
       - name: Free Disk Space
-        run: |
-          sudo -E apt-get -qq autoremove --purge
-          sudo -E apt-get -qq clean
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /usr/local/lib/android
-          sudo rm -rf /opt/ghc
-          sudo rm -rf /opt/hostedtoolcache/CodeQL
-          sudo docker image prune --all --force
-          df -hT
+        uses: jlumbroso/free-disk-space@main
+        with:
+          # this might remove tools that are actually needed,
+          # if set to "true" but frees about 6GB
+          tool-cache: true
+          
+          # all of these default to true, but feel free to set to
+          # "false" if necessary for your workflow
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
 
       - name: Initialization Environment
         env:
@@ -70,16 +75,6 @@ jobs:
           git clone -b $REPO_BRANCH --single-branch --depth 1 $REPO_URL openwrt
           ln -sf "${{ github.workspace }}/build/openwrt" "${{ github.workspace }}/openwrt"
 
-      - name: Restore Cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            build/openwrt/dl
-            /home/runner/.ccache
-          key: ${{ runner.os }}-openwrt-${{ hashFiles('build/openwrt/feeds.conf.default') }}
-          restore-keys: |
-            ${{ runner.os }}-openwrt-
-
       - name: Load Custom Feeds (DIY Part 1)
         run: |
           [ -e "${{ github.workspace }}/diy-part1.sh" ] && \
@@ -110,7 +105,7 @@ jobs:
       - name: Generate Configuration
         working-directory: ${{ github.workspace }}/build/openwrt
         run: |
-          echo "CONFIG_CCACHE=y" >> .config
+          echo "CONFIG_CCACHE=n" >> .config
           echo "CONFIG_SDK=n" >> .config
           echo "CONFIG_IB=n" >> .config
           echo "CONFIG_KO_SYMBOLS=n" >> .config
