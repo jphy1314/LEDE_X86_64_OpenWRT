@@ -125,18 +125,22 @@ jobs:
       - name: Upgrade Go for xray-core
         working-directory: ${{ github.workspace }}/build/openwrt
         run: |
-          # 备份原有 golang feed
+          # 备份原有 golang 目录
           mv feeds/packages/lang/golang feeds/packages/lang/golang.bak || true
           
-          # 使用较新的 golang feed（可从 openwrt/packages 或 immortalwrt 借）
-          git clone https://github.com/openwrt/packages feeds/packages -b openwrt-24.10  # 或 main 分支视情况
-          # 只保留 golang 部分，其他还原
-          rm -rf feeds/packages/*/*
-          mv feeds/packages/lang/golang.bak feeds/packages/lang/golang
+          # 克隆新的 packages 到临时目录
+          git clone https://github.com/openwrt/packages temp_packages -b openwrt-24.10 --depth 1
           
-          # 或者直接 patch go version（更激进但快）
-          sed -i 's/GO_VERSION:=1.25.5/GO_VERSION:=1.25.6/g' feeds/packages/lang/golang/golang/Makefile
-          # 或更高版本如果需要
+          # 替换 golang 部分
+          rm -rf feeds/packages/lang/golang
+          mv temp_packages/lang/golang feeds/packages/lang/golang
+          
+          # 清理临时目录
+          rm -rf temp_packages
+          
+          # 如果需要，应用 patch（作为备用）
+          sed -i 's/GO_VERSION_MAJOR_MINOR:=.*/GO_VERSION_MAJOR_MINOR:=1.25/g' feeds/packages/lang/golang/golang/Makefile
+          sed -i 's/GO_VERSION_PATCH:=.*/GO_VERSION_PATCH:=6/g' feeds/packages/lang/golang/golang/Makefile
       - name: Load Custom Configuration (DIY Part 2)
         run: |
           [ -e "${{ github.workspace }}/diy-part2.sh" ] && \
