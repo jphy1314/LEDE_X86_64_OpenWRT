@@ -18,7 +18,7 @@ env:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout
@@ -253,6 +253,7 @@ jobs:
         working-directory: ${{ github.workspace }}/build/openwrt
         run: |
           make download -j4 || true
+          make checksum
           find dl -size -1024c -exec rm -f {} \;
           make download -j1 || true
 
@@ -315,7 +316,7 @@ jobs:
         uses: Mattraks/delete-workflow-runs@main
         with:
           retain_days: 0
-          keep_minimum_runs: 2
+          keep_minimum_runs: 5
 
       - name: Remove old Releases
         uses: dev-drprasad/delete-older-releases@master
