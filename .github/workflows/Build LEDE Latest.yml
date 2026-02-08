@@ -26,15 +26,11 @@ jobs:
         with:
           fetch-depth: 1
 
+      # 使用插件清理磁盘（已配置为强力清理）
       - name: Free Disk Space
         uses: jlumbroso/free-disk-space@main
         with:
-          # this might remove tools that are actually needed,
-          # if set to "true" but frees about 6GB
           tool-cache: true
-          
-          # all of these default to true, but feel free to set to
-          # "false" if necessary for your workflow
           android: true
           dotnet: true
           haskell: true
@@ -46,13 +42,13 @@ jobs:
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
-          # 1. 清理第三方源，加速 update
+          # 1. 清理第三方源
           sudo rm -rf /etc/apt/sources.list.d/*
           
           # 2. 更新列表
           sudo -E apt-get -qq update
           
-          # 3. 安装依赖（使用官方推荐的全量列表，包含 libc6-dev-i386）
+          # 3. 安装编译依赖
           sudo -E apt-get -qq install -y ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential \
             bzip2 ccache clang cmake cpio curl device-tree-compiler flex gawk gcc-multilib g++-multilib gettext \
             genisoimage git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libfuse-dev libglib2.0-dev \
@@ -61,11 +57,11 @@ jobs:
             python3 python3-pyelftools python3-setuptools qemu-utils rsync scons squashfs-tools subversion \
             swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev
           
-          # 4. 清理空间（CI 环境必须步骤）
+          # 4. 再次清理 apt 缓存 (移除了冗余的 rm -rf /usr/share/dotnet 等，因上一步已处理)
           sudo -E apt-get -qq autoremove --purge
           sudo -E apt-get -qq clean
           
-          # 5. 设置时区和创建目录
+          # 5. 设置时区
           sudo timedatectl set-timezone "$TZ"
           mkdir -p "${{ github.workspace }}/build"
 
@@ -87,26 +83,17 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds install -a
           
-          # Passwall
-          # 移除 openwrt feeds 自带的核心库
+          # --- Passwall 处理 ---
           rm -rf feeds/packages/net/{xray-core,v2ray-geodata,sing-box,chinadns-ng,dns2socks,hysteria,ipt2socks,microsocks,naiveproxy,shadowsocks-libev,shadowsocks-rust,shadowsocksr-libev,simple-obfs,tcping,trojan-plus,tuic-client,v2ray-plugin,xray-plugin,geoview,shadow-tls}
           git clone https://github.com/Openwrt-Passwall/openwrt-passwall-packages package/passwall-packages
 
-          # 移除 openwrt feeds 过时的luci版本
           rm -rf feeds/luci/applications/luci-app-passwall
           git clone https://github.com/Openwrt-Passwall/openwrt-passwall package/passwall-luci
 
-          # -------------------------------------------------------
-          # SmartDNS 修复：替换为官方版本以获取仪表盘 (新增部分)
-          # -------------------------------------------------------
-          # 1. 删除 feeds 中自带的 smartdns (防止版本冲突)
+          # --- SmartDNS 官方版替换 (含 Dashboard) ---
           rm -rf feeds/packages/net/smartdns
           rm -rf feeds/luci/applications/luci-app-smartdns
-
-          # 2. 克隆官方最新源码 (作者: pymumu)
-          # openwrt-smartdns 是核心程序
           git clone -b master --depth 1 https://github.com/pymumu/openwrt-smartdns package/smartdns
-          # luci-app-smartdns 是界面文件
           git clone -b master --depth 1 https://github.com/pymumu/luci-app-smartdns package/luci-app-smartdns
 
       - name: Load Custom Configuration (DIY Part 2)
@@ -118,29 +105,36 @@ jobs:
       - name: Generate Configuration
         working-directory: ${{ github.workspace }}/build/openwrt
         run: |
+          # 禁用 Ccache 以节省空间
           echo "CONFIG_CCACHE=n" >> .config
+          
           echo "CONFIG_SDK=n" >> .config
           echo "CONFIG_IB=n" >> .config
           echo "CONFIG_KO_SYMBOLS=n" >> .config
           echo "CONFIG_BUILD_LOG=n" >> .config
 
           # ---------------------------------------------------------
-          # 核心修复：强制使用 Firewall4 (nftables) 环境
+          # 防火墙配置：Firewall4 (Nftables) + Iptables 兼容层
           # ---------------------------------------------------------
-          
-          # 1. 禁用旧版 Firewall3 和 iptables (防止冲突)
+          # 1. 禁用旧版 Firewall3
           echo "CONFIG_PACKAGE_firewall=n" >> .config
           echo "CONFIG_PACKAGE_iptables=n" >> .config
           echo "CONFIG_PACKAGE_libiptc=n" >> .config
           
-          # 2. 启用 Firewall4 和 nftables
+          # 2. 启用 Firewall4 (Nftables)
           echo "CONFIG_PACKAGE_firewall4=y" >> .config
           echo "CONFIG_PACKAGE_nftables=y" >> .config
           echo "CONFIG_PACKAGE_kmod-nft-core=y" >> .config
           echo "CONFIG_PACKAGE_kmod-nft-full=y" >> .config
           echo "CONFIG_PACKAGE_kmod-nft-offload=y" >> .config
 
-          # 3. 强制使用 dnsmasq-full 并启用 nftset 支持 (Passwall 必需)
+          # 3. [修复] 启用 iptables-nft (重要：提供 iptables 命令兼容，防止插件报错)
+          echo "CONFIG_PACKAGE_iptables-nft=y" >> .config
+          echo "CONFIG_PACKAGE_ip6tables-nft=y" >> .config
+          echo "CONFIG_PACKAGE_iptables-mod-tproxy=y" >> .config
+          echo "CONFIG_PACKAGE_iptables-mod-extra=y" >> .config
+
+          # 4. Dnsmasq 配置
           echo "CONFIG_PACKAGE_dnsmasq=n" >> .config
           echo "CONFIG_PACKAGE_dnsmasq-full=y" >> .config
           echo "CONFIG_PACKAGE_dnsmasq_full_dnssec=y" >> .config
@@ -151,15 +145,24 @@ jobs:
           echo "CONFIG_PACKAGE_dnsmasq_full_nftset=y" >> .config
           
           # ---------------------------------------------------------
+          # [核心修复] 禁用 UPX 压缩 (防止编译内存溢出 Error 1)
+          # ---------------------------------------------------------
+          echo "CONFIG_XRAY_CORE_COMPRESS_UPX=n" >> .config
+          echo "CONFIG_SING_BOX_COMPRESS_UPX=n" >> .config
+          echo "CONFIG_PACKAGE_xray-core_compress_upx=n" >> .config
+          echo "CONFIG_PACKAGE_sing-box_compress_upx=n" >> .config
 
           cat >> .config <<'EOF'
           CONFIG_PACKAGE_ipv6helper=y
           
-          # 常用工具
+          # Passwall 配置 (同时启用双模式支持，确保稳定)
           CONFIG_PACKAGE_luci-app-passwall=y
-          CONFIG_PACKAGE_luci-app-passwall_Iptables_Transparent_Proxy=n
-          CONFIG_PACKAGE_luci-app-passwall_Nftables_Transparent_Proxy=y
+          CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Iptables=y
           CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Nftables=y
+          CONFIG_PACKAGE_luci-app-passwall_Iptables_Transparent_Proxy=y
+          CONFIG_PACKAGE_luci-app-passwall_Nftables_Transparent_Proxy=y
+          
+          # 其他应用
           CONFIG_PACKAGE_luci-app-ttyd=y
           CONFIG_PACKAGE_luci-app-ddns=y
           CONFIG_PACKAGE_ddns-scripts=y
@@ -187,20 +190,14 @@ jobs:
           fi
 
           MISSING_DEPS=""
-          # 核心组件列表
           DEPS_LIST="xray-core sing-box v2ray-core v2ray-plugin naiveproxy trojan-plus tuic-client"
 
           for dep in $DEPS_LIST; do
-            # 只有当配置文件中启用了该包时才检查
             if grep -q "CONFIG_PACKAGE_$dep=y" .config; then
               FOUND=0
-              
-              # 方案A: 使用 find 查找 package 下任意深度的子目录 (修复路径层级问题)
               if find package -type d -name "$dep" -print -quit | grep -q .; then
                 FOUND=1
               fi
-              
-              # 方案B: 如果 package 下没找到，继续检查 feeds
               if [ "$FOUND" -eq 0 ]; then
                 for feed_dir in feeds/*/packages; do
                   if [ -d "$feed_dir/$dep" ]; then
@@ -209,8 +206,6 @@ jobs:
                   fi
                 done
               fi
-
-              # 如果确实缺失，注释掉 .config 中启用的包，避免编译报错
               if [ "$FOUND" -eq 0 ]; then
                 echo "⚠️  $dep is enabled in .config but not found in feeds/package directories!"
                 sed -i "s/CONFIG_PACKAGE_$dep=y/# CONFIG_PACKAGE_$dep is missing and commented out/" .config
@@ -222,10 +217,7 @@ jobs:
           done
 
           if [ -n "$MISSING_DEPS" ]; then
-            echo "========================================================"
-            echo "⚠️  Missing PassWall packages:$MISSING_DEPS"
-            echo "   (这些包已被自动禁用以防止编译失败)"
-            echo "========================================================"
+            echo "⚠️  Missing PassWall packages:$MISSING_DEPS (Disabled)"
           else
             echo "✅ All PassWall dependencies satisfied."
           fi
