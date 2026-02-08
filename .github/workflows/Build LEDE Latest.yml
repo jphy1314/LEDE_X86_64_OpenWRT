@@ -80,48 +80,54 @@ jobs:
       - name: Update, Patch & Install Feeds
         working-directory: ${{ github.workspace }}/build/openwrt
         run: |
+          # 1. 更新 Feeds 并安装基础依赖
           ./scripts/feeds update -a
           ./scripts/feeds install -a
          
           # -------------------------------------------------------
           # Passwall 处理
           # -------------------------------------------------------
-          # 先卸载可能冲突的包 (保险起见)
-          ./scripts/feeds uninstall luci-app-passwall || true
-         
+          # 移除官方 feeds 中的冲突包
           rm -rf feeds/packages/net/{xray-core,v2ray-geodata,sing-box,chinadns-ng,dns2socks,hysteria,ipt2socks,microsocks,naiveproxy,shadowsocks-libev,shadowsocks-rust,shadowsocksr-libev,simple-obfs,tcping,trojan-plus,tuic-client,v2ray-plugin,xray-plugin,geoview,shadow-tls}
-          git clone https://github.com/Openwrt-Passwall/openwrt-passwall-packages package/passwall-packages
+          
+          # 移除 luci 中的 passwall
           rm -rf feeds/luci/applications/luci-app-passwall
+          
+          # 克隆最新 Passwall 到 package 目录
+          git clone https://github.com/Openwrt-Passwall/openwrt-passwall-packages package/passwall-packages
           git clone https://github.com/Openwrt-Passwall/openwrt-passwall package/passwall-luci
+
           # -------------------------------------------------------
-          # SmartDNS 真正完美修复方案 (路径修正法)
+          # SmartDNS 官方版修复方案
           # -------------------------------------------------------
-         
-          # 1. 彻底清理 Feeds 中的旧版本
-          # 这一步非常重要，防止系统读取到旧的索引
+          
+          # 1. 清理冲突：从 feeds 中物理删除 smartdns
           rm -rf feeds/packages/net/smartdns
           rm -rf feeds/luci/applications/luci-app-smartdns
-          ./scripts/feeds uninstall smartdns
-          ./scripts/feeds uninstall luci-app-smartdns
-          # 2. 将官方 Core 和 UI 都克隆到 package 目录
-          # 放在 package 目录是“仪表盘”能显示的最强保证，因为它优先级最高
+          
+          # 2. 卸载索引（如果存在）
+          # 这一步是为了让编译系统“忘记”feeds里曾经有过 smartdns
+          ./scripts/feeds uninstall smartdns || true
+          ./scripts/feeds uninstall luci-app-smartdns || true
+
+          # 3. 克隆官方源码到 package 目录
+          # package 目录下的源码优先级最高，会自动覆盖 feeds
           git clone -b master --depth 1 https://github.com/pymumu/openwrt-smartdns package/smartdns
           git clone -b master --depth 1 https://github.com/pymumu/luci-app-smartdns package/luci-app-smartdns
-          # 3. [核心操作] 修正 Makefile 路径，保留 Rust 依赖
-          # 原理：源码被移动到了 package/smartdns，原来的 "../../" 指向的是源码根目录。
-          # 但是 rust 依赖在 feeds/packages/lang/rust。
-          # 所以我们需要把路径从 "../../lang/rust" 改为 "../../feeds/packages/lang/rust"
+
+          # 4. [核心修复] 修正 Makefile 路径
+          # 将 "../../lang/rust" 替换为绝对指向 feeds 的路径
+          # 这样无论源码在哪里，都能找到 Rust 依赖
           sed -i 's/..\/..\/lang\/rust/..\/..\/feeds\/packages\/lang\/rust/g' package/smartdns/Makefile
-          # 4. 再次安装 Feeds 依赖 (确保 Rust 语言包就位)
-          ./scripts/feeds install -a
-          # 4. 刷新 Feeds 索引
-          # 只需刷新核心程序，界面程序因为在 package/ 下会自动被识别
-          ./scripts/feeds install -p packages smartdns
-         
+
+          # 5. [最后检查] 验证路径修正是否成功
           if ! grep -q "../../feeds/packages/lang/rust" package/smartdns/Makefile; then
-            echo "Rust path patch failed!"
+            echo "::error:: SmartDNS Rust path patch failed!"
             exit 1
           fi
+          
+          # 注意：这里不需要再执行 ./scripts/feeds install -a
+          # 因为位于 package/ 下的源码会自动被 OpenWrt 识别为可用包
       - name: Upgrade Go for xray-core
         working-directory: ${{ github.workspace }}/build/openwrt
         run: |
