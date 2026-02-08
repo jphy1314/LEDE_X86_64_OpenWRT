@@ -80,12 +80,12 @@ jobs:
       - name: Update, Patch & Install Feeds
         working-directory: ${{ github.workspace }}/build/openwrt
         run: |
-          # 1. 更新并安装默认 Feeds
+          # 1. 常规更新和安装
           ./scripts/feeds update -a
           ./scripts/feeds install -a
           
           # -------------------------------------------------------
-          # Passwall 处理 (Passwall 依然建议放在 package 目录，因为它自带依赖管理)
+          # Passwall 处理 (保持不变)
           # -------------------------------------------------------
           rm -rf feeds/packages/net/{xray-core,v2ray-geodata,sing-box,chinadns-ng,dns2socks,hysteria,ipt2socks,microsocks,naiveproxy,shadowsocks-libev,shadowsocks-rust,shadowsocksr-libev,simple-obfs,tcping,trojan-plus,tuic-client,v2ray-plugin,xray-plugin,geoview,shadow-tls}
           git clone https://github.com/Openwrt-Passwall/openwrt-passwall-packages package/passwall-packages
@@ -94,23 +94,28 @@ jobs:
           git clone https://github.com/Openwrt-Passwall/openwrt-passwall package/passwall-luci
 
           # -------------------------------------------------------
-          # SmartDNS 完美修复方案：克隆到 Feeds 目录 (解决路径依赖错误)
+          # SmartDNS 完美修复方案 (Core in Feeds, UI in Package)
           # -------------------------------------------------------
           
-          # 1. 删除 Feeds 中旧的 SmartDNS 源码
+          # 1. 清理旧版：先卸载并删除 LEDE 自带的 smartdns
+          ./scripts/feeds uninstall smartdns
+          ./scripts/feeds uninstall luci-app-smartdns
           rm -rf feeds/packages/net/smartdns
           rm -rf feeds/luci/applications/luci-app-smartdns
 
-          # 2. 将官方最新源码克隆到 Feeds 对应的标准路径下
-          # 这样 Makefile 中的 "../../lang/rust" 就能正确找到文件了
+          # 2. 安装核心程序 (Core) -> 必须放回 Feeds 目录
+          # 原因：解决 "Makefile:33: ../../lang/rust/rust-package.mk" 路径报错
+          # 只有放在 feeds/packages/net/ 下，../../lang/rust 才能指向存在的 feeds/packages/lang/rust
           git clone -b master --depth 1 https://github.com/pymumu/openwrt-smartdns feeds/packages/net/smartdns
-          git clone -b master --depth 1 https://github.com/pymumu/luci-app-smartdns feeds/luci/applications/luci-app-smartdns
+          
+          # 3. 安装界面程序 (UI) -> 必须放入 Package 目录
+          # 原因：package/ 目录优先级最高。这能强制覆盖系统默认的界面，确保仪表盘(Dashboard)文件被编译进去。
+          git clone -b master --depth 1 https://github.com/pymumu/luci-app-smartdns package/luci-app-smartdns
 
-          # 3. 关键步骤：重新安装 Feeds
-          # 因为我们替换了 Feeds 目录下的源文件，必须重新 install 让系统刷新索引
+          # 4. 刷新 Feeds 索引
+          # 只需刷新核心程序，界面程序因为在 package/ 下会自动被识别
           ./scripts/feeds install -p packages smartdns
-          ./scripts/feeds install -p luci luci-app-smartdns
-
+          
       - name: Load Custom Configuration (DIY Part 2)
         run: |
           [ -e "${{ github.workspace }}/diy-part2.sh" ] && \
