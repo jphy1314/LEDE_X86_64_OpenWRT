@@ -96,6 +96,19 @@ jobs:
           rm -rf feeds/luci/applications/luci-app-passwall
           git clone https://github.com/Openwrt-Passwall/openwrt-passwall package/passwall-luci
 
+          # -------------------------------------------------------
+          # SmartDNS 修复：替换为官方版本以获取仪表盘 (新增部分)
+          # -------------------------------------------------------
+          # 1. 删除 feeds 中自带的 smartdns (防止版本冲突)
+          rm -rf feeds/packages/net/smartdns
+          rm -rf feeds/luci/applications/luci-app-smartdns
+
+          # 2. 克隆官方最新源码 (作者: pymumu)
+          # openwrt-smartdns 是核心程序
+          git clone -b master --depth 1 https://github.com/pymumu/openwrt-smartdns package/smartdns
+          # luci-app-smartdns 是界面文件
+          git clone -b master --depth 1 https://github.com/pymumu/luci-app-smartdns package/luci-app-smartdns
+
       - name: Load Custom Configuration (DIY Part 2)
         run: |
           [ -e "${{ github.workspace }}/diy-part2.sh" ] && \
