@@ -1,12 +1,9 @@
 name: Build LEDE Latest
-
 on:
   workflow_dispatch:
-
 permissions:
   contents: write
   actions: write
-
 env:
   REPO_URL: https://github.com/coolsnowwolf/lede
   REPO_BRANCH: master
@@ -15,17 +12,14 @@ env:
   UPLOAD_FIRMWARE: "true"
   UPLOAD_RELEASE: "true"
   CCACHE_DIR: /home/runner/.ccache
-
 jobs:
   build:
     runs-on: ubuntu-24.04
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
-
       # 使用插件清理磁盘（已配置为强力清理）
       - name: Free Disk Space
         uses: jlumbroso/free-disk-space@main
@@ -37,109 +31,127 @@ jobs:
           large-packages: true
           docker-images: true
           swap-storage: true
-
+          apt: false
       - name: Initialization Environment
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
-          # 1. 清理第三方源
-          sudo rm -rf /etc/apt/sources.list.d/*
+          # 先安装必要工具
+          sudo apt-get update
+          sudo apt-get install -y software-properties-common
           
-          # 2. 更新列表
-          sudo -E apt-get -qq update
+          # 显式启用 universe（关键！大多数开发包都在这里）
+          sudo add-apt-repository universe -y
+          sudo add-apt-repository multiverse -y
           
-          # 3. 安装编译依赖
-          sudo -E apt-get -qq install -y ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential \
-            bzip2 ccache clang cmake cpio curl device-tree-compiler flex gawk gcc-multilib g++-multilib gettext \
-            genisoimage git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libfuse-dev libglib2.0-dev \
-            libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev libpython3-dev \
-            libreadline-dev libssl-dev libtool llvm lrzsz libnsl-dev ninja-build p7zip p7zip-full patch pkgconf \
-            python3 python3-pyelftools python3-setuptools qemu-utils rsync scons squashfs-tools subversion \
-            swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev
+          # 完整更新（去掉 -qq，方便看错误）
+          sudo apt-get update
           
-          # 4. 再次清理 apt 缓存 (移除了冗余的 rm -rf /usr/share/dotnet 等，因上一步已处理)
-          sudo -E apt-get -qq autoremove --purge
-          sudo -E apt-get -qq clean
+          # 安装编译依赖（你的原列表基本保留，建议微调）
+          sudo apt-get install -y \
+            build-essential ccache clang cmake device-tree-compiler \
+            flex gawk gcc-multilib g++-multilib gettext git gperf \
+            help2man intltool libelf-dev libfuse-dev libglib2.0-dev \
+            libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses-dev \
+            libreadline-dev libssl-dev libtool llvm lrzsz libnsl-dev \
+            ninja-build p7zip p7zip-full patch pkgconf python3 python3-pyelftools \
+            qemu-utils rsync scons squashfs-tools subversion swig texinfo \
+            uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev \
+            ack antlr3 asciidoc autoconf automake autopoint binutils bison \
+            bzip2 curl genisoimage haveged
           
-          # 5. 设置时区
+          # 清理
+          sudo apt-get autoremove --purge -y
+          sudo apt-get clean
+          
+          # 设置时区
           sudo timedatectl set-timezone "$TZ"
           mkdir -p "${{ github.workspace }}/build"
-
       - name: Clone Source Code
         working-directory: ${{ github.workspace }}/build
         run: |
           git clone -b $REPO_BRANCH --single-branch --depth 1 $REPO_URL openwrt
           ln -sf "${{ github.workspace }}/build/openwrt" "${{ github.workspace }}/openwrt"
-
       - name: Load Custom Feeds (DIY Part 1)
         run: |
           [ -e "${{ github.workspace }}/diy-part1.sh" ] && \
           chmod +x "${{ github.workspace }}/diy-part1.sh" && \
           cd openwrt && "${{ github.workspace }}/diy-part1.sh" || true
-
       - name: Update, Patch & Install Feeds
         working-directory: ${{ github.workspace }}/build/openwrt
         run: |
           ./scripts/feeds update -a
           ./scripts/feeds install -a
-          
+         
           # -------------------------------------------------------
           # Passwall 处理
           # -------------------------------------------------------
           # 先卸载可能冲突的包 (保险起见)
           ./scripts/feeds uninstall luci-app-passwall || true
-          
+         
           rm -rf feeds/packages/net/{xray-core,v2ray-geodata,sing-box,chinadns-ng,dns2socks,hysteria,ipt2socks,microsocks,naiveproxy,shadowsocks-libev,shadowsocks-rust,shadowsocksr-libev,simple-obfs,tcping,trojan-plus,tuic-client,v2ray-plugin,xray-plugin,geoview,shadow-tls}
           git clone https://github.com/Openwrt-Passwall/openwrt-passwall-packages package/passwall-packages
-
           rm -rf feeds/luci/applications/luci-app-passwall
           git clone https://github.com/Openwrt-Passwall/openwrt-passwall package/passwall-luci
-
           # -------------------------------------------------------
           # SmartDNS 真正完美修复方案 (路径修正法)
           # -------------------------------------------------------
-          
+         
           # 1. 彻底清理 Feeds 中的旧版本
           # 这一步非常重要，防止系统读取到旧的索引
           rm -rf feeds/packages/net/smartdns
           rm -rf feeds/luci/applications/luci-app-smartdns
           ./scripts/feeds uninstall smartdns
           ./scripts/feeds uninstall luci-app-smartdns
-
           # 2. 将官方 Core 和 UI 都克隆到 package 目录
           # 放在 package 目录是“仪表盘”能显示的最强保证，因为它优先级最高
           git clone -b master --depth 1 https://github.com/pymumu/openwrt-smartdns package/smartdns
           git clone -b master --depth 1 https://github.com/pymumu/luci-app-smartdns package/luci-app-smartdns
-
           # 3. [核心操作] 修正 Makefile 路径，保留 Rust 依赖
           # 原理：源码被移动到了 package/smartdns，原来的 "../../" 指向的是源码根目录。
           # 但是 rust 依赖在 feeds/packages/lang/rust。
           # 所以我们需要把路径从 "../../lang/rust" 改为 "../../feeds/packages/lang/rust"
           sed -i 's/..\/..\/lang\/rust/..\/..\/feeds\/packages\/lang\/rust/g' package/smartdns/Makefile
-
           # 4. 再次安装 Feeds 依赖 (确保 Rust 语言包就位)
           ./scripts/feeds install -a
           # 4. 刷新 Feeds 索引
           # 只需刷新核心程序，界面程序因为在 package/ 下会自动被识别
           ./scripts/feeds install -p packages smartdns
+         
+          if ! grep -q "../../feeds/packages/lang/rust" package/smartdns/Makefile; then
+            echo "Rust path patch failed!"
+            exit 1
+          fi
+      - name: Upgrade Go for xray-core
+        working-directory: ${{ github.workspace }}/build/openwrt
+        run: |
+          # 备份原有 golang feed
+          mv feeds/packages/lang/golang feeds/packages/lang/golang.bak || true
           
+          # 使用较新的 golang feed（可从 openwrt/packages 或 immortalwrt 借）
+          git clone https://github.com/openwrt/packages feeds/packages -b openwrt-24.10  # 或 main 分支视情况
+          # 只保留 golang 部分，其他还原
+          rm -rf feeds/packages/*/*
+          mv feeds/packages/lang/golang.bak feeds/packages/lang/golang
+          
+          # 或者直接 patch go version（更激进但快）
+          sed -i 's/GO_VERSION:=1.25.5/GO_VERSION:=1.25.6/g' feeds/packages/lang/golang/golang/Makefile
+          # 或更高版本如果需要
       - name: Load Custom Configuration (DIY Part 2)
         run: |
           [ -e "${{ github.workspace }}/diy-part2.sh" ] && \
           chmod +x "${{ github.workspace }}/diy-part2.sh" && \
           cd openwrt && "${{ github.workspace }}/diy-part2.sh" || true
-
       - name: Generate Configuration
         working-directory: ${{ github.workspace }}/build/openwrt
         run: |
           # 禁用 Ccache 以节省空间
           echo "CONFIG_CCACHE=n" >> .config
-          
+         
           echo "CONFIG_SDK=n" >> .config
           echo "CONFIG_IB=n" >> .config
           echo "CONFIG_KO_SYMBOLS=n" >> .config
           echo "CONFIG_BUILD_LOG=n" >> .config
-
           # ---------------------------------------------------------
           # 防火墙配置：Firewall4 (Nftables) + Iptables 兼容层
           # ---------------------------------------------------------
@@ -147,20 +159,18 @@ jobs:
           echo "CONFIG_PACKAGE_firewall=n" >> .config
           echo "CONFIG_PACKAGE_iptables=n" >> .config
           echo "CONFIG_PACKAGE_libiptc=n" >> .config
-          
+         
           # 2. 启用 Firewall4 (Nftables)
           echo "CONFIG_PACKAGE_firewall4=y" >> .config
           echo "CONFIG_PACKAGE_nftables=y" >> .config
           echo "CONFIG_PACKAGE_kmod-nft-core=y" >> .config
           echo "CONFIG_PACKAGE_kmod-nft-full=y" >> .config
           echo "CONFIG_PACKAGE_kmod-nft-offload=y" >> .config
-
           # 3. [修复] 启用 iptables-nft (重要：提供 iptables 命令兼容，防止插件报错)
           echo "CONFIG_PACKAGE_iptables-nft=y" >> .config
           echo "CONFIG_PACKAGE_ip6tables-nft=y" >> .config
           echo "CONFIG_PACKAGE_iptables-mod-tproxy=y" >> .config
           echo "CONFIG_PACKAGE_iptables-mod-extra=y" >> .config
-
           # 4. Dnsmasq 配置
           echo "CONFIG_PACKAGE_dnsmasq=n" >> .config
           echo "CONFIG_PACKAGE_dnsmasq-full=y" >> .config
@@ -170,7 +180,7 @@ jobs:
           echo "CONFIG_PACKAGE_dnsmasq_full_conntrack=y" >> .config
           echo "CONFIG_PACKAGE_dnsmasq_full_noid=y" >> .config
           echo "CONFIG_PACKAGE_dnsmasq_full_nftset=y" >> .config
-          
+         
           # ---------------------------------------------------------
           # [核心修复] 禁用 UPX 压缩 (防止编译内存溢出 Error 1)
           # ---------------------------------------------------------
@@ -178,17 +188,16 @@ jobs:
           echo "CONFIG_SING_BOX_COMPRESS_UPX=n" >> .config
           echo "CONFIG_PACKAGE_xray-core_compress_upx=n" >> .config
           echo "CONFIG_PACKAGE_sing-box_compress_upx=n" >> .config
-
           cat >> .config <<'EOF'
           CONFIG_PACKAGE_ipv6helper=y
-          
+         
           # Passwall 配置 (同时启用双模式支持，确保稳定)
           CONFIG_PACKAGE_luci-app-passwall=y
           CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Iptables=y
           CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Nftables=y
           CONFIG_PACKAGE_luci-app-passwall_Iptables_Transparent_Proxy=y
           CONFIG_PACKAGE_luci-app-passwall_Nftables_Transparent_Proxy=y
-          
+         
           # 其他应用
           CONFIG_PACKAGE_luci-app-ttyd=y
           CONFIG_PACKAGE_luci-app-ddns=y
@@ -202,23 +211,21 @@ jobs:
           CONFIG_PACKAGE_luci-theme-argon=y
           CONFIG_PACKAGE_luci-app-argon-config=y
           EOF
-
+          echo "CONFIG_TARGET_x86=y" >> .config
+          echo "CONFIG_TARGET_x86_64=y" >> .config
           make defconfig
-
       - name: Check PassWall Dependencies
         working-directory: ${{ github.workspace }}/build/openwrt
         run: |
           set -euo pipefail
           echo "Checking PassWall dependencies..."
-          
+         
           if [ ! -f .config ]; then
             echo "::error:: .config not found. Generate Configuration must run first."
             exit 1
           fi
-
           MISSING_DEPS=""
           DEPS_LIST="xray-core sing-box v2ray-core v2ray-plugin naiveproxy trojan-plus tuic-client"
-
           for dep in $DEPS_LIST; do
             if grep -q "CONFIG_PACKAGE_$dep=y" .config; then
               FOUND=0
@@ -234,21 +241,19 @@ jobs:
                 done
               fi
               if [ "$FOUND" -eq 0 ]; then
-                echo "⚠️  $dep is enabled in .config but not found in feeds/package directories!"
+                echo "⚠️ $dep is enabled in .config but not found in feeds/package directories!"
                 sed -i "s/CONFIG_PACKAGE_$dep=y/# CONFIG_PACKAGE_$dep is missing and commented out/" .config
                 MISSING_DEPS="$MISSING_DEPS $dep"
               else
-                echo "  👉 Found $dep"
+                echo " 👉 Found $dep"
               fi
             fi
           done
-
           if [ -n "$MISSING_DEPS" ]; then
-            echo "⚠️  Missing PassWall packages:$MISSING_DEPS (Disabled)"
+            echo "⚠️ Missing PassWall packages:$MISSING_DEPS (Disabled)"
           else
             echo "✅ All PassWall dependencies satisfied."
           fi
-
       - name: Download package
         working-directory: ${{ github.workspace }}/build/openwrt
         run: |
@@ -256,43 +261,81 @@ jobs:
           make checksum
           find dl -size -1024c -exec rm -f {} \;
           make download -j1 || true
-
       - name: Compile the firmware
         id: compile
         working-directory: ${{ github.workspace }}/build/openwrt
         run: |
-          make tools/compile -j$(nproc) || make tools/compile -j1 V=s
-          make toolchain/compile -j$(nproc) || make toolchain/compile -j1 V=s
-          make -j$(nproc) || make -j1 V=s
-
+          # 更保守的编译策略
+          export MAKEFLAGS="-j$(nproc)"
+          make tools/compile V=s || make tools/compile -j1 V=s
+          make toolchain/compile V=s || make toolchain/compile -j1 V=s
+          
+          # 主编译降低并行度 + 开启 swap
+          fallocate -l 8G /swapfile
+          chmod 600 /swapfile
+          mkswap /swapfile
+          swapon /swapfile
+          
+          if ! make -j4 V=s; then
+            echo "❌ Main compile failed. Check logs above."
+            echo "status=failed" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          if ! make -j1 V=s; then  # 只在主 make 失败时回退
+            echo "❌ Fallback compile also failed."
+            echo "status=failed" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          swapoff /swapfile
+          rm -f /swapfile
           grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*DEVICE_(.*)=y/\1/' > DEVICE_NAME
           [ -s DEVICE_NAME ] && echo "DEVICE_NAME=_$(cat DEVICE_NAME)" >> $GITHUB_ENV || echo "DEVICE_NAME=_Generic" >> $GITHUB_ENV
           echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
           echo "status=success" >> $GITHUB_OUTPUT
-
+      - name: Verify build output
+        if: steps.compile.outputs.status == 'success'
+        working-directory: ${{ github.workspace }}/build/openwrt
+        run: |
+          if [ ! -d "bin/targets" ] || [ -z "$(find bin/targets -name '*.bin' -o -name '*.img')" ]; then
+            echo "❌ No firmware files generated. Build incomplete."
+            echo "status=failed" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          echo "✅ Build verified: $(find bin/targets -name '*.bin' | wc -l) firmware files found."
+          echo "status=success" >> $GITHUB_OUTPUT
       - name: Upload bin directory
         uses: actions/upload-artifact@v4
         if: ${{ steps.compile.outputs.status == 'success' && fromJSON(env.UPLOAD_BIN_DIR) }}
         with:
           name: OpenWrt_bin${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
           path: ${{ github.workspace }}/build/openwrt/bin
-
       - name: Organize files
         id: organize
         if: ${{ fromJSON(env.UPLOAD_FIRMWARE) && !cancelled() }}
         run: |
-          cd "${{ github.workspace }}/build/openwrt/bin/targets"/*/*
+          TARGET_DIR="${{ github.workspace }}/build/openwrt/bin/targets"
+          if [ ! -d "$TARGET_DIR" ] || [ -z "$(ls -A "$TARGET_DIR")" ]; then
+            echo "❌ No targets directory found. Compilation likely failed. Skipping organize."
+            echo "status=failed" >> $GITHUB_OUTPUT
+            exit 0  # 不退出 workflow，继续后续步骤但标记失败
+          fi
+          FIRMWARE_SUBDIR=$(ls "$TARGET_DIR" | head -1)  # 取第一个子目录（如 x86）
+          if [ ! -d "$TARGET_DIR/$FIRMWARE_SUBDIR" ]; then
+            echo "❌ No firmware subdir found. Skipping."
+            echo "status=failed" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          cd "$TARGET_DIR/$FIRMWARE_SUBDIR"
           rm -rf packages
           echo "FIRMWARE=$PWD" >> $GITHUB_ENV
           echo "status=success" >> $GITHUB_OUTPUT
-
       - name: Upload firmware directory
         uses: actions/upload-artifact@v4
         if: ${{ steps.organize.outputs.status == 'success' && !cancelled() }}
         with:
           name: OpenWrt_firmware${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
           path: ${{ env.FIRMWARE }}
-
       - name: Generate release tag
         id: tag
         if: ${{ fromJSON(env.UPLOAD_RELEASE) && steps.organize.outputs.status == 'success' && !cancelled() }}
@@ -301,7 +344,6 @@ jobs:
           echo "Auto Build by GitHub Actions" > release.txt
           echo "Lede OpenWrt Latest Build" >> release.txt
           echo "status=success" >> $GITHUB_OUTPUT
-
       - name: Upload firmware to release
         uses: softprops/action-gh-release@master
         if: ${{ steps.tag.outputs.status == 'success' && !cancelled() }}
@@ -311,13 +353,11 @@ jobs:
           tag_name: ${{ steps.tag.outputs.release_tag }}
           body_path: release.txt
           files: ${{ env.FIRMWARE }}/*
-
       - name: Delete workflow runs
         uses: Mattraks/delete-workflow-runs@main
         with:
           retain_days: 0
           keep_minimum_runs: 5
-
       - name: Remove old Releases
         uses: dev-drprasad/delete-older-releases@master
         if: ${{ fromJSON(env.UPLOAD_RELEASE) && !cancelled() }}
