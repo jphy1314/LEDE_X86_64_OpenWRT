@@ -282,12 +282,6 @@ jobs:
           make tools/compile V=s || make tools/compile -j1 V=s
           make toolchain/compile V=s || make toolchain/compile -j1 V=s
           
-          # 主编译降低并行度 + 开启 swap
-          fallocate -l 8G /swapfile
-          chmod 600 /swapfile
-          mkswap /swapfile
-          swapon /swapfile
-          
           if ! make -j4 V=s; then
             echo "❌ Main compile failed. Check logs above."
             echo "status=failed" >> $GITHUB_OUTPUT
