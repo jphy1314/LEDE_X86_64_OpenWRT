@@ -99,14 +99,6 @@ jobs:
           
           echo "✅ Feeds patched."
 
-      - name: Upgrade Go for xray-core
-        working-directory: ${{ github.workspace }}/build/openwrt
-        run: |
-          rm -rf feeds/packages/lang/golang
-          git clone https://github.com/openwrt/packages.git temp_packages -b master --depth 1
-          mv temp_packages/lang/golang feeds/packages/lang/
-          rm -rf temp_packages
-
       - name: Load Custom Configuration (DIY Part 2)
         run: |
           [ -e "${{ github.workspace }}/diy-part2.sh" ] && \
