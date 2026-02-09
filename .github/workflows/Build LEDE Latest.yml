@@ -152,12 +152,12 @@ jobs:
           [ -e "${{ github.workspace }}/diy-part2.sh" ] && \
           chmod +x "${{ github.workspace }}/diy-part2.sh" && \
           cd openwrt && "${{ github.workspace }}/diy-part2.sh" || true
+      
       - name: Generate Configuration
         working-directory: ${{ github.workspace }}/build/openwrt
         run: |
           # 禁用 Ccache 以节省空间
           echo "CONFIG_CCACHE=n" >> .config
-         
           echo "CONFIG_SDK=n" >> .config
           echo "CONFIG_IB=n" >> .config
           echo "CONFIG_KO_SYMBOLS=n" >> .config
@@ -169,7 +169,6 @@ jobs:
           echo "CONFIG_PACKAGE_firewall=n" >> .config
           echo "CONFIG_PACKAGE_iptables=n" >> .config
           echo "CONFIG_PACKAGE_libiptc=n" >> .config
-         
           # 2. 启用 Firewall4 (Nftables)
           echo "CONFIG_PACKAGE_firewall4=y" >> .config
           echo "CONFIG_PACKAGE_nftables=y" >> .config
@@ -224,6 +223,7 @@ jobs:
           echo "CONFIG_TARGET_x86=y" >> .config
           echo "CONFIG_TARGET_x86_64=y" >> .config
           make defconfig
+          
       - name: Check PassWall Dependencies
         working-directory: ${{ github.workspace }}/build/openwrt
         run: |
@@ -264,6 +264,7 @@ jobs:
           else
             echo "✅ All PassWall dependencies satisfied."
           fi
+          
       - name: Download package
         working-directory: ${{ github.workspace }}/build/openwrt
         run: |
@@ -271,6 +272,7 @@ jobs:
           make checksum
           find dl -size -1024c -exec rm -f {} \;
           make download -j1 || true
+          
       - name: Compile the firmware
         id: compile
         working-directory: ${{ github.workspace }}/build/openwrt
@@ -303,6 +305,7 @@ jobs:
           [ -s DEVICE_NAME ] && echo "DEVICE_NAME=_$(cat DEVICE_NAME)" >> $GITHUB_ENV || echo "DEVICE_NAME=_Generic" >> $GITHUB_ENV
           echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
           echo "status=success" >> $GITHUB_OUTPUT
+          
       - name: Verify build output
         if: steps.compile.outputs.status == 'success'
         working-directory: ${{ github.workspace }}/build/openwrt
@@ -314,12 +317,14 @@ jobs:
           fi
           echo "✅ Build verified: $(find bin/targets -name '*.bin' | wc -l) firmware files found."
           echo "status=success" >> $GITHUB_OUTPUT
+          
       - name: Upload bin directory
         uses: actions/upload-artifact@v4
         if: ${{ steps.compile.outputs.status == 'success' && fromJSON(env.UPLOAD_BIN_DIR) }}
         with:
           name: OpenWrt_bin${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
           path: ${{ github.workspace }}/build/openwrt/bin
+          
       - name: Organize files
         id: organize
         if: ${{ fromJSON(env.UPLOAD_FIRMWARE) && !cancelled() }}
@@ -340,12 +345,14 @@ jobs:
           rm -rf packages
           echo "FIRMWARE=$PWD" >> $GITHUB_ENV
           echo "status=success" >> $GITHUB_OUTPUT
+          
       - name: Upload firmware directory
         uses: actions/upload-artifact@v4
         if: ${{ steps.organize.outputs.status == 'success' && !cancelled() }}
         with:
           name: OpenWrt_firmware${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
           path: ${{ env.FIRMWARE }}
+          
       - name: Generate release tag
         id: tag
         if: ${{ fromJSON(env.UPLOAD_RELEASE) && steps.organize.outputs.status == 'success' && !cancelled() }}
@@ -354,6 +361,7 @@ jobs:
           echo "Auto Build by GitHub Actions" > release.txt
           echo "Lede OpenWrt Latest Build" >> release.txt
           echo "status=success" >> $GITHUB_OUTPUT
+          
       - name: Upload firmware to release
         uses: softprops/action-gh-release@master
         if: ${{ steps.tag.outputs.status == 'success' && !cancelled() }}
@@ -363,11 +371,13 @@ jobs:
           tag_name: ${{ steps.tag.outputs.release_tag }}
           body_path: release.txt
           files: ${{ env.FIRMWARE }}/*
+          
       - name: Delete workflow runs
         uses: Mattraks/delete-workflow-runs@main
         with:
           retain_days: 0
           keep_minimum_runs: 5
+          
       - name: Remove old Releases
         uses: dev-drprasad/delete-older-releases@master
         if: ${{ fromJSON(env.UPLOAD_RELEASE) && !cancelled() }}
