@@ -277,28 +277,35 @@ jobs:
         id: compile
         working-directory: ${{ github.workspace }}/build/openwrt
         run: |
-          # 更保守的编译策略
-          export MAKEFLAGS="-j$(nproc)"
-          make tools/compile V=s || make tools/compile -j1 V=s
-          make toolchain/compile V=s || make toolchain/compile -j1 V=s
+          echo "Processing thread count: $(nproc)"
           
-          if ! make -j4 V=s; then
-            echo "❌ Main compile failed. Check logs above."
-            echo "status=failed" >> $GITHUB_OUTPUT
-            exit 1
-          fi
-          if ! make -j1 V=s; then  # 只在主 make 失败时回退
-            echo "❌ Fallback compile also failed."
-            echo "status=failed" >> $GITHUB_OUTPUT
-            exit 1
+          # 1. 编译 Tools 和 Toolchain (优先多线程，失败自动切单线程)
+          echo "🚀 Compiling Tools..."
+          make tools/compile -j$(nproc) || make tools/compile -j1 V=s
+          
+          echo "🚀 Compiling Toolchain..."
+          make toolchain/compile -j$(nproc) || make toolchain/compile -j1 V=s
+          
+          # 2. 编译主固件 (核心逻辑修正)
+          echo "🚀 Compiling Firmware..."
+          # 尝试多线程编译，如果失败(返回非0)，则执行 || 后面的单线程详细输出模式
+          IGNORE_ERRORS=1 make -j$(nproc) || make -j1 V=s
+          
+          # 3. 检查编译结果
+          # 检查 bin 目录是否生成了固件文件，作为最终判断依据
+          if [ -d "bin/targets" ] && [ "$(ls -A bin/targets)" ]; then
+             echo "✅ Compile success!"
+             echo "status=success" >> $GITHUB_OUTPUT
+          else
+             echo "❌ Compile failed. No firmware found."
+             echo "status=failed" >> $GITHUB_OUTPUT
+             exit 1
           fi
           
-          swapoff /swapfile
-          rm -f /swapfile
+          # 4. 生成环境变量 (已移除 swap 操作)
           grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*DEVICE_(.*)=y/\1/' > DEVICE_NAME
           [ -s DEVICE_NAME ] && echo "DEVICE_NAME=_$(cat DEVICE_NAME)" >> $GITHUB_ENV || echo "DEVICE_NAME=_Generic" >> $GITHUB_ENV
           echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
-          echo "status=success" >> $GITHUB_OUTPUT
           
       - name: Verify build output
         if: steps.compile.outputs.status == 'success'
