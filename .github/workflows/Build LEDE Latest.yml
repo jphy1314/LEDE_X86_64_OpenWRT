@@ -69,16 +69,14 @@ jobs:
           git clone -b $REPO_BRANCH --single-branch --depth 1 $REPO_URL openwrt
           ln -sf "${{ github.workspace }}/build/openwrt" "${{ github.workspace }}/openwrt"
 
-      # [新增] 缓存步骤：缓存 dl 目录和 ccache 目录
-      - name: Cache specific directories
+      # [新增] 缓存步骤： ccache 目录
+      - name: Cache ccache
         uses: actions/cache@v4
         with:
-          path: |
-            ${{ github.workspace }}/build/openwrt/dl
-            ${{ env.CCACHE_DIR }}
-          key: ${{ runner.os }}-openwrt-${{ env.REPO_BRANCH }}-${{ hashFiles('**/feeds.conf.default') }}
+          path: ${{ env.CCACHE_DIR }}
+          key: ${{ runner.os }}-ccache-${{ env.REPO_BRANCH }}-${{ github.sha }}
           restore-keys: |
-            ${{ runner.os }}-openwrt-${{ env.REPO_BRANCH }}-
+            ${{ runner.os }}-ccache-${{ env.REPO_BRANCH }}-
 
       - name: Load Custom Feeds (DIY Part 1)
         run: |
