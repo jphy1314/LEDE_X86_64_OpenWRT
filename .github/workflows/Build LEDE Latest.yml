@@ -13,7 +13,7 @@ env:
   UPLOAD_BIN_DIR: "false"
   UPLOAD_FIRMWARE: "true"
   UPLOAD_RELEASE: "true"
-  CCACHE_DIR: /home/runner/.ccache  # 指定缓存目录
+  # 已删除 CCACHE_DIR 变量
 
 jobs:
   build:
@@ -45,7 +45,7 @@ jobs:
           sudo add-apt-repository multiverse -y
           sudo apt-get update
           
-          # 安装基础依赖
+          # 安装基础依赖 (已移除 ccache)
           sudo apt-get install -y \
             build-essential clang cmake device-tree-compiler \
             flex gawk gcc-multilib g++-multilib gettext git gperf \
@@ -56,7 +56,7 @@ jobs:
             qemu-utils rsync scons squashfs-tools subversion swig texinfo \
             uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev \
             ack antlr3 asciidoc autoconf automake autopoint binutils bison \
-            bzip2 curl genisoimage haveged ccache
+            bzip2 curl genisoimage haveged
 
           sudo apt-get autoremove --purge -y
           sudo apt-get clean
@@ -69,21 +69,7 @@ jobs:
           git clone -b $REPO_BRANCH --single-branch --depth 1 $REPO_URL openwrt
           ln -sf "${{ github.workspace }}/build/openwrt" "${{ github.workspace }}/openwrt"
 
-      # [修改] 获取当前日期，用于缓存 Key
-      - name: Get current date
-        id: date
-        run: echo "date=$(date +'%Y-%m-%d-%H')" >> $GITHUB_OUTPUT
-
-      # [修改] 优化缓存配置
-      # 不缓存 dl 目录，只缓存 ccache 编译产物
-      - name: Cache ccache
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.CCACHE_DIR }}
-          # 使用时间戳作为 Key，确保每次都能保存新的缓存
-          key: ${{ runner.os }}-ccache-${{ env.REPO_BRANCH }}-${{ steps.date.outputs.date }}
-          restore-keys: |
-            ${{ runner.os }}-ccache-${{ env.REPO_BRANCH }}-
+      # [已删除] Cache ccache 步骤
 
       - name: Load Custom Feeds (DIY Part 1)
         run: |
@@ -124,18 +110,14 @@ jobs:
       - name: Generate Configuration
         working-directory: ${{ github.workspace }}/build/openwrt
         run: |
-          # [修改] 启用 Ccache 并优化配置
-          echo "CONFIG_CCACHE=y" >> .config
+          # [已删除] CONFIG_CCACHE=y
           
           echo "CONFIG_SDK=n" >> .config
           echo "CONFIG_IB=n" >> .config
           echo "CONFIG_KO_SYMBOLS=n" >> .config
           echo "CONFIG_BUILD_LOG=n" >> .config
           
-          # [修改] 调整分区大小 (修复溢出问题)
-          # 硬盘总大小 979.9MB
-          # Kernel: 64MB
-          # RootFS: 850MB (保留约60MB给引导和系统开销，防止溢出)
+          # [保持] 调整分区大小 (适配 979MB 硬盘)
           echo "CONFIG_TARGET_KERNEL_PARTSIZE=64" >> .config
           echo "CONFIG_TARGET_ROOTFS_PARTSIZE=850" >> .config
           
@@ -226,30 +208,36 @@ jobs:
             echo "✅ Dependencies satisfied."
           fi
 
+      # [增强] 优化下载步骤，防止 udebug 下载失败
       - name: Download package
         working-directory: ${{ github.workspace }}/build/openwrt
         run: |
+          # 优化 git 配置，防止 git 协议下载失败
+          git config --global http.postBuffer 524288000
+          git config --global http.sslVerify false
+          
+          echo "⬇️ Starting parallel download..."
           make download -j8 || true
-          make checksum
+          
+          echo "🧹 Cleaning small/corrupt files..."
           find dl -size -1024c -exec rm -f {} \;
-          make download -j1 || true
+          
+          echo "🔍 Checking udebug specifically..."
+          # 专门尝试下载 udebug，如果失败则输出详细日志
+          if [ ! -f dl/udebug* ]; then
+            echo "Retrying udebug download with V=s..."
+            make package/libs/udebug/download V=s || echo "⚠️ udebug download failed, will retry in final step."
+          fi
+
+          echo "⬇️ Final single-thread download check..."
+          # 使用 V=s 参数，如果这一步失败，能看到具体的 URL 错误
+          make download -j1 V=s
 
       - name: Compile the firmware
         id: compile
         working-directory: ${{ github.workspace }}/build/openwrt
         run: |
           echo "Processing thread count: $(nproc)"
-          
-          # [修改] 关键：配置 ccache 环境变量和参数
-          export CCACHE_DIR=${{ env.CCACHE_DIR }}
-          export CCACHE_EXEC=$(which ccache)
-          # 设置 ccache 压缩级别和最大大小，并忽略路径差异（增加命中率）
-          ccache -M 50G
-          ccache --set-config=compression=true
-          ccache --set-config=compression_level=1
-          # 重要：设置 base_dir 为 workspace，这样即使路径改变也能复用缓存
-          ccache --set-config=base_dir=${{ github.workspace }}
-          ccache -z # 清零统计
           
           echo "🚀 Compiling Tools..."
           make tools/compile -j$(nproc) || make tools/compile -j1 V=s
@@ -258,11 +246,8 @@ jobs:
           make toolchain/compile -j$(nproc) || make toolchain/compile -j1 V=s
           
           echo "🚀 Compiling Firmware..."
-          # 传递环境变量给 make
-          IGNORE_ERRORS=1 make -j$(nproc) CCACHE_DIR=${{ env.CCACHE_DIR }} || make -j1 V=s CCACHE_DIR=${{ env.CCACHE_DIR }}
-          
-          echo "📊 Ccache Statistics:"
-          ccache -s
+          # [已恢复] 标准编译命令，无 ccache 变量
+          IGNORE_ERRORS=1 make -j$(nproc) || make -j1 V=s
           
           if [ -d "bin/targets" ] && [ "$(ls -A bin/targets)" ]; then
              echo "✅ Compile success!"
@@ -310,7 +295,6 @@ jobs:
         run: |
           echo "release_tag=$(date +"%Y.%m.%d-%H%M")" >> $GITHUB_OUTPUT
           touch release.txt
-          # [修改] 修复了一个可能的变量未定义错误，如果未设置 UPLOAD_GOFILE，此行会报错
           [ "${{ env.UPLOAD_GOFILE }}" = "true" ] && [ -n "${{ steps.gofile.outputs.url }}" ] && echo "🔗 [GoFile](${{ steps.gofile.outputs.url }})" >> release.txt || true
           echo "status=success" >> $GITHUB_OUTPUT
 
