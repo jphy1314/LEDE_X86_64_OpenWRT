@@ -69,12 +69,19 @@ jobs:
           git clone -b $REPO_BRANCH --single-branch --depth 1 $REPO_URL openwrt
           ln -sf "${{ github.workspace }}/build/openwrt" "${{ github.workspace }}/openwrt"
 
-      # [新增] 缓存步骤： ccache 目录
+      # [修改] 获取当前日期，用于缓存 Key
+      - name: Get current date
+        id: date
+        run: echo "date=$(date +'%Y-%m-%d-%H')" >> $GITHUB_OUTPUT
+
+      # [修改] 优化缓存配置
+      # 不缓存 dl 目录，只缓存 ccache 编译产物
       - name: Cache ccache
         uses: actions/cache@v4
         with:
           path: ${{ env.CCACHE_DIR }}
-          key: ${{ runner.os }}-ccache-${{ env.REPO_BRANCH }}-${{ github.sha }}
+          # 使用时间戳作为 Key，确保每次都能保存新的缓存
+          key: ${{ runner.os }}-ccache-${{ env.REPO_BRANCH }}-${{ steps.date.outputs.date }}
           restore-keys: |
             ${{ runner.os }}-ccache-${{ env.REPO_BRANCH }}-
 
@@ -98,17 +105,12 @@ jobs:
 
           # SmartDNS 修复 (加强版)
           echo "Processing SmartDNS..."
-          # 1. 彻底移除 LEDE 自带和 feeds 安装的 smartdns
           rm -rf feeds/packages/net/smartdns
           rm -rf feeds/luci/applications/luci-app-smartdns
           rm -rf package/feeds/packages/smartdns
           rm -rf package/feeds/luci/luci-app-smartdns
-          
-          # 2. 克隆官方源码到 package 目录 (优先级高于 feeds)
           git clone -b master --depth 1 https://github.com/pymumu/openwrt-smartdns package/smartdns
           git clone -b master --depth 1 https://github.com/pymumu/luci-app-smartdns package/luci-app-smartdns
-          
-          # 3. 修复 Rust 依赖路径
           sed -i 's/..\/..\/lang\/rust/..\/..\/feeds\/packages\/lang\/rust/g' package/smartdns/Makefile
           
           echo "✅ Feeds patched."
@@ -122,7 +124,7 @@ jobs:
       - name: Generate Configuration
         working-directory: ${{ github.workspace }}/build/openwrt
         run: |
-          # [核心修改 1] 启用 Ccache 缓存
+          # [修改] 启用 Ccache 并优化配置
           echo "CONFIG_CCACHE=y" >> .config
           
           echo "CONFIG_SDK=n" >> .config
@@ -130,11 +132,12 @@ jobs:
           echo "CONFIG_KO_SYMBOLS=n" >> .config
           echo "CONFIG_BUILD_LOG=n" >> .config
           
-          # [核心修改 2] 调整分区大小 (解决剩余空间问题)
-          # 设置 Kernel 分区为 64MB (足够大了)
+          # [修改] 调整分区大小 (修复溢出问题)
+          # 硬盘总大小 979.9MB
+          # Kernel: 64MB
+          # RootFS: 850MB (保留约60MB给引导和系统开销，防止溢出)
           echo "CONFIG_TARGET_KERNEL_PARTSIZE=64" >> .config
-          # 设置 RootFS 分区为 1024MB (1GB)，如果需要更大可改为 2048
-          echo "CONFIG_TARGET_ROOTFS_PARTSIZE=1024" >> .config
+          echo "CONFIG_TARGET_ROOTFS_PARTSIZE=850" >> .config
           
           # Firewall4 & Nftables
           echo "CONFIG_PACKAGE_firewall=n" >> .config
@@ -178,7 +181,6 @@ jobs:
           CONFIG_PACKAGE_ddns-scripts=y
           CONFIG_PACKAGE_luci-app-vlmcsd=y
           CONFIG_PACKAGE_luci-app-smartdns=y
-          # 确保兼容库被选中，这对 SmartDNS 界面很重要
           CONFIG_PACKAGE_luci-compat=y
           CONFIG_PACKAGE_luci-app-ipsec-vpnd=y
           CONFIG_PACKAGE_luci-app-usb-printer=y
@@ -200,17 +202,14 @@ jobs:
         run: |
           set -euo pipefail
           echo "Checking PassWall dependencies..."
-          
           MISSING_DEPS=""
           DEPS_LIST="xray-core sing-box v2ray-core v2ray-plugin naiveproxy trojan-plus tuic-client"
-          
           for dep in $DEPS_LIST; do
             if grep -q "CONFIG_PACKAGE_$dep=y" .config; then
               FOUND=0
               if find package feeds -type d -name "$dep" | grep -q .; then
                 FOUND=1
               fi
-              
               if [ "$FOUND" -eq 0 ]; then
                 echo "⚠️ $dep enabled but missing in trees."
                 sed -i "s/CONFIG_PACKAGE_$dep=y/# CONFIG_PACKAGE_$dep is missing/" .config
@@ -220,7 +219,6 @@ jobs:
               fi
             fi
           done
-          
           if [ -n "$MISSING_DEPS" ]; then
             echo "⚠️ Fixed .config by disabling missing packages. Refreshing defconfig..."
             make defconfig
@@ -242,6 +240,17 @@ jobs:
         run: |
           echo "Processing thread count: $(nproc)"
           
+          # [修改] 关键：配置 ccache 环境变量和参数
+          export CCACHE_DIR=${{ env.CCACHE_DIR }}
+          export CCACHE_EXEC=$(which ccache)
+          # 设置 ccache 压缩级别和最大大小，并忽略路径差异（增加命中率）
+          ccache -M 50G
+          ccache --set-config=compression=true
+          ccache --set-config=compression_level=1
+          # 重要：设置 base_dir 为 workspace，这样即使路径改变也能复用缓存
+          ccache --set-config=base_dir=${{ github.workspace }}
+          ccache -z # 清零统计
+          
           echo "🚀 Compiling Tools..."
           make tools/compile -j$(nproc) || make tools/compile -j1 V=s
           
@@ -249,7 +258,11 @@ jobs:
           make toolchain/compile -j$(nproc) || make toolchain/compile -j1 V=s
           
           echo "🚀 Compiling Firmware..."
-          IGNORE_ERRORS=1 make -j$(nproc) || make -j1 V=s
+          # 传递环境变量给 make
+          IGNORE_ERRORS=1 make -j$(nproc) CCACHE_DIR=${{ env.CCACHE_DIR }} || make -j1 V=s CCACHE_DIR=${{ env.CCACHE_DIR }}
+          
+          echo "📊 Ccache Statistics:"
+          ccache -s
           
           if [ -d "bin/targets" ] && [ "$(ls -A bin/targets)" ]; then
              echo "✅ Compile success!"
@@ -260,7 +273,6 @@ jobs:
              exit 1
           fi
           
-          # 生成变量
           grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*DEVICE_(.*)=y/\1/' > DEVICE_NAME
           [ -s DEVICE_NAME ] && echo "DEVICE_NAME=_$(cat DEVICE_NAME)" >> $GITHUB_ENV || echo "DEVICE_NAME=_Generic" >> $GITHUB_ENV
           echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
@@ -298,7 +310,8 @@ jobs:
         run: |
           echo "release_tag=$(date +"%Y.%m.%d-%H%M")" >> $GITHUB_OUTPUT
           touch release.txt
-          [ ${UPLOAD_GOFILE} = true && ${{ steps.gofile.outputs.url }} ] && echo "🔗 [GoFile](${{ steps.gofile.outputs.url }})" >> release.txt
+          # [修改] 修复了一个可能的变量未定义错误，如果未设置 UPLOAD_GOFILE，此行会报错
+          [ "${{ env.UPLOAD_GOFILE }}" = "true" ] && [ -n "${{ steps.gofile.outputs.url }}" ] && echo "🔗 [GoFile](${{ steps.gofile.outputs.url }})" >> release.txt || true
           echo "status=success" >> $GITHUB_OUTPUT
 
       - name: Upload firmware to release
