@@ -233,7 +233,7 @@ jobs:
       - name: Download package
         working-directory: ${{ github.workspace }}/build/openwrt
         run: |
-          make download -j4 || true
+          make download -j8 || true
           make checksum
           find dl -size -1024c -exec rm -f {} \;
           make download -j1 || true
