@@ -133,8 +133,8 @@ jobs:
           echo "CONFIG_BUILD_LOG=n" >> .config
           
           # [核心修改 2] 调整分区大小 (解决剩余空间问题)
-          # 设置 Kernel 分区为 32MB (足够大了)
-          echo "CONFIG_TARGET_KERNEL_PARTSIZE=32" >> .config
+          # 设置 Kernel 分区为 64MB (足够大了)
+          echo "CONFIG_TARGET_KERNEL_PARTSIZE=64" >> .config
           # 设置 RootFS 分区为 1024MB (1GB)，如果需要更大可改为 2048
           echo "CONFIG_TARGET_ROOTFS_PARTSIZE=1024" >> .config
           
