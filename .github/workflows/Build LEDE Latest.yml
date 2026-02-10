@@ -13,8 +13,7 @@ env:
   UPLOAD_BIN_DIR: "false"
   UPLOAD_FIRMWARE: "true"
   UPLOAD_RELEASE: "true"
-  # Ccache 已禁用，此处环境变量其实已无用，保留也无妨
-  CCACHE_DIR: /home/runner/.ccache
+  CCACHE_DIR: /home/runner/.ccache  # 指定缓存目录
 
 jobs:
   build:
@@ -34,7 +33,7 @@ jobs:
           haskell: true
           large-packages: true
           docker-images: true
-          swap-storage: true # 这里的 swap 由插件 sudo 管理，不会报权限错
+          swap-storage: true
 
       - name: Initialization Environment
         env:
@@ -46,7 +45,7 @@ jobs:
           sudo add-apt-repository multiverse -y
           sudo apt-get update
           
-          # 优化后的依赖列表 (适配 Ubuntu 24.04，去除潜在冲突包)
+          # 安装基础依赖
           sudo apt-get install -y \
             build-essential clang cmake device-tree-compiler \
             flex gawk gcc-multilib g++-multilib gettext git gperf \
@@ -57,7 +56,7 @@ jobs:
             qemu-utils rsync scons squashfs-tools subversion swig texinfo \
             uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev \
             ack antlr3 asciidoc autoconf automake autopoint binutils bison \
-            bzip2 curl genisoimage haveged
+            bzip2 curl genisoimage haveged ccache
 
           sudo apt-get autoremove --purge -y
           sudo apt-get clean
@@ -69,6 +68,17 @@ jobs:
         run: |
           git clone -b $REPO_BRANCH --single-branch --depth 1 $REPO_URL openwrt
           ln -sf "${{ github.workspace }}/build/openwrt" "${{ github.workspace }}/openwrt"
+
+      # [新增] 缓存步骤：缓存 dl 目录和 ccache 目录
+      - name: Cache specific directories
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ github.workspace }}/build/openwrt/dl
+            ${{ env.CCACHE_DIR }}
+          key: ${{ runner.os }}-openwrt-${{ env.REPO_BRANCH }}-${{ hashFiles('**/feeds.conf.default') }}
+          restore-keys: |
+            ${{ runner.os }}-openwrt-${{ env.REPO_BRANCH }}-
 
       - name: Load Custom Feeds (DIY Part 1)
         run: |
@@ -88,13 +98,19 @@ jobs:
           git clone https://github.com/Openwrt-Passwall/openwrt-passwall-packages package/passwall-packages
           git clone https://github.com/Openwrt-Passwall/openwrt-passwall package/passwall-luci
 
-          # SmartDNS 修复
+          # SmartDNS 修复 (加强版)
+          echo "Processing SmartDNS..."
+          # 1. 彻底移除 LEDE 自带和 feeds 安装的 smartdns
           rm -rf feeds/packages/net/smartdns
           rm -rf feeds/luci/applications/luci-app-smartdns
-          ./scripts/feeds uninstall smartdns || true
-          ./scripts/feeds uninstall luci-app-smartdns || true
+          rm -rf package/feeds/packages/smartdns
+          rm -rf package/feeds/luci/luci-app-smartdns
+          
+          # 2. 克隆官方源码到 package 目录 (优先级高于 feeds)
           git clone -b master --depth 1 https://github.com/pymumu/openwrt-smartdns package/smartdns
           git clone -b master --depth 1 https://github.com/pymumu/luci-app-smartdns package/luci-app-smartdns
+          
+          # 3. 修复 Rust 依赖路径
           sed -i 's/..\/..\/lang\/rust/..\/..\/feeds\/packages\/lang\/rust/g' package/smartdns/Makefile
           
           echo "✅ Feeds patched."
@@ -108,11 +124,19 @@ jobs:
       - name: Generate Configuration
         working-directory: ${{ github.workspace }}/build/openwrt
         run: |
-          echo "CONFIG_CCACHE=n" >> .config
+          # [核心修改 1] 启用 Ccache 缓存
+          echo "CONFIG_CCACHE=y" >> .config
+          
           echo "CONFIG_SDK=n" >> .config
           echo "CONFIG_IB=n" >> .config
           echo "CONFIG_KO_SYMBOLS=n" >> .config
           echo "CONFIG_BUILD_LOG=n" >> .config
+          
+          # [核心修改 2] 调整分区大小 (解决剩余空间问题)
+          # 设置 Kernel 分区为 32MB (足够大了)
+          echo "CONFIG_TARGET_KERNEL_PARTSIZE=32" >> .config
+          # 设置 RootFS 分区为 1024MB (1GB)，如果需要更大可改为 2048
+          echo "CONFIG_TARGET_ROOTFS_PARTSIZE=1024" >> .config
           
           # Firewall4 & Nftables
           echo "CONFIG_PACKAGE_firewall=n" >> .config
@@ -156,6 +180,8 @@ jobs:
           CONFIG_PACKAGE_ddns-scripts=y
           CONFIG_PACKAGE_luci-app-vlmcsd=y
           CONFIG_PACKAGE_luci-app-smartdns=y
+          # 确保兼容库被选中，这对 SmartDNS 界面很重要
+          CONFIG_PACKAGE_luci-compat=y
           CONFIG_PACKAGE_luci-app-ipsec-vpnd=y
           CONFIG_PACKAGE_luci-app-usb-printer=y
           CONFIG_PACKAGE_luci-app-autoreboot=y
@@ -178,13 +204,11 @@ jobs:
           echo "Checking PassWall dependencies..."
           
           MISSING_DEPS=""
-          # 修正了查找逻辑，确保能找到包
           DEPS_LIST="xray-core sing-box v2ray-core v2ray-plugin naiveproxy trojan-plus tuic-client"
           
           for dep in $DEPS_LIST; do
             if grep -q "CONFIG_PACKAGE_$dep=y" .config; then
               FOUND=0
-              # 增加对 feeds 目录的深度搜索
               if find package feeds -type d -name "$dep" | grep -q .; then
                 FOUND=1
               fi
@@ -199,7 +223,6 @@ jobs:
             fi
           done
           
-          # 关键修复：如果修改了 .config，必须刷新配置防止编译报错
           if [ -n "$MISSING_DEPS" ]; then
             echo "⚠️ Fixed .config by disabling missing packages. Refreshing defconfig..."
             make defconfig
@@ -228,7 +251,6 @@ jobs:
           make toolchain/compile -j$(nproc) || make toolchain/compile -j1 V=s
           
           echo "🚀 Compiling Firmware..."
-          # 修正后的编译逻辑：失败自动回退单线程，不直接退出
           IGNORE_ERRORS=1 make -j$(nproc) || make -j1 V=s
           
           if [ -d "bin/targets" ] && [ "$(ls -A bin/targets)" ]; then
