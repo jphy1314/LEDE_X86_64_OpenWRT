@@ -1,0 +1,355 @@
+name: Build LEDE Latest TEST
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+env:
+  REPO_URL: https://github.com/coolsnowwolf/lede
+  REPO_BRANCH: master
+  TZ: Asia/Shanghai
+  UPLOAD_BIN_DIR: "false"
+  UPLOAD_FIRMWARE: "true"
+  UPLOAD_RELEASE: "true"
+  # [恢复] 定义缓存路径，放在 home 目录下，方便 actions/cache 抓取
+  CCACHE_DIR: "/home/runner/.ccache"
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Free Disk Space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      - name: Initialization Environment
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y software-properties-common
+          sudo add-apt-repository universe -y
+          sudo add-apt-repository multiverse -y
+          sudo apt-get update
+          
+          # [恢复] 安装 ccache 工具
+          sudo apt-get install -y \
+            build-essential clang cmake device-tree-compiler \
+            flex gawk gcc-multilib g++-multilib gettext git gperf \
+            help2man intltool libelf-dev libglib2.0-dev \
+            libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses-dev \
+            libreadline-dev libssl-dev libtool llvm lrzsz libnsl-dev \
+            ninja-build p7zip p7zip-full patch pkgconf python3 python3-pyelftools \
+            qemu-utils rsync scons squashfs-tools subversion swig texinfo \
+            uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev \
+            ack antlr3 asciidoc autoconf automake autopoint binutils bison \
+            bzip2 curl genisoimage haveged ccache
+
+          sudo apt-get autoremove --purge -y
+          sudo apt-get clean
+          sudo timedatectl set-timezone "$TZ"
+          mkdir -p "${{ github.workspace }}/build"
+
+      - name: Clone Source Code
+        working-directory: ${{ github.workspace }}/build
+        run: |
+          git clone -b $REPO_BRANCH --single-branch --depth 1 $REPO_URL openwrt
+          ln -sf "${{ github.workspace }}/build/openwrt" "${{ github.workspace }}/openwrt"
+
+      # [新增] 获取当前日期，确保每次运行都有新的 Cache Key
+      - name: Get current date
+        id: date
+        run: echo "date=$(date +'%Y-%m-%d-%H')" >> $GITHUB_OUTPUT
+
+      # [新增] 仅缓存 .ccache 目录
+      # 绝对不缓存 openwrt/dl 目录，避免源码哈希错误
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          # Key 包含日期，这样每次构建都会尝试保存一份新的缓存（如果内容有变）
+          key: ${{ runner.os }}-lede-${{ steps.date.outputs.date }}
+          # Restore keys 允许读取旧日期的缓存来加速本次构建
+          restore-keys: |
+            ${{ runner.os }}-lede-
+
+      - name: Load Custom Feeds (DIY Part 1)
+        run: |
+          [ -e "${{ github.workspace }}/diy-part1.sh" ] && \
+          chmod +x "${{ github.workspace }}/diy-part1.sh" && \
+          cd openwrt && "${{ github.workspace }}/diy-part1.sh" || true
+
+      - name: Update, Patch & Install Feeds
+        working-directory: ${{ github.workspace }}/build/openwrt
+        run: |
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+         
+          # Passwall 处理
+          rm -rf feeds/packages/net/{xray-core,v2ray-geodata,sing-box,chinadns-ng,dns2socks,hysteria,ipt2socks,microsocks,naiveproxy,shadowsocks-libev,shadowsocks-rust,shadowsocksr-libev,simple-obfs,tcping,trojan-plus,tuic-client,v2ray-plugin,xray-plugin,geoview,shadow-tls}
+          rm -rf feeds/luci/applications/luci-app-passwall
+          git clone https://github.com/Openwrt-Passwall/openwrt-passwall-packages package/passwall-packages
+          git clone https://github.com/Openwrt-Passwall/openwrt-passwall package/passwall-luci
+
+          # SmartDNS 修复 (加强版)
+          echo "Processing SmartDNS..."
+          rm -rf feeds/packages/net/smartdns
+          rm -rf feeds/luci/applications/luci-app-smartdns
+          rm -rf package/feeds/packages/smartdns
+          rm -rf package/feeds/luci/luci-app-smartdns
+          git clone -b master --depth 1 https://github.com/pymumu/openwrt-smartdns package/smartdns
+          git clone -b master --depth 1 https://github.com/pymumu/luci-app-smartdns package/luci-app-smartdns
+          sed -i 's/..\/..\/lang\/rust/..\/..\/feeds\/packages\/lang\/rust/g' package/smartdns/Makefile
+          
+          echo "✅ Feeds patched."
+
+      - name: Load Custom Configuration (DIY Part 2)
+        run: |
+          [ -e "${{ github.workspace }}/diy-part2.sh" ] && \
+          chmod +x "${{ github.workspace }}/diy-part2.sh" && \
+          cd openwrt && "${{ github.workspace }}/diy-part2.sh" || true
+
+      - name: Generate Configuration
+        working-directory: ${{ github.workspace }}/build/openwrt
+        run: |
+          # [关键] 启用 OpenWrt 内部的 CCACHE 选项
+          echo "CONFIG_CCACHE=y" >> .config
+          
+          echo "CONFIG_SDK=n" >> .config
+          echo "CONFIG_IB=n" >> .config
+          echo "CONFIG_KO_SYMBOLS=n" >> .config
+          echo "CONFIG_BUILD_LOG=n" >> .config
+          
+          # 硬盘调整 (979MB 适配)
+          echo "CONFIG_TARGET_KERNEL_PARTSIZE=64" >> .config
+          echo "CONFIG_TARGET_ROOTFS_PARTSIZE=850" >> .config
+          
+          # Firewall4 & Nftables
+          echo "CONFIG_PACKAGE_firewall=n" >> .config
+          echo "CONFIG_PACKAGE_iptables=n" >> .config
+          echo "CONFIG_PACKAGE_libiptc=n" >> .config
+          echo "CONFIG_PACKAGE_firewall4=y" >> .config
+          echo "CONFIG_PACKAGE_nftables=y" >> .config
+          echo "CONFIG_PACKAGE_kmod-nft-core=y" >> .config
+          echo "CONFIG_PACKAGE_kmod-nft-full=y" >> .config
+          echo "CONFIG_PACKAGE_kmod-nft-offload=y" >> .config
+          echo "CONFIG_PACKAGE_iptables-nft=y" >> .config
+          echo "CONFIG_PACKAGE_ip6tables-nft=y" >> .config
+          echo "CONFIG_PACKAGE_iptables-mod-tproxy=y" >> .config
+          echo "CONFIG_PACKAGE_iptables-mod-extra=y" >> .config
+          
+          # Dnsmasq
+          echo "CONFIG_PACKAGE_dnsmasq=n" >> .config
+          echo "CONFIG_PACKAGE_dnsmasq-full=y" >> .config
+          echo "CONFIG_PACKAGE_dnsmasq_full_dnssec=y" >> .config
+          echo "CONFIG_PACKAGE_dnsmasq_full_auth=y" >> .config
+          echo "CONFIG_PACKAGE_dnsmasq_full_ipset=y" >> .config
+          echo "CONFIG_PACKAGE_dnsmasq_full_conntrack=y" >> .config
+          echo "CONFIG_PACKAGE_dnsmasq_full_noid=y" >> .config
+          echo "CONFIG_PACKAGE_dnsmasq_full_nftset=y" >> .config
+         
+          # UPX Disable
+          echo "CONFIG_XRAY_CORE_COMPRESS_UPX=n" >> .config
+          echo "CONFIG_SING_BOX_COMPRESS_UPX=n" >> .config
+          echo "CONFIG_PACKAGE_xray-core_compress_upx=n" >> .config
+          echo "CONFIG_PACKAGE_sing-box_compress_upx=n" >> .config
+          
+          cat >> .config <<'EOF'
+          CONFIG_PACKAGE_ipv6helper=y
+          CONFIG_PACKAGE_luci-app-passwall=y
+          CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Iptables=y
+          CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Nftables=y
+          CONFIG_PACKAGE_luci-app-passwall_Iptables_Transparent_Proxy=y
+          CONFIG_PACKAGE_luci-app-passwall_Nftables_Transparent_Proxy=y
+          CONFIG_PACKAGE_luci-app-ttyd=y
+          CONFIG_PACKAGE_luci-app-ddns=y
+          CONFIG_PACKAGE_ddns-scripts=y
+          CONFIG_PACKAGE_luci-app-vlmcsd=y
+          CONFIG_PACKAGE_luci-app-smartdns=y
+          CONFIG_PACKAGE_luci-compat=y
+          CONFIG_PACKAGE_luci-app-ipsec-vpnd=y
+          CONFIG_PACKAGE_luci-app-usb-printer=y
+          CONFIG_PACKAGE_luci-app-autoreboot=y
+          CONFIG_PACKAGE_luci-app-filetransfer=y
+          CONFIG_PACKAGE_luci-theme-argon=y
+          CONFIG_PACKAGE_luci-app-argon-config=y
+          EOF
+          
+          # Target selection
+          echo "CONFIG_TARGET_x86=y" >> .config
+          echo "CONFIG_TARGET_x86_64=y" >> .config
+          echo "CONFIG_TARGET_x86_64_DEVICE_generic=y" >> .config
+          
+          make defconfig
+
+      - name: Check PassWall Dependencies
+        working-directory: ${{ github.workspace }}/build/openwrt
+        run: |
+          set -euo pipefail
+          echo "Checking PassWall dependencies..."
+          MISSING_DEPS=""
+          DEPS_LIST="xray-core sing-box v2ray-core v2ray-plugin naiveproxy trojan-plus tuic-client"
+          for dep in $DEPS_LIST; do
+            if grep -q "CONFIG_PACKAGE_$dep=y" .config; then
+              FOUND=0
+              if find package feeds -type d -name "$dep" | grep -q .; then
+                FOUND=1
+              fi
+              if [ "$FOUND" -eq 0 ]; then
+                echo "⚠️ $dep enabled but missing in trees."
+                sed -i "s/CONFIG_PACKAGE_$dep=y/# CONFIG_PACKAGE_$dep is missing/" .config
+                MISSING_DEPS="$MISSING_DEPS $dep"
+              else
+                echo " 👉 Found $dep"
+              fi
+            fi
+          done
+          if [ -n "$MISSING_DEPS" ]; then
+            echo "⚠️ Fixed .config by disabling missing packages. Refreshing defconfig..."
+            make defconfig
+          else
+            echo "✅ Dependencies satisfied."
+          fi
+
+      # [保留] 健壮的下载步骤
+      - name: Download package
+        working-directory: ${{ github.workspace }}/build/openwrt
+        run: |
+          # 优化 git 配置，防止下载失败
+          git config --global http.postBuffer 524288000
+          git config --global http.sslVerify false
+          
+          echo "⬇️ Starting parallel download..."
+          make download -j8 || true
+          
+          echo "🧹 Cleaning small/corrupt files..."
+          find dl -size -1024c -exec rm -f {} \;
+          
+          echo "🔍 Checking udebug specifically..."
+          if [ ! -f dl/udebug* ]; then
+            echo "Retrying udebug download with V=s..."
+            make package/libs/udebug/download V=s || echo "⚠️ udebug download failed, will retry in final step."
+          fi
+
+          echo "⬇️ Final single-thread download check..."
+          make download -j1 V=s
+
+      - name: Compile the firmware
+        id: compile
+        working-directory: ${{ github.workspace }}/build/openwrt
+        run: |
+          echo "Processing thread count: $(nproc)"
+          
+          # [关键] 显式定义 ccache 目录，确保 OpenWrt 使用我们缓存的路径
+          export CCACHE_DIR=${{ env.CCACHE_DIR }}
+          export CCACHE_EXEC=$(which ccache)
+          mkdir -p $CCACHE_DIR
+          
+          # 配置 ccache (最大 50G，压缩开启)
+          ccache -M 50G
+          ccache --set-config=compression=true
+          ccache --set-config=compression_level=1
+          # 设置 base_dir 为 workspace，这样即使 Runner 路径变化，相对路径的缓存也能命中
+          ccache --set-config=base_dir=${{ github.workspace }}
+          ccache -z # 清零计数器
+          
+          echo "🚀 Compiling Tools..."
+          make tools/compile -j$(nproc) || make tools/compile -j1 V=s
+          
+          echo "🚀 Compiling Toolchain..."
+          make toolchain/compile -j$(nproc) || make toolchain/compile -j1 V=s
+          
+          echo "🚀 Compiling Firmware..."
+          # [关键] 传递 CCACHE_DIR 变量给 make
+          IGNORE_ERRORS=1 make -j$(nproc) CCACHE_DIR=${{ env.CCACHE_DIR }} || make -j1 V=s CCACHE_DIR=${{ env.CCACHE_DIR }}
+          
+          echo "📊 Ccache Statistics:"
+          ccache -s
+          
+          if [ -d "bin/targets" ] && [ "$(ls -A bin/targets)" ]; then
+             echo "✅ Compile success!"
+             echo "status=success" >> $GITHUB_OUTPUT
+          else
+             echo "❌ Compile failed. No firmware found."
+             echo "status=failed" >> $GITHUB_OUTPUT
+             exit 1
+          fi
+          
+          grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*DEVICE_(.*)=y/\1/' > DEVICE_NAME
+          [ -s DEVICE_NAME ] && echo "DEVICE_NAME=_$(cat DEVICE_NAME)" >> $GITHUB_ENV || echo "DEVICE_NAME=_Generic" >> $GITHUB_ENV
+          echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
+
+      - name: Check space usage
+        if: (!cancelled())
+        run: df -hT
+
+      - name: Upload bin directory
+        uses: actions/upload-artifact@main
+        if: steps.compile.outputs.status == 'success' && env.UPLOAD_BIN_DIR == 'true'
+        with:
+          name: OpenWrt_bin${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
+          path: openwrt/bin
+
+      - name: Organize files
+        id: organize
+        if: env.UPLOAD_FIRMWARE == 'true' && !cancelled()
+        run: |
+          cd openwrt/bin/targets/*/*
+          rm -rf packages
+          echo "FIRMWARE=$PWD" >> $GITHUB_ENV
+          echo "status=success" >> $GITHUB_OUTPUT
+
+      - name: Upload firmware directory
+        uses: actions/upload-artifact@main
+        if: steps.organize.outputs.status == 'success' && !cancelled()
+        with:
+          name: OpenWrt_firmware${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
+          path: ${{ env.FIRMWARE }}
+
+      - name: Generate release tag
+        id: tag
+        if: env.UPLOAD_RELEASE == 'true' && !cancelled()
+        run: |
+          echo "release_tag=$(date +"%Y.%m.%d-%H%M")" >> $GITHUB_OUTPUT
+          touch release.txt
+          [ "${{ env.UPLOAD_GOFILE }}" = "true" ] && [ -n "${{ steps.gofile.outputs.url }}" ] && echo "🔗 [GoFile](${{ steps.gofile.outputs.url }})" >> release.txt || true
+          echo "status=success" >> $GITHUB_OUTPUT
+
+      - name: Upload firmware to release
+        uses: softprops/action-gh-release@master
+        if: steps.tag.outputs.status == 'success' && !cancelled()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ steps.tag.outputs.release_tag }}
+          body_path: release.txt
+          files: ${{ env.FIRMWARE }}/*
+
+      - name: Delete workflow runs
+        uses: Mattraks/delete-workflow-runs@main
+        with:
+          retain_days: 0
+          keep_minimum_runs: 2
+
+      - name: Remove old Releases
+        uses: dev-drprasad/delete-older-releases@master
+        if: env.UPLOAD_RELEASE == 'true' && !cancelled()
+        with:
+          keep_latest: 3
+          delete_tags: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
