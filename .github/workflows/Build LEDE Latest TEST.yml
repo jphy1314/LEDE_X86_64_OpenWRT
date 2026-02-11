@@ -134,10 +134,6 @@ jobs:
           echo "CONFIG_KO_SYMBOLS=n" >> .config
           echo "CONFIG_BUILD_LOG=n" >> .config
           
-          # 硬盘调整 (979MB 适配)
-          echo "CONFIG_TARGET_KERNEL_PARTSIZE=64" >> .config
-          echo "CONFIG_TARGET_ROOTFS_PARTSIZE=850" >> .config
-          
           # Firewall4 & Nftables
           echo "CONFIG_PACKAGE_firewall=n" >> .config
           echo "CONFIG_PACKAGE_iptables=n" >> .config
