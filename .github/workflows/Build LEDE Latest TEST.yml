@@ -41,27 +41,32 @@ jobs:
           DEBIAN_FRONTEND: noninteractive
         run: |
           sudo apt-get update
-          sudo apt-get install -y software-properties-common
-          sudo add-apt-repository universe -y
-          sudo add-apt-repository multiverse -y
+          sudo apt-get install -y software-properties-common aria2
+          sudo add-apt-repository -y ppa:apt-fast/stable
           sudo apt-get update
-          
-          # [恢复] 安装 ccache 工具
-          sudo apt-get install -y \
-            build-essential clang cmake device-tree-compiler \
-            flex gawk gcc-multilib g++-multilib gettext git gperf \
-            help2man intltool libelf-dev libglib2.0-dev \
-            libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses-dev \
-            libreadline-dev libssl-dev libtool llvm lrzsz libnsl-dev \
-            ninja-build p7zip p7zip-full patch pkgconf python3 python3-pyelftools \
-            qemu-utils rsync scons squashfs-tools subversion swig texinfo \
-            uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev \
-            ack antlr3 asciidoc autoconf automake autopoint binutils bison \
-            bzip2 curl genisoimage haveged ccache
+          sudo apt-get install -y apt-fast
 
+          # 安装核心构建工具并使用 apt-fast 加速下载
+          sudo apt-fast install -y --no-install-recommends \
+          build-essential clang cmake device-tree-compiler \
+          flex gawk gcc-multilib g++-multilib gettext git gperf \
+          help2man intltool libelf-dev libglib2.0-dev \
+          libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses-dev \
+          libreadline-dev libssl-dev libtool llvm lrzsz libnsl-dev \
+          ninja-build p7zip p7zip-full patch pkgconf python3 python3-pyelftools \
+          qemu-utils rsync scons squashfs-tools subversion swig texinfo \
+          uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev \
+          ack antlr3 asciidoc autoconf automake autopoint binutils bison \
+          bzip2 curl genisoimage haveged ccache
+
+          # 清理不需要的包和缓存
           sudo apt-get autoremove --purge -y
           sudo apt-get clean
+
+          # 设置时区
           sudo timedatectl set-timezone "$TZ"
+
+          # 创建构建目录
           mkdir -p "${{ github.workspace }}/build"
 
       - name: Clone Source Code
