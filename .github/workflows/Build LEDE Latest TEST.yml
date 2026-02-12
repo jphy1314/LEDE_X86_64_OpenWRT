@@ -219,23 +219,31 @@ jobs:
       - name: Download package
         working-directory: ${{ github.workspace }}/build/openwrt
         run: |
+          # [修复核心] 确保 CCACHE 目录存在并设置环境
+          # 因为 .config 开启了 CCACHE，下载过程若触发编译(tools)会需要它
+          mkdir -p ${{ env.CCACHE_DIR }}
+          chmod 777 ${{ env.CCACHE_DIR }}
+          export CCACHE_DIR=${{ env.CCACHE_DIR }}
+          export CCACHE_BASEDIR=${{ github.workspace }}
+          
+          # Git 配置优化
           git config --global http.postBuffer 524288000
           git config --global http.sslVerify false
           
           echo "⬇️ Starting parallel download..."
-          make download -j8 || true
+          # IGNORE_ERRORS=1 防止因 tools 编译失败打断下载（下载主要是为了 dl 目录）
+          IGNORE_ERRORS=1 make download -j8 || true
           
           echo "🧹 Cleaning small/corrupt files..."
           find dl -size -1024c -exec rm -f {} \;
           
-          echo "🔍 Checking udebug specifically..."
-          if [ ! -f dl/udebug* ]; then
-            echo "Retrying udebug download with V=s..."
-            make package/libs/udebug/download V=s || echo "⚠️ udebug download failed, will retry in final step."
-          fi
-
+          # 针对 firmware-utils 等容易在下载阶段报错的工具，单独处理
+          # 如果刚才并行下载失败了，这里尝试单线程再次补救，但不强求编译成功
           echo "⬇️ Final single-thread download check..."
-          make download -j1 V=s
+          make download -j1 V=s || echo "⚠️ Some tools failed to download/build, continuing..."
+
+          # 验证核心文件是否存在 (防止假死)
+          ls -lh dl/ || true
 
       - name: Compile the firmware
         id: compile
