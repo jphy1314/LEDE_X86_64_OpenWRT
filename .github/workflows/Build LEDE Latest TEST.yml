@@ -13,7 +13,7 @@ env:
   UPLOAD_BIN_DIR: "false"
   UPLOAD_FIRMWARE: "true"
   UPLOAD_RELEASE: "true"
-  # [恢复] 定义缓存路径，放在 home 目录下，方便 actions/cache 抓取
+  # 定义缓存路径，放在 home 目录下
   CCACHE_DIR: "/home/runner/.ccache"
 
 jobs:
@@ -46,7 +46,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y apt-fast
 
-          # 安装核心构建工具并使用 apt-fast 加速下载
+          # 安装核心构建工具
           sudo apt-fast install -y --no-install-recommends \
           build-essential clang cmake device-tree-compiler \
           flex gawk gcc-multilib g++-multilib gettext git gperf \
@@ -59,14 +59,9 @@ jobs:
           ack antlr3 asciidoc autoconf automake autopoint binutils bison \
           bzip2 curl genisoimage haveged ccache
 
-          # 清理不需要的包和缓存
           sudo apt-get autoremove --purge -y
           sudo apt-get clean
-
-          # 设置时区
           sudo timedatectl set-timezone "$TZ"
-
-          # 创建构建目录
           mkdir -p "${{ github.workspace }}/build"
 
       - name: Clone Source Code
@@ -75,20 +70,14 @@ jobs:
           git clone -b $REPO_BRANCH --single-branch --depth 1 $REPO_URL openwrt
           ln -sf "${{ github.workspace }}/build/openwrt" "${{ github.workspace }}/openwrt"
 
-      # [新增] 获取当前日期，确保每次运行都有新的 Cache Key
-      - name: Get current date
-        id: date
-        run: echo "date=$(date +'%Y-%m-%d-%H')" >> $GITHUB_OUTPUT
-
-      # [新增] 仅缓存 .ccache 目录
-      # 绝对不缓存 openwrt/dl 目录，避免源码哈希错误
+      # [优化] 缓存策略优化：每次运行生成新 Key，每次都读取最近的旧缓存
       - name: Cache ccache
         uses: actions/cache@v4
         with:
           path: ${{ env.CCACHE_DIR }}
-          # Key 包含日期，这样每次构建都会尝试保存一份新的缓存（如果内容有变）
-          key: ${{ runner.os }}-lede-${{ steps.date.outputs.date }}
-          # Restore keys 允许读取旧日期的缓存来加速本次构建
+          # Key 使用 run_id 确保唯一性，强制每次构建后保存新缓存
+          key: ${{ runner.os }}-lede-${{ github.run_id }}
+          # Restore keys 允许读取任意旧日期的缓存作为基础
           restore-keys: |
             ${{ runner.os }}-lede-
 
@@ -110,7 +99,7 @@ jobs:
           git clone https://github.com/Openwrt-Passwall/openwrt-passwall-packages package/passwall-packages
           git clone https://github.com/Openwrt-Passwall/openwrt-passwall package/passwall-luci
 
-          # SmartDNS 修复 (加强版)
+          # SmartDNS 修复
           echo "Processing SmartDNS..."
           rm -rf feeds/packages/net/smartdns
           rm -rf feeds/luci/applications/luci-app-smartdns
@@ -131,8 +120,9 @@ jobs:
       - name: Generate Configuration
         working-directory: ${{ github.workspace }}/build/openwrt
         run: |
-          # [关键] 启用 OpenWrt 内部的 CCACHE 选项
+          # [关键修复] 必须将 CCACHE 路径写入 .config，否则 OpenWrt 内部 Make 会忽略环境变量
           echo "CONFIG_CCACHE=y" >> .config
+          echo "CONFIG_CCACHE_DIR=\"${{ env.CCACHE_DIR }}\"" >> .config
           
           echo "CONFIG_SDK=n" >> .config
           echo "CONFIG_IB=n" >> .config
@@ -226,11 +216,9 @@ jobs:
             echo "✅ Dependencies satisfied."
           fi
 
-      # [保留] 健壮的下载步骤
       - name: Download package
         working-directory: ${{ github.workspace }}/build/openwrt
         run: |
-          # 优化 git 配置，防止下载失败
           git config --global http.postBuffer 524288000
           git config --global http.sslVerify false
           
@@ -255,31 +243,37 @@ jobs:
         run: |
           echo "Processing thread count: $(nproc)"
           
-          # [关键] 显式定义 ccache 目录，确保 OpenWrt 使用我们缓存的路径
-          export CCACHE_DIR=${{ env.CCACHE_DIR }}
-          export CCACHE_EXEC=$(which ccache)
-          mkdir -p $CCACHE_DIR
+          # [关键] 创建并授权 CCACHE 目录
+          mkdir -p ${{ env.CCACHE_DIR }}
+          chmod -R 777 ${{ env.CCACHE_DIR }}
           
-          # 配置 ccache (最大 50G，压缩开启)
+          # [关键] 设置环境变量，确保 ccache 正确命中
+          export CCACHE_DIR=${{ env.CCACHE_DIR }}
+          export CCACHE_BASEDIR=${{ github.workspace }}
+          export CCACHE_COMPILERCHECK=content
+          
+          # 初始化配置
           ccache -M 50G
           ccache --set-config=compression=true
-          ccache --set-config=compression_level=1
-          # 设置 base_dir 为 workspace，这样即使 Runner 路径变化，相对路径的缓存也能命中
-          ccache --set-config=base_dir=${{ github.workspace }}
-          ccache -z # 清零计数器
+          ccache --set-config=compression_level=6
+          ccache -z
           
           echo "🚀 Compiling Tools..."
-          make tools/compile -j$(nproc) || make tools/compile -j1 V=s
+          make tools/compile -j$(nproc) CCACHE_DIR=${{ env.CCACHE_DIR }} || make tools/compile -j1 V=s
           
           echo "🚀 Compiling Toolchain..."
-          make toolchain/compile -j$(nproc) || make toolchain/compile -j1 V=s
+          make toolchain/compile -j$(nproc) CCACHE_DIR=${{ env.CCACHE_DIR }} || make toolchain/compile -j1 V=s
           
           echo "🚀 Compiling Firmware..."
-          # [关键] 传递 CCACHE_DIR 变量给 make
-          IGNORE_ERRORS=1 make -j$(nproc) CCACHE_DIR=${{ env.CCACHE_DIR }} || make -j1 V=s CCACHE_DIR=${{ env.CCACHE_DIR }}
+          # 移除 IGNORE_ERRORS 以确保构建质量，但保留 CCACHE_DIR 传递
+          make -j$(nproc) CCACHE_DIR=${{ env.CCACHE_DIR }} || make -j1 V=s CCACHE_DIR=${{ env.CCACHE_DIR }}
           
           echo "📊 Ccache Statistics:"
           ccache -s
+          
+          # [调试] 检查缓存目录实际大小
+          CACHE_SIZE=$(du -sh ${{ env.CCACHE_DIR }} | cut -f1)
+          echo "ℹ️ Current Cache Directory Size: $CACHE_SIZE"
           
           if [ -d "bin/targets" ] && [ "$(ls -A bin/targets)" ]; then
              echo "✅ Compile success!"
@@ -327,7 +321,6 @@ jobs:
         run: |
           echo "release_tag=$(date +"%Y.%m.%d-%H%M")" >> $GITHUB_OUTPUT
           touch release.txt
-          [ "${{ env.UPLOAD_GOFILE }}" = "true" ] && [ -n "${{ steps.gofile.outputs.url }}" ] && echo "🔗 [GoFile](${{ steps.gofile.outputs.url }})" >> release.txt || true
           echo "status=success" >> $GITHUB_OUTPUT
 
       - name: Upload firmware to release
