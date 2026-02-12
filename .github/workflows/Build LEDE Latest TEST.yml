@@ -13,7 +13,7 @@ env:
   UPLOAD_BIN_DIR: "false"
   UPLOAD_FIRMWARE: "true"
   UPLOAD_RELEASE: "true"
-  # CCACHE 路径
+  # CCACHE 路径 (放在 home 下以避免权限困扰)
   CCACHE_DIR: "/home/runner/.ccache"
 
 jobs:
@@ -46,6 +46,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y apt-fast
 
+          # 安装核心构建依赖
           sudo apt-fast install -y --no-install-recommends \
           build-essential clang cmake device-tree-compiler \
           flex gawk gcc-multilib g++-multilib gettext git gperf \
@@ -69,33 +70,32 @@ jobs:
           git clone -b $REPO_BRANCH --single-branch --depth 1 $REPO_URL openwrt
           ln -sf "${{ github.workspace }}/build/openwrt" "${{ github.workspace }}/openwrt"
 
-      # [优化 1] 缓存 dl 目录 (源码包)，显著减少下载时间
+      # [缓存 1] 缓存 dl 目录 (源码包)，显著减少下载时间
       - name: Cache dl directories
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/openwrt/dl
-          # Key 包含 feeds.conf.default 的 hash，确保依赖更新时缓存也会更新
           key: ${{ runner.os }}-openwrt-dl-${{ hashFiles('build/openwrt/feeds.conf.default') }}
           restore-keys: |
             ${{ runner.os }}-openwrt-dl-
 
-      # 1. 生成一个动态的时间戳变量
+      # 1. 生成动态时间戳 (用于滚动更新缓存)
       - name: Get Date
         id: get-date
         run: |
           echo "date=$(date +'%Y%m%d-%H%M%S')" >> $GITHUB_OUTPUT
 
-      # 2. 修正后的 Cache ccache
+      # 2. [关键优化] Ccache 缓存策略
       - name: Cache ccache
         uses: actions/cache@v4
         with:
           path: ${{ env.CCACHE_DIR }}
-          # [重点修改] Key 后面加上时间戳，确保每次 Key 都不一样，强制触发保存
+          # Key 带时间戳：强制每次构建结束都保存一份新的缓存快照
           key: ${{ runner.os }}-lede-${{ env.REPO_BRANCH }}-${{ steps.get-date.outputs.date }}
-          # [重点修改] Restore keys 只写前缀，这样能匹配到最近的一次旧缓存
+          # Restore keys 只有前缀：总是匹配最近的一份旧缓存用于加速
           restore-keys: |
             ${{ runner.os }}-lede-${{ env.REPO_BRANCH }}-
-            
+
       - name: Load Custom Feeds (DIY Part 1)
         run: |
           [ -e "${{ github.workspace }}/diy-part1.sh" ] && \
@@ -133,9 +133,14 @@ jobs:
         working-directory: ${{ github.workspace }}/build/openwrt
         run: |
           # [优化 3] 确保 CCACHE 配置正确写入 .config
-          # 必须在 make defconfig 之前写入
           echo "CONFIG_CCACHE=y" >> .config
           echo "CONFIG_CCACHE_DIR=\"${{ env.CCACHE_DIR }}\"" >> .config
+          
+          # [工业级优化] 关闭内核和固件的 Debug 信息，极大减少编译时间和缓存体积
+          echo "CONFIG_DEBUG=n" >> .config
+          echo "CONFIG_DEBUG_INFO=n" >> .config
+          echo "CONFIG_COLLECT_KERNEL_DEBUG=n" >> .config
+          echo "CONFIG_STRIP_KERNEL_EXPORTS=y" >> .config
           
           echo "CONFIG_SDK=n" >> .config
           echo "CONFIG_IB=n" >> .config
@@ -229,12 +234,9 @@ jobs:
       - name: Download package
         working-directory: ${{ github.workspace }}/build/openwrt
         run: |
-          # 确保 dl 目录存在 (为了 cache 插件)
           mkdir -p dl
-          
           echo "⬇️ Starting parallel download..."
           make download -j8 || true
-          
           echo "⬇️ Final single-thread download check..."
           make download -j1 V=s || true
 
@@ -242,38 +244,49 @@ jobs:
         id: compile
         working-directory: ${{ github.workspace }}/build/openwrt
         run: |
-          # [优化 4] 设置并导出 CCACHE 环境变量，权限修复
+          # -------------------------------------------------------
+          # [核心优化] 工业级 Ccache 配置
+          # -------------------------------------------------------
+          
+          # 1. 权限修复
           mkdir -p ${{ env.CCACHE_DIR }}
           chmod -R 777 ${{ env.CCACHE_DIR }}
           
+          # 2. 环境变量设置
           export CCACHE_DIR=${{ env.CCACHE_DIR }}
-          export CCACHE_BASEDIR=${{ github.workspace }}
+          # [关键] 设置 BaseDir 为源码根目录，确保路径相对化
+          export CCACHE_BASEDIR=${{ github.workspace }}/build/openwrt
+          # [关键] 忽略时间戳差异，强制命中缓存
+          export CCACHE_SLOPPINESS=include_file_ctime,time_macros
+          # [关键] 编译器校验内容而非修改时间
           export CCACHE_COMPILERCHECK=content
+          # 指定系统 ccache
+          export CCACHE_PATH=/usr/bin/ccache
           
-          # 初始化 ccache 配置
-          ccache -M 50G
+          # 3. 初始化配置 (压缩=省时)
+          ccache -z
+          ccache --set-config=max_size=50G
           ccache --set-config=compression=true
           ccache --set-config=compression_level=6
-          ccache -z
+          
+          echo "👇 Ccache Configuration:"
+          ccache -p
           
           echo "Processing thread count: $(nproc)"
           
-          echo "🚀 Compiling Tools..."
-          # 显式传递 CCACHE_DIR，防止子进程丢失
-          make tools/compile -j$(nproc) CCACHE_DIR=${{ env.CCACHE_DIR }} || make tools/compile -j1 V=s CCACHE_DIR=${{ env.CCACHE_DIR }}
+          echo "🚀 Starting Main Build..."
           
-          echo "🚀 Compiling Toolchain..."
-          make toolchain/compile -j$(nproc) CCACHE_DIR=${{ env.CCACHE_DIR }} || make toolchain/compile -j1 V=s CCACHE_DIR=${{ env.CCACHE_DIR }}
+          # 4. 开始编译
+          # 移除 IGNORE_ERRORS，直接使用 make -j
+          # 不再分步编译，让 make 自动处理依赖，利用缓存跳过已编译模块
+          make -j$(nproc) || make -j1 V=s
           
-          echo "🚀 Compiling Firmware..."
-          make -j$(nproc) CCACHE_DIR=${{ env.CCACHE_DIR }} || make -j1 V=s CCACHE_DIR=${{ env.CCACHE_DIR }}
-          
-          echo "📊 Ccache Statistics:"
+          # 5. 统计与检查
+          echo "📊 Ccache Statistics (After Build):"
           ccache -s
           
-          # 检查缓存目录实际大小
           CACHE_SIZE=$(du -sh ${{ env.CCACHE_DIR }} | cut -f1)
-          echo "ℹ️ Current Cache Directory Size: $CACHE_SIZE"
+          echo "ℹ️ Final Cache Directory Size: $CACHE_SIZE"
           
           if [ -d "bin/targets" ] && [ "$(ls -A bin/targets)" ]; then
              echo "✅ Compile success!"
