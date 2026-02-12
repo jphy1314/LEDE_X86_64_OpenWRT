@@ -244,47 +244,47 @@ jobs:
         id: compile
         working-directory: ${{ github.workspace }}/build/openwrt
         run: |
-          # -------------------------------------------------------
-          # [核心优化] 工业级 Ccache 配置
-          # -------------------------------------------------------
-          
-          # 1. 权限修复
+          # 1. 准备缓存目录 (权限 777 是必须的)
           mkdir -p ${{ env.CCACHE_DIR }}
           chmod -R 777 ${{ env.CCACHE_DIR }}
           
-          # 2. 环境变量设置
+          # 2. 导出变量 (辅助)
           export CCACHE_DIR=${{ env.CCACHE_DIR }}
-          # [关键] 设置 BaseDir 为源码根目录，确保路径相对化
           export CCACHE_BASEDIR=${{ github.workspace }}/build/openwrt
-          # [关键] 忽略时间戳差异，强制命中缓存
           export CCACHE_SLOPPINESS=include_file_ctime,time_macros
-          # [关键] 编译器校验内容而非修改时间
           export CCACHE_COMPILERCHECK=content
-          # 指定系统 ccache
           export CCACHE_PATH=/usr/bin/ccache
           
-          # 3. 初始化配置 (压缩=省时)
+          # 3. 初始化配置
           ccache -z
           ccache --set-config=max_size=50G
           ccache --set-config=compression=true
           ccache --set-config=compression_level=6
           
-          echo "👇 Ccache Configuration:"
+          echo "👇 Ccache Config:"
           ccache -p
           
           echo "Processing thread count: $(nproc)"
-          
           echo "🚀 Starting Main Build..."
           
-          # 4. 开始编译
-          # 移除 IGNORE_ERRORS，直接使用 make -j
-          # 不再分步编译，让 make 自动处理依赖，利用缓存跳过已编译模块
-          make -j$(nproc) || make -j1 V=s
+          # ----------------------------------------------------------------------
+          # [核心修复] 强制通过命令行传递 CCACHE_DIR
+          # OpenWrt 的 Makefile 会清洗环境，必须显式传递参数才能生效！
+          # ----------------------------------------------------------------------
+          make -j$(nproc) \
+            CCACHE_DIR=${{ env.CCACHE_DIR }} \
+            CCACHE_HOST_DIR=${{ env.CCACHE_DIR }} \
+            CCACHE_BASEDIR=${{ github.workspace }}/build/openwrt \
+            || make -j1 V=s \
+            CCACHE_DIR=${{ env.CCACHE_DIR }} \
+            CCACHE_HOST_DIR=${{ env.CCACHE_DIR }} \
+            CCACHE_BASEDIR=${{ github.workspace }}/build/openwrt
           
-          # 5. 统计与检查
+          # 5. 统计结果
           echo "📊 Ccache Statistics (After Build):"
           ccache -s
           
+          # 验证缓存大小 (如果不为 MB/GB 级别，则视为配置失败)
           CACHE_SIZE=$(du -sh ${{ env.CCACHE_DIR }} | cut -f1)
           echo "ℹ️ Final Cache Directory Size: $CACHE_SIZE"
           
@@ -300,7 +300,7 @@ jobs:
           grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*DEVICE_(.*)=y/\1/' > DEVICE_NAME
           [ -s DEVICE_NAME ] && echo "DEVICE_NAME=_$(cat DEVICE_NAME)" >> $GITHUB_ENV || echo "DEVICE_NAME=_Generic" >> $GITHUB_ENV
           echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
-
+          
       - name: Check space usage
         if: (!cancelled())
         run: df -hT
