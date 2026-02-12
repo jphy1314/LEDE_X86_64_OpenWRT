@@ -79,17 +79,23 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-openwrt-dl-
 
-      # [优化 2] 缓存 ccache (编译产物)
+      # 1. 生成一个动态的时间戳变量
+      - name: Get Date
+        id: get-date
+        run: |
+          echo "date=$(date +'%Y%m%d-%H%M%S')" >> $GITHUB_OUTPUT
+
+      # 2. 修正后的 Cache ccache
       - name: Cache ccache
         uses: actions/cache@v4
         with:
           path: ${{ env.CCACHE_DIR }}
-          # [关键修改] 不要用 run_id，改用 branch + hash，确保能命中旧缓存
-          key: ${{ runner.os }}-lede-${{ env.REPO_BRANCH }}-${{ hashFiles('build/openwrt/feeds.conf.default') }}
+          # [重点修改] Key 后面加上时间戳，确保每次 Key 都不一样，强制触发保存
+          key: ${{ runner.os }}-lede-${{ env.REPO_BRANCH }}-${{ steps.get-date.outputs.date }}
+          # [重点修改] Restore keys 只写前缀，这样能匹配到最近的一次旧缓存
           restore-keys: |
             ${{ runner.os }}-lede-${{ env.REPO_BRANCH }}-
-            ${{ runner.os }}-lede-
-
+            
       - name: Load Custom Feeds (DIY Part 1)
         run: |
           [ -e "${{ github.workspace }}/diy-part1.sh" ] && \
