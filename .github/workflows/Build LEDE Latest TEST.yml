@@ -132,11 +132,10 @@ jobs:
       - name: Generate Configuration
         working-directory: ${{ github.workspace }}/build/openwrt
         run: |
-          # [优化 3] 确保 CCACHE 配置正确写入 .config
+          # [修复] 开启 CCACHE，但不要指定目录，用软链接处理
           echo "CONFIG_CCACHE=y" >> .config
-          echo "CONFIG_CCACHE_DIR=\"${{ env.CCACHE_DIR }}\"" >> .config
           
-          # [工业级优化] 关闭内核和固件的 Debug 信息，极大减少编译时间和缓存体积
+          # [工业级优化] 关闭调试信息
           echo "CONFIG_DEBUG=n" >> .config
           echo "CONFIG_DEBUG_INFO=n" >> .config
           echo "CONFIG_COLLECT_KERNEL_DEBUG=n" >> .config
@@ -244,18 +243,30 @@ jobs:
         id: compile
         working-directory: ${{ github.workspace }}/build/openwrt
         run: |
-          # 1. 准备缓存目录 (权限 777 是必须的)
+          # ----------------------------------------------------------------------
+          # [终极修复] 软链接欺骗法 (Symlink Trick)
+          # 这是解决 OpenWrt 忽略 CCACHE_DIR 变量的唯一 100% 有效方案
+          # ----------------------------------------------------------------------
+          
+          # 1. 准备外部缓存目录 (GitHub Actions 挂载点)
           mkdir -p ${{ env.CCACHE_DIR }}
           chmod -R 777 ${{ env.CCACHE_DIR }}
           
-          # 2. 导出变量 (辅助)
-          export CCACHE_DIR=${{ env.CCACHE_DIR }}
+          # 2. [核心动作] 将 OpenWrt 默认的缓存路径软链接到外部缓存目录
+          # OpenWrt 默认会在源码根目录下创建 .ccache
+          rm -rf .ccache
+          ln -s ${{ env.CCACHE_DIR }} .ccache
+          
+          # 验证软链接是否成功
+          ls -la .ccache
+          
+          # 3. 环境变量辅助 (虽然主要靠软链接，但加上这两个保险)
           export CCACHE_BASEDIR=${{ github.workspace }}/build/openwrt
           export CCACHE_SLOPPINESS=include_file_ctime,time_macros
           export CCACHE_COMPILERCHECK=content
-          export CCACHE_PATH=/usr/bin/ccache
           
-          # 3. 初始化配置
+          # 4. 初始化配置
+          # 注意：这里配置的是软链接指向的那个目录
           ccache -z
           ccache --set-config=max_size=50G
           ccache --set-config=compression=true
@@ -267,24 +278,17 @@ jobs:
           echo "Processing thread count: $(nproc)"
           echo "🚀 Starting Main Build..."
           
-          # ----------------------------------------------------------------------
-          # [核心修复] 强制通过命令行传递 CCACHE_DIR
-          # OpenWrt 的 Makefile 会清洗环境，必须显式传递参数才能生效！
-          # ----------------------------------------------------------------------
-          make -j$(nproc) \
-            CCACHE_DIR=${{ env.CCACHE_DIR }} \
-            CCACHE_HOST_DIR=${{ env.CCACHE_DIR }} \
-            CCACHE_BASEDIR=${{ github.workspace }}/build/openwrt \
-            || make -j1 V=s \
-            CCACHE_DIR=${{ env.CCACHE_DIR }} \
-            CCACHE_HOST_DIR=${{ env.CCACHE_DIR }} \
-            CCACHE_BASEDIR=${{ github.workspace }}/build/openwrt
+          # 5. 开始编译
+          # 此时不需要再传 CCACHE_DIR 变量，因为 .ccache 已经是软链接了
+          # OpenWrt 会自动写入 .ccache，实际上就写入了 ${{ env.CCACHE_DIR }}
+          make -j$(nproc) || make -j1 V=s
           
-          # 5. 统计结果
+          # 6. 统计结果
           echo "📊 Ccache Statistics (After Build):"
           ccache -s
           
-          # 验证缓存大小 (如果不为 MB/GB 级别，则视为配置失败)
+          # 7. 再次检查缓存大小
+          # 这次如果还小于 100M，那就是见鬼了
           CACHE_SIZE=$(du -sh ${{ env.CCACHE_DIR }} | cut -f1)
           echo "ℹ️ Final Cache Directory Size: $CACHE_SIZE"
           
