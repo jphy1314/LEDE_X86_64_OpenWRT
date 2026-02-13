@@ -108,6 +108,20 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds install -a
          
+          # ---------------------------------------------------------------------
+          # [界面优化] 替换为最新版 Argon 主题 (适配 LEDE/18.06 内核)
+          # ---------------------------------------------------------------------
+          echo "Processing Theme..."
+          # 1. 删除 LEDE 自带的旧版 argon
+          rm -rf feeds/luci/themes/luci-theme-argon
+          
+          # 2. 克隆 JerryKuKu 的最新版 (注意：LEDE 必须用 18.06 分支，master 分支会报错)
+          git clone -b 18.06 https://github.com/jerrykuku/luci-theme-argon.git feeds/luci/themes/luci-theme-argon
+          
+          # 3. 如果需要 Argon 设置插件 (允许自定义背景图/透明度)
+          rm -rf feeds/luci/applications/luci-app-argon-config
+          git clone -b 18.06 https://github.com/jerrykuku/luci-app-argon-config.git feeds/luci/applications/luci-app-argon-config
+         
           # Passwall 处理
           rm -rf feeds/packages/net/{xray-core,v2ray-geodata,sing-box,chinadns-ng,dns2socks,hysteria,ipt2socks,microsocks,naiveproxy,shadowsocks-libev,shadowsocks-rust,shadowsocksr-libev,simple-obfs,tcping,trojan-plus,tuic-client,v2ray-plugin,xray-plugin,geoview,shadow-tls}
           rm -rf feeds/luci/applications/luci-app-passwall
