@@ -13,12 +13,20 @@ env:
   UPLOAD_BIN_DIR: "false"
   UPLOAD_FIRMWARE: "true"
   UPLOAD_RELEASE: "true"
-  # CCACHE 路径 (放在 home 下以避免权限困扰)
   CCACHE_DIR: "/home/runner/.ccache"
+  # 增加构建信息用于缓存KEY
+  BUILD_INFO: ${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
 
 jobs:
   build:
     runs-on: ubuntu-24.04
+    
+    # 缓存KEY的前缀
+    strategy:
+      matrix:
+        include:
+          - cache-prefix: lede-x86_64
+    
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -70,32 +78,74 @@ jobs:
           git clone -b $REPO_BRANCH --single-branch --depth 1 $REPO_URL openwrt
           ln -sf "${{ github.workspace }}/build/openwrt" "${{ github.workspace }}/openwrt"
 
-      # [缓存 1] 缓存 dl 目录 (源码包)，显著减少下载时间
+      # ✅【优化1】DL缓存 - 使用正确的文件路径和hash
+      - name: Get feeds hash
+        id: feeds-hash
+        working-directory: ${{ github.workspace }}/build/openwrt
+        run: |
+          if [ -f feeds.conf.default ]; then
+            echo "hash=$(sha256sum feeds.conf.default | cut -d' ' -f1)" >> $GITHUB_OUTPUT
+          else
+            echo "hash=default" >> $GITHUB_OUTPUT
+          fi
+
       - name: Cache dl directories
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/openwrt/dl
-          key: ${{ runner.os }}-openwrt-dl-${{ hashFiles('build/openwrt/feeds.conf.default') }}
+          # ✅ 使用正确的hash，并添加配置变化作为缓存版本
+          key: dl-${{ matrix.cache-prefix }}-${{ steps.feeds-hash.outputs.hash }}-${{ hashFiles('diy-part1.sh', 'diy-part2.sh') }}
           restore-keys: |
-            ${{ runner.os }}-openwrt-dl-
+            dl-${{ matrix.cache-prefix }}-
 
-      # 1. 生成动态时间戳 (用于滚动更新缓存)
-      - name: Get Date
+      # ✅【优化2】CCACHE缓存 - 使用日级别时间戳，保证每天滚动更新
+      - name: Get Date (for cache)
         id: get-date
         run: |
-          echo "date=$(date +'%Y%m%d-%H%M%S')" >> $GITHUB_OUTPUT
+          # 使用日期级别精度，确保当天能复用缓存
+          echo "date=$(date +'%Y%m%d')" >> $GITHUB_OUTPUT
+          echo "datetime=$(date +'%Y%m%d-%H%M')" >> $GITHUB_OUTPUT
 
-      # 2. [关键优化] Ccache 缓存策略
       - name: Cache ccache
         uses: actions/cache@v4
         with:
           path: ${{ env.CCACHE_DIR }}
-          # Key 带时间戳：强制每次构建结束都保存一份新的缓存快照
-          key: ${{ runner.os }}-lede-${{ env.REPO_BRANCH }}-${{ steps.get-date.outputs.date }}
-          # Restore keys 只有前缀：总是匹配最近的一份旧缓存用于加速
+          # ✅ 优化KEY策略：日期级别 + 构建矩阵标识 + 配置hash
+          # 精确KEY用于当天完全匹配，restore-keys用于跨天模糊匹配
+          key: ccache-${{ matrix.cache-prefix }}-${{ steps.get-date.outputs.date }}-${{ hashFiles('diy-part1.sh', 'diy-part2.sh', '.config') }}
           restore-keys: |
-            ${{ runner.os }}-lede-${{ env.REPO_BRANCH }}-
+            ccache-${{ matrix.cache-prefix }}-${{ steps.get-date.outputs.date }}-
+            ccache-${{ matrix.cache-prefix }}-
 
+      # ✅【优化3】提前设置CCACHE环境变量和软链接
+      - name: Setup Ccache (Early)
+        working-directory: ${{ github.workspace }}/build/openwrt
+        run: |
+          # 在开始任何操作前设置好CCACHE
+          mkdir -p ${{ env.CCACHE_DIR }}
+          chmod -R 777 ${{ env.CCACHE_DIR }}
+          
+          # 如果已经存在.ccache目录（可能是普通目录），删除它
+          [ -e .ccache ] && rm -rf .ccache
+          
+          # 创建软链接
+          ln -s ${{ env.CCACHE_DIR }} .ccache
+          
+          # 验证
+          ls -la .ccache
+          
+          # 设置环境变量（双重保险）
+          echo "CCACHE_DIR=${{ env.CCACHE_DIR }}" >> $GITHUB_ENV
+          echo "CCACHE_BASEDIR=${{ github.workspace }}/build/openwrt" >> $GITHUB_ENV
+          echo "CCACHE_SLOPPINESS=include_file_ctime,time_macros,file_macro" >> $GITHUB_ENV
+          echo "CCACHE_COMPILERCHECK=content" >> $GITHUB_ENV
+          echo "CCACHE_MAXSIZE=50G" >> $GITHUB_ENV
+          echo "CCACHE_COMPRESS=1" >> $GITHUB_ENV
+          echo "CCACHE_COMPRESSLEVEL=6" >> $GITHUB_ENV
+          
+          # 初始化统计
+          ccache -z
+          
       - name: Load Custom Feeds (DIY Part 1)
         run: |
           [ -e "${{ github.workspace }}/diy-part1.sh" ] && \
@@ -107,20 +157,6 @@ jobs:
         run: |
           ./scripts/feeds update -a
           ./scripts/feeds install -a
-         
-          # ---------------------------------------------------------------------
-          # [界面优化] 替换为最新版 Argon 主题 (适配 LEDE/18.06 内核)
-          # ---------------------------------------------------------------------
-          echo "Processing Theme..."
-          # 1. 删除 LEDE 自带的旧版 argon
-          rm -rf feeds/luci/themes/luci-theme-argon
-          
-          # 2. 克隆 JerryKuKu 的最新版 (注意：LEDE 必须用 18.06 分支，master 分支会报错)
-          git clone -b 18.06 https://github.com/jerrykuku/luci-theme-argon.git feeds/luci/themes/luci-theme-argon
-          
-          # 3. 如果需要 Argon 设置插件 (允许自定义背景图/透明度)
-          rm -rf feeds/luci/applications/luci-app-argon-config
-          git clone -b 18.06 https://github.com/jerrykuku/luci-app-argon-config.git feeds/luci/applications/luci-app-argon-config
          
           # Passwall 处理
           rm -rf feeds/packages/net/{xray-core,v2ray-geodata,sing-box,chinadns-ng,dns2socks,hysteria,ipt2socks,microsocks,naiveproxy,shadowsocks-libev,shadowsocks-rust,shadowsocksr-libev,simple-obfs,tcping,trojan-plus,tuic-client,v2ray-plugin,xray-plugin,geoview,shadow-tls}
@@ -146,7 +182,7 @@ jobs:
       - name: Generate Configuration
         working-directory: ${{ github.workspace }}/build/openwrt
         run: |
-          # [修复] 开启 CCACHE，但不要指定目录，用软链接处理
+          # [修复] 开启 CCACHE
           echo "CONFIG_CCACHE=y" >> .config
           
           # [工业级优化] 关闭调试信息
@@ -249,60 +285,30 @@ jobs:
         run: |
           mkdir -p dl
           echo "⬇️ Starting parallel download..."
-          make download -j8 || true
-          echo "⬇️ Final single-thread download check..."
-          make download -j1 V=s || true
+          # 使用DL缓存加速下载
+          make download -j8 || make download -j1 V=s
 
       - name: Compile the firmware
         id: compile
         working-directory: ${{ github.workspace }}/build/openwrt
         run: |
-          # ----------------------------------------------------------------------
-          # [终极修复] 软链接欺骗法 (Symlink Trick)
-          # 这是解决 OpenWrt 忽略 CCACHE_DIR 变量的唯一 100% 有效方案
-          # ----------------------------------------------------------------------
-          
-          # 1. 准备外部缓存目录 (GitHub Actions 挂载点)
-          mkdir -p ${{ env.CCACHE_DIR }}
-          chmod -R 777 ${{ env.CCACHE_DIR }}
-          
-          # 2. [核心动作] 将 OpenWrt 默认的缓存路径软链接到外部缓存目录
-          # OpenWrt 默认会在源码根目录下创建 .ccache
-          rm -rf .ccache
-          ln -s ${{ env.CCACHE_DIR }} .ccache
-          
-          # 验证软链接是否成功
-          ls -la .ccache
-          
-          # 3. 环境变量辅助 (虽然主要靠软链接，但加上这两个保险)
-          export CCACHE_BASEDIR=${{ github.workspace }}/build/openwrt
-          export CCACHE_SLOPPINESS=include_file_ctime,time_macros
-          export CCACHE_COMPILERCHECK=content
-          
-          # 4. 初始化配置
-          # 注意：这里配置的是软链接指向的那个目录
-          ccache -z
-          ccache --set-config=max_size=50G
-          ccache --set-config=compression=true
-          ccache --set-config=compression_level=6
-          
+          # 验证CCACHE设置（已在Setup步骤完成）
           echo "👇 Ccache Config:"
           ccache -p
+          echo "👇 Ccache Stats (Before):"
+          ccache -s
           
           echo "Processing thread count: $(nproc)"
           echo "🚀 Starting Main Build..."
           
-          # 5. 开始编译
-          # 此时不需要再传 CCACHE_DIR 变量，因为 .ccache 已经是软链接了
-          # OpenWrt 会自动写入 .ccache，实际上就写入了 ${{ env.CCACHE_DIR }}
+          # 开始编译
           make -j$(nproc) || make -j1 V=s
           
-          # 6. 统计结果
+          # 统计结果
           echo "📊 Ccache Statistics (After Build):"
           ccache -s
           
-          # 7. 再次检查缓存大小
-          # 这次如果还小于 100M，那就是见鬼了
+          # 检查缓存大小
           CACHE_SIZE=$(du -sh ${{ env.CCACHE_DIR }} | cut -f1)
           echo "ℹ️ Final Cache Directory Size: $CACHE_SIZE"
           
@@ -318,7 +324,17 @@ jobs:
           grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*DEVICE_(.*)=y/\1/' > DEVICE_NAME
           [ -s DEVICE_NAME ] && echo "DEVICE_NAME=_$(cat DEVICE_NAME)" >> $GITHUB_ENV || echo "DEVICE_NAME=_Generic" >> $GITHUB_ENV
           echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
-          
+
+      # ✅【优化4】CCACHE保存状态验证
+      - name: Verify Ccache
+        if: always()
+        run: |
+          echo "🔍 Final Ccache Stats:"
+          ccache -s
+          echo "🔍 Cache Directory:"
+          du -sh ${{ env.CCACHE_DIR }} || true
+          ls -la ${{ env.CCACHE_DIR }} || true
+
       - name: Check space usage
         if: (!cancelled())
         run: df -hT
