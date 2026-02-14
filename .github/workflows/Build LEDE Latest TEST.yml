@@ -121,9 +121,12 @@ jobs:
           # SmartDNS 修复
           rm -rf feeds/packages/net/smartdns
           rm -rf feeds/luci/applications/luci-app-smartdns
-          git clone -b master --depth 1 https://github.com/pymumu/openwrt-smartdns package/smartdns
-          git clone -b master --depth 1 https://github.com/pymumu/luci-app-smartdns package/luci-app-smartdns
-          sed -i 's/..\/..\/lang\/rust/..\/..\/feeds\/packages\/lang\/rust/g' package/smartdns/Makefile
+          git clone --depth 1 https://github.com/pymumu/openwrt-smartdns.git package/smartdns
+          git clone --depth 1 https://github.com/pymumu/luci-app-smartdns.git package/luci-app-smartdns
+          # 更安全的 sed（先备份）
+          cp package/smartdns/Makefile package/smartdns/Makefile.bak
+          sed -i 's|../../lang/rust|../../feeds/packages/lang/rust|g' package/smartdns/Makefile
+          #  sed -i 's/..\/..\/lang\/rust/..\/..\/feeds\/packages\/lang\/rust/g' package/smartdns/Makefile
           
           echo "✅ Feeds patched."
 
