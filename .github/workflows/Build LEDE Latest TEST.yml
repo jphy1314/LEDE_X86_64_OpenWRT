@@ -158,7 +158,6 @@ jobs:
           echo "CONFIG_DEBUG_INFO=n" >> .config
           echo "CONFIG_COLLECT_KERNEL_DEBUG=n" >> .config
           echo "CONFIG_STRIP_KERNEL_EXPORTS=y" >> .config
-          
           echo "CONFIG_SDK=n" >> .config
           echo "CONFIG_IB=n" >> .config
           echo "CONFIG_KO_SYMBOLS=n" >> .config
@@ -195,7 +194,7 @@ jobs:
           echo "CONFIG_PACKAGE_sing-box_compress_upx=n" >> .config
           
           cat >> .config <<'EOF'
-          #  CONFIG_PACKAGE_ipv6helper=y
+          CONFIG_PACKAGE_ipv6helper=y
           CONFIG_PACKAGE_luci-app-passwall=y
           CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Iptables=y
           CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Nftables=y
