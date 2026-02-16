@@ -66,7 +66,7 @@ jobs:
           
           # Git 配置优化
           git config --global http.postBuffer 524288000
-          git config --global http.sslVerify false
+          #  git config --global http.sslVerify false
 
       - name: Clone Source Code
         working-directory: ${{ github.workspace }}/build
@@ -271,9 +271,20 @@ jobs:
         run: |
           mkdir -p dl
           echo "⬇️ Starting parallel download..."
+          # 1. 尝试并发下载，允许失败 (|| true)，因为网络波动是正常的
           make download -j8 || true
-          echo "⬇️ Final single-thread download check..."
-          make download -j1 V=s || true
+
+          echo "🧹 Cleaning up small/invalid files..."
+          # 2. 关键优化：删除小于 1KB 的文件
+          # 很多时候下载失败会保存一个包含 "404 Not Found" 的 HTML 页面文件
+          # 如果不删除，make 会认为文件已存在从而跳过下载，导致后续编译解压失败
+          find dl -size -1024c -exec ls -l {} \; -exec rm -f {} \;
+
+          echo "⬇️ Final single-thread verification..."
+          # 3. 单线程下载并检查，移除 || true
+          # 如果这里失败了，脚本会返回非零状态码，GitHub Actions 会自动终止并报错
+          # V=s 可以显示具体的下载 URL 和错误详情
+          make download -j1 V=s
 
       - name: Compile the firmware
         id: compile
