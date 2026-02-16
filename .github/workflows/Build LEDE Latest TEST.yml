@@ -134,6 +134,12 @@ jobs:
           git clone --depth 1 https://github.com/jerrykuku/luci-theme-argon.git package/community/luci-theme-argon
           git clone --depth 1 https://github.com/jerrykuku/luci-app-argon-config.git package/community/luci-app-argon-config
 
+          # === 新增：删除容易编译失败的过时插件 ===
+          rm -rf package/passwall-packages/v2ray-plugin
+          # 如果你是通过 feed 安装的，路径可能是 feeds/passwall_packages/v2ray-plugin
+          rm -rf feeds/passwall_packages/v2ray-plugin
+
+          echo "✅ Feeds patched and broken packages removed."
           echo "✅ Feeds patched."
 
       - name: Load Custom Configuration (DIY Part 2)
@@ -162,6 +168,9 @@ jobs:
           echo "CONFIG_IB=n" >> .config
           echo "CONFIG_KO_SYMBOLS=n" >> .config
           echo "CONFIG_BUILD_LOG=n" >> .config
+          
+          #  不编译v2ray-plugin维护状态很差的代码
+          echo "CONFIG_PACKAGE_v2ray-plugin=n" >> .config
           
           # Firewall4 & Nftables
           echo "CONFIG_PACKAGE_firewall=n" >> .config
