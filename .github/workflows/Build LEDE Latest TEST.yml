@@ -140,7 +140,6 @@ jobs:
           rm -rf feeds/passwall_packages/v2ray-plugin
 
           echo "✅ Feeds patched and broken packages removed."
-          echo "✅ Feeds patched."
 
       - name: Load Custom Configuration (DIY Part 2)
         run: |
