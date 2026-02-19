@@ -110,8 +110,7 @@ jobs:
         working-directory: ${{ github.workspace }}/build/openwrt
         run: |
           ./scripts/feeds update -a
-          ./scripts/feeds install -a
-         
+          
           # Passwall 处理
           rm -rf feeds/packages/net/{xray-core,v2ray-geodata,sing-box,chinadns-ng,dns2socks,hysteria,ipt2socks,microsocks,naiveproxy,shadowsocks-libev,shadowsocks-rust,shadowsocksr-libev,simple-obfs,tcping,trojan-plus,tuic-client,v2ray-plugin,xray-plugin,geoview,shadow-tls}
           rm -rf feeds/luci/applications/luci-app-passwall
@@ -133,8 +132,10 @@ jobs:
           rm -rf feeds/luci/applications/luci-app-argon-config
           git clone --depth 1 https://github.com/jerrykuku/luci-theme-argon.git package/community/luci-theme-argon
           git clone --depth 1 https://github.com/jerrykuku/luci-app-argon-config.git package/community/luci-app-argon-config
+          
+          ./scripts/feeds install -a
 
-          echo "✅ Feeds patched and broken packages removed."
+          echo "✅ Feeds patched and installed successfully."
 
       - name: Load Custom Configuration (DIY Part 2)
         run: |
