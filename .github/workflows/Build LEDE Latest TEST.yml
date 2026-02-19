@@ -163,9 +163,6 @@ jobs:
           echo "CONFIG_KO_SYMBOLS=n" >> .config
           echo "CONFIG_BUILD_LOG=n" >> .config
           
-          #  不编译v2ray-plugin维护状态很差的代码
-          echo "CONFIG_PACKAGE_v2ray-plugin=n" >> .config
-          
           # Firewall4 & Nftables
           echo "CONFIG_PACKAGE_firewall=n" >> .config
           echo "CONFIG_PACKAGE_iptables=n" >> .config
@@ -203,6 +200,8 @@ jobs:
           CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Nftables=y
           CONFIG_PACKAGE_luci-app-passwall_Iptables_Transparent_Proxy=y
           CONFIG_PACKAGE_luci-app-passwall_Nftables_Transparent_Proxy=y
+          CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Hysteria2=y
+          CONFIG_PACKAGE_hysteria2=y
           CONFIG_PACKAGE_luci-app-ttyd=y
           CONFIG_PACKAGE_luci-app-ddns=y
           CONFIG_PACKAGE_ddns-scripts=y
