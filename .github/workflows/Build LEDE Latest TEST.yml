@@ -139,21 +139,14 @@ jobs:
           # 如果你是通过 feed 安装的，路径可能是 feeds/passwall_packages/v2ray-plugin
           rm -rf feeds/passwall_packages/v2ray-plugin
 
-          # === [修改] 使用 sirpdboy 的自动更新插件 ===
-          # 1. 移除可能存在的旧版本 (防止 feed 里的冲突)
-          rm -rf feeds/luci/applications/luci-app-autoupdate
+          # 使用 Hyy2001X 的自动更新插件
+          git clone --depth 1 https://github.com/Hyy2001X/luci-app-autoupdate.git package/luci-app-autoupdate
           
-          # 2. 克隆新仓库
-          git clone https://github.com/sirpdboy/luci-app-autoupdate package/luci-app-autoupdate
+          # 修改默认配置 (适配自己的仓库)
+          sed -i 's/github.com\/Hyy2001X\/AutoBuild-Actions/github.com\/${{ github.repository }}/g' package/luci-app-autoupdate/root/etc/config/autoupdate
           
-          # 3. 修改默认配置 (关键步骤)
-          # sirpdboy 默认配置里的地址是 https://github.com/sirpdboy/OpenWrt-AutoBuild
-          # 我们用 sed 将其替换为 ${{ github.repository }} (即你的 用户名/仓库名)
-          # 使用 | 作为分隔符，防止 URL 中的 / 引起冲突
-          sed -i "s|https://github.com/sirpdboy/OpenWrt-AutoBuild|https://github.com/${{ github.repository }}|g" package/luci-app-autoupdate/root/etc/config/autoupdate
-          
-          # 4. (可选) 修改固件版本识别后缀，通常 x86 默认不用改，插件会自动识别 .img.gz
-          # 如果你的固件名很特殊，可能需要修改 config 中的 option firmware_pattern
+          # 强制指定分支 (如果你的 release 是基于 master 分支发布的)
+          sed -i "s/option branch 'main'/option branch '${{ env.REPO_BRANCH }}'/g" package/luci-app-autoupdate/root/etc/config/autoupdate
 
           echo "✅ Feeds patched and broken packages removed."
 
