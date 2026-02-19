@@ -134,20 +134,6 @@ jobs:
           git clone --depth 1 https://github.com/jerrykuku/luci-theme-argon.git package/community/luci-theme-argon
           git clone --depth 1 https://github.com/jerrykuku/luci-app-argon-config.git package/community/luci-app-argon-config
 
-          # === AutoUpdate 插件配置 ===
-          git clone --depth 1 https://github.com/Hyy2001X/luci-app-autoupdate.git package/luci-app-autoupdate
-          
-          # 检查文件是否存在，并使用 # 作为 sed 分隔符
-          CONFIG_FILE="package/luci-app-autoupdate/root/etc/config/autoupdate"
-          if [ -f "$CONFIG_FILE" ]; then
-              # 修改仓库地址
-              sed -i "s#github.com/Hyy2001X/AutoBuild-Actions#github.com/${{ github.repository }}#g" "$CONFIG_FILE"
-              # 修改分支名称 (这里使用正则匹配 'option branch' 后的任意内容并替换)
-              sed -i "s#option branch .*#option branch '${{ env.REPO_BRANCH }}'#g" "$CONFIG_FILE"
-              echo "✅ AutoUpdate config patched."
-          else
-              echo "⚠️ Warning: AutoUpdate config file not found at $CONFIG_FILE"
-          fi
           echo "✅ Feeds patched and broken packages removed."
 
       - name: Load Custom Configuration (DIY Part 2)
@@ -233,13 +219,7 @@ jobs:
           CONFIG_PACKAGE_luci-app-hd-idle=y
           CONFIG_PACKAGE_luci-app-uhttpd=y
           CONFIG_LUCI_THEME="argon"
-          # === AutoUpdate 依赖 ===
-          CONFIG_PACKAGE_luci-app-autoupdate=y
-          CONFIG_PACKAGE_curl=y
-          CONFIG_PACKAGE_wget-ssl=y
-          CONFIG_PACKAGE_bash=y
-          CONFIG_PACKAGE_gzip=y
-
+          
           EOF
           
           # Target selection
