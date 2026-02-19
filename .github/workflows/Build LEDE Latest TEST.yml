@@ -134,20 +134,20 @@ jobs:
           git clone --depth 1 https://github.com/jerrykuku/luci-theme-argon.git package/community/luci-theme-argon
           git clone --depth 1 https://github.com/jerrykuku/luci-app-argon-config.git package/community/luci-app-argon-config
 
-          # === 新增：删除容易编译失败的过时插件 ===
-          rm -rf package/passwall-packages/v2ray-plugin
-          # 如果你是通过 feed 安装的，路径可能是 feeds/passwall_packages/v2ray-plugin
-          rm -rf feeds/passwall_packages/v2ray-plugin
-
-          # 使用 Hyy2001X 的自动更新插件
+          # === AutoUpdate 插件配置 ===
           git clone --depth 1 https://github.com/Hyy2001X/luci-app-autoupdate.git package/luci-app-autoupdate
           
-          # 修改默认配置 (适配自己的仓库)
-          sed -i 's/github.com\/Hyy2001X\/AutoBuild-Actions/github.com\/${{ github.repository }}/g' package/luci-app-autoupdate/root/etc/config/autoupdate
-          
-          # 强制指定分支 (如果你的 release 是基于 master 分支发布的)
-          sed -i "s/option branch 'main'/option branch '${{ env.REPO_BRANCH }}'/g" package/luci-app-autoupdate/root/etc/config/autoupdate
-
+          # 检查文件是否存在，并使用 # 作为 sed 分隔符
+          CONFIG_FILE="package/luci-app-autoupdate/root/etc/config/autoupdate"
+          if [ -f "$CONFIG_FILE" ]; then
+              # 修改仓库地址
+              sed -i "s#github.com/Hyy2001X/AutoBuild-Actions#github.com/${{ github.repository }}#g" "$CONFIG_FILE"
+              # 修改分支名称 (这里使用正则匹配 'option branch' 后的任意内容并替换)
+              sed -i "s#option branch .*#option branch '${{ env.REPO_BRANCH }}'#g" "$CONFIG_FILE"
+              echo "✅ AutoUpdate config patched."
+          else
+              echo "⚠️ Warning: AutoUpdate config file not found at $CONFIG_FILE"
+          fi
           echo "✅ Feeds patched and broken packages removed."
 
       - name: Load Custom Configuration (DIY Part 2)
