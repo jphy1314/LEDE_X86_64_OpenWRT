@@ -65,24 +65,14 @@ jobs:
           mkdir -p "${{ github.workspace }}/build"
           
           # Git 配置优化
-          git config --global http.postBuffer 524288000
-          git config --global http.sslVerify false
+          # git config --global http.postBuffer 524288000
+          # git config --global http.sslVerify false
 
       - name: Clone Source Code
         working-directory: ${{ github.workspace }}/build
         run: |
           git clone -b $REPO_BRANCH --single-branch --depth 1 $REPO_URL openwrt
           ln -sf "${{ github.workspace }}/build/openwrt" "${{ github.workspace }}/openwrt"
-
-      # [缓存 1] 缓存 dl 目录
-      - name: Cache dl directories
-        uses: actions/cache@v4
-        with:
-          path: ${{ github.workspace }}/openwrt/dl
-          key: ${{ runner.os }}-openwrt-dl-${{ hashFiles('build/openwrt/feeds.conf.default') }}-${{ hashFiles('package/passwall-packages/**') }}-${{ hashFiles('package/passwall-luci/**') }}-${{ hashFiles('package/smartdns/**') }}-${{ hashFiles('package/luci-app-smartdns/**') }}
-          restore-keys: |
-            ${{ runner.os }}-openwrt-dl-
-
 
       # 1. 生成动态时间戳 (日期级别)
       - name: Get Date
@@ -165,21 +155,45 @@ jobs:
           echo "CONFIG_KO_SYMBOLS=n" >> .config
           echo "CONFIG_BUILD_LOG=n" >> .config
           
-          # Firewall4 & Nftables
+          # -------------------------------------------------------
+          # [核心修复区] 防火墙共存与透明代理内核模块
+          # -------------------------------------------------------
+          # 弃用原生 iptables 和 fw3，启用 fw4 和 nftables
           echo "CONFIG_PACKAGE_firewall=n" >> .config
           echo "CONFIG_PACKAGE_iptables=n" >> .config
           echo "CONFIG_PACKAGE_libiptc=n" >> .config
           echo "CONFIG_PACKAGE_firewall4=y" >> .config
           echo "CONFIG_PACKAGE_nftables=y" >> .config
-          echo "CONFIG_PACKAGE_kmod-nft-core=y" >> .config
-          echo "CONFIG_PACKAGE_kmod-nft-full=y" >> .config
-          echo "CONFIG_PACKAGE_kmod-nft-offload=y" >> .config
+          
+          # 启用 iptables 到 nftables 的兼容桥梁 (非常重要，使得 iptables 命令能继续工作)
           echo "CONFIG_PACKAGE_iptables-nft=y" >> .config
           echo "CONFIG_PACKAGE_ip6tables-nft=y" >> .config
+          
+          # 补齐 Nftables 的底层内核模块 (解决 netlink error 的关键 1)
+          echo "CONFIG_PACKAGE_kmod-nft-core=y" >> .config
+          echo "CONFIG_PACKAGE_kmod-nft-nat=y" >> .config
+          echo "CONFIG_PACKAGE_kmod-nft-offload=y" >> .config
+          echo "CONFIG_PACKAGE_kmod-nft-tproxy=y" >> .config
+          echo "CONFIG_PACKAGE_kmod-nft-socket=y" >> .config
+          echo "CONFIG_PACKAGE_kmod-nft-fib=y" >> .config
+          echo "CONFIG_PACKAGE_kmod-nft-dict=y" >> .config
+
+          # 补齐 Iptables 兼容模式的底层内核模块 (解决 netlink error 的关键 2)
           echo "CONFIG_PACKAGE_iptables-mod-tproxy=y" >> .config
           echo "CONFIG_PACKAGE_iptables-mod-extra=y" >> .config
+          echo "CONFIG_PACKAGE_iptables-mod-conntrack-extra=y" >> .config
+          echo "CONFIG_PACKAGE_iptables-mod-socket=y" >> .config
+          echo "CONFIG_PACKAGE_iptables-mod-ipopt=y" >> .config
+          echo "CONFIG_PACKAGE_kmod-ipt-tproxy=y" >> .config
+          echo "CONFIG_PACKAGE_kmod-ipt-extra=y" >> .config
+          echo "CONFIG_PACKAGE_kmod-ipt-nat=y" >> .config
+          echo "CONFIG_PACKAGE_kmod-ipt-nat6=y" >> .config
           
-          # Dnsmasq
+          # 补齐 ipset (Passwall 在 Iptables 模式下分流需要)
+          echo "CONFIG_PACKAGE_ipset=y" >> .config
+          echo "CONFIG_PACKAGE_kmod-ipt-ipset=y" >> .config
+
+          # Dnsmasq (同时开启 ipset 和 nftset 支持，兼顾双模式)
           echo "CONFIG_PACKAGE_dnsmasq=n" >> .config
           echo "CONFIG_PACKAGE_dnsmasq-full=y" >> .config
           echo "CONFIG_PACKAGE_dnsmasq_full_dnssec=y" >> .config
@@ -195,13 +209,17 @@ jobs:
           echo "CONFIG_PACKAGE_xray-core_compress_upx=n" >> .config
           echo "CONFIG_PACKAGE_sing-box_compress_upx=n" >> .config
           
+          # Passwall 及其他插件
           cat >> .config <<'EOF'
           CONFIG_PACKAGE_ipv6helper=y
           CONFIG_PACKAGE_luci-app-passwall=y
+          
+          # 👇 明确让 Passwall 同时包含这两种代理模式
           CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Iptables=y
           CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Nftables=y
           CONFIG_PACKAGE_luci-app-passwall_Iptables_Transparent_Proxy=y
           CONFIG_PACKAGE_luci-app-passwall_Nftables_Transparent_Proxy=y
+          
           CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Hysteria=y
           CONFIG_PACKAGE_hysteria=y
           CONFIG_PACKAGE_luci-app-ttyd=y
@@ -220,7 +238,6 @@ jobs:
           CONFIG_PACKAGE_luci-app-hd-idle=y
           CONFIG_PACKAGE_luci-app-uhttpd=y
           CONFIG_LUCI_THEME="argon"
-          
           EOF
           
           # Target selection
@@ -230,11 +247,7 @@ jobs:
           
           make defconfig
           
-          # -------------------------------------------------------
-          # [核心逻辑修复] 2. 补救措施 (The Rescue)
-          # make defconfig 可能会因为依赖关系把 CCACHE 删掉
-          # 这里我们检查它是否还在，不在就强制加回去
-          # -------------------------------------------------------
+          # 2. 补救措施 
           echo "🔍 Verifying .config for CCACHE..."
           if ! grep -q "CONFIG_CCACHE=y" .config; then
              echo "⚠️ CCACHE was stripped by defconfig! Restoring..."
