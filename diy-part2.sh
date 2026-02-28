@@ -11,7 +11,7 @@ sed -i 's/OpenWrt/LEDE/g' package/base-files/files/bin/config_generate
 # 这一步通常不需要，但如果你编译报错 po2lmo 错误，可以手动处理。
 
 # ================================================================
-# 👇 [基础优化] 网络硬件加速
+# 👇[基础优化] 网络硬件加速
 # ================================================================
 
 # 1. 确保 ethtool 被自动编译进固件中
@@ -54,14 +54,15 @@ mkdir -p package/base-files/files/etc/hotplug.d/mount
 cat > package/base-files/files/etc/hotplug.d/mount/99-optimize-disk << 'EOF'
 #!/bin/sh
 
-# 只有在挂载动作(mount)时才触发
-[ "$ACTION" = "mount" ] || exit 0[ -z "$MOUNTPOINT" ] && exit 0
+# 只有在挂载动作(mount)时才触发[ "$ACTION" = "mount" ] || exit 0
+[ -z "$MOUNTPOINT" ] && exit 0
 
 # (A) 动态提升物理硬盘的 4MB 预读缓存
 # 例如从 $DEVICE (/dev/sdb1) 提取出物理盘符 (sdb)，并修改底层 read_ahead_kb
+# ✅ 确保了 if 和 [ 之间有空格
 if [ -n "$DEVICE" ]; then
     DEV_NAME=$(basename "$DEVICE" | sed 's/[0-9]*$//')
-    if[ -f "/sys/block/$DEV_NAME/queue/read_ahead_kb" ]; then
+    if [ -f "/sys/block/$DEV_NAME/queue/read_ahead_kb" ]; then
         echo 4096 > "/sys/block/$DEV_NAME/queue/read_ahead_kb"
     fi
 fi
@@ -69,7 +70,8 @@ fi
 # (B) 动态甄别并重挂载 ext4 极限参数
 # 检查刚刚挂载的这个设备是不是 ext4 格式
 FSTYPE=$(awk -v mp="$MOUNTPOINT" '$2==mp {print $3}' /proc/mounts)
-if[ "$FSTYPE" = "ext4" ]; then
+# ✅ 确保了 if 和 [ 之间有空格
+if [ "$FSTYPE" = "ext4" ]; then
     # 如果是，立刻在底层无缝“重挂载(remount)”，注入我们的减负参数
     mount -o remount,rw,noatime,nodiratime,errors=remount-ro,commit=60 "$MOUNTPOINT"
     logger -t "Disk-Optimizer" "已自动为 $MOUNTPOINT ($DEVICE) 开启 ext4 极限性能模式"
