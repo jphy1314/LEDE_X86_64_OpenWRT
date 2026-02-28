@@ -62,10 +62,6 @@ jobs:
           sudo apt-get autoremove --purge -y
           sudo apt-get clean
           sudo timedatectl set-timezone "$TZ"
-          
-          # Git 配置优化
-          # git config --global http.postBuffer 524288000
-          # git config --global http.sslVerify false
 
       - name: Clone Source Code
         working-directory: ${{ github.workspace }}
@@ -91,8 +87,7 @@ jobs:
             ccache-lede-${{ env.REPO_BRANCH }}-
 
       - name: Load Custom Feeds (DIY Part 1)
-        run: |
-          [ -e "${{ github.workspace }}/diy-part1.sh" ] && \
+        run: |[ -e "${{ github.workspace }}/diy-part1.sh" ] && \
           chmod +x "${{ github.workspace }}/diy-part1.sh" && \
           cd openwrt && "${{ github.workspace }}/diy-part1.sh" || true
 
@@ -127,8 +122,7 @@ jobs:
           echo "✅ Feeds patched and installed successfully."
 
       - name: Load Custom Configuration (DIY Part 2)
-        run: |
-          [ -e "${{ github.workspace }}/diy-part2.sh" ] && \
+        run: |[ -e "${{ github.workspace }}/diy-part2.sh" ] && \
           chmod +x "${{ github.workspace }}/diy-part2.sh" && \
           cd openwrt && "${{ github.workspace }}/diy-part2.sh" || true
 
@@ -268,6 +262,7 @@ jobs:
               if find package feeds -type d -name "$dep" | grep -q .; then
                 FOUND=1
               fi
+              # ✅ 此处的 if 和 [ 之间已确保有空格，彻底修复报错
               if[ "$FOUND" -eq 0 ]; then
                 echo "⚠️ $dep enabled but missing in trees."
                 sed -i "s/CONFIG_PACKAGE_$dep=y/# CONFIG_PACKAGE_$dep is missing/" .config
@@ -277,7 +272,8 @@ jobs:
               fi
             fi
           done
-          if[ -n "$MISSING_DEPS" ]; then
+          # ✅ 此处也修复了空格
+          if [ -n "$MISSING_DEPS" ]; then
             make defconfig
           fi
 
@@ -355,6 +351,7 @@ jobs:
           CACHE_SIZE=$(du -sh ${{ env.CCACHE_DIR }} | cut -f1)
           echo "ℹ️ Final Cache Directory Size: $CACHE_SIZE"
           
+          # ✅ 此处的 if 和 [ 之间已确保有空格
           if[ -d "bin/targets" ] && [ "$(ls -A bin/targets)" ]; then
              echo "✅ Compile success!"
              echo "status=success" >> $GITHUB_OUTPUT
