@@ -87,7 +87,8 @@ jobs:
             ccache-lede-${{ env.REPO_BRANCH }}-
 
       - name: Load Custom Feeds (DIY Part 1)
-        run: |[ -e "${{ github.workspace }}/diy-part1.sh" ] && \
+        run: |
+          [ -e "${{ github.workspace }}/diy-part1.sh" ] && \
           chmod +x "${{ github.workspace }}/diy-part1.sh" && \
           cd openwrt && "${{ github.workspace }}/diy-part1.sh" || true
 
@@ -122,7 +123,8 @@ jobs:
           echo "✅ Feeds patched and installed successfully."
 
       - name: Load Custom Configuration (DIY Part 2)
-        run: |[ -e "${{ github.workspace }}/diy-part2.sh" ] && \
+        run: |
+          [ -e "${{ github.workspace }}/diy-part2.sh" ] && \
           chmod +x "${{ github.workspace }}/diy-part2.sh" && \
           cd openwrt && "${{ github.workspace }}/diy-part2.sh" || true
 
