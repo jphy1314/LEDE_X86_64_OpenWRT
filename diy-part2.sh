@@ -21,9 +21,12 @@ echo "CONFIG_PACKAGE_ethtool=y" >> .config
 sed -i '/exit 0/d' package/base-files/files/etc/rc.local
 cat >> package/base-files/files/etc/rc.local <<'EOF'
 
-# 开启网卡 TX 硬件加速 (tso/gso)
-ethtool -K eth0 tso on 2>/dev/null
-ethtool -K eth0 gso on 2>/dev/null
+# 开启所有物理网卡 TX 硬件加速 (tso/gso)
+# 自动遍历系统所有网卡 (兼容 ethx, enpx, enxx 等命名)，不再局限于 eth0
+for iface in $(ls /sys/class/net | grep -E '^eth|^enp|^enx'); do
+    ethtool -K $iface tso on 2>/dev/null
+    ethtool -K $iface gso on 2>/dev/null
+done
 
 exit 0
 EOF
@@ -52,14 +55,13 @@ cat > package/base-files/files/etc/hotplug.d/mount/99-optimize-disk << 'EOF'
 #!/bin/sh
 
 # 只有在挂载动作(mount)时才触发
-[ "$ACTION" = "mount" ] || exit 0
-[ -z "$MOUNTPOINT" ] && exit 0
+[ "$ACTION" = "mount" ] || exit 0[ -z "$MOUNTPOINT" ] && exit 0
 
 # (A) 动态提升物理硬盘的 4MB 预读缓存
 # 例如从 $DEVICE (/dev/sdb1) 提取出物理盘符 (sdb)，并修改底层 read_ahead_kb
 if [ -n "$DEVICE" ]; then
     DEV_NAME=$(basename "$DEVICE" | sed 's/[0-9]*$//')
-    if [ -f "/sys/block/$DEV_NAME/queue/read_ahead_kb" ]; then
+    if[ -f "/sys/block/$DEV_NAME/queue/read_ahead_kb" ]; then
         echo 4096 > "/sys/block/$DEV_NAME/queue/read_ahead_kb"
     fi
 fi
@@ -67,7 +69,7 @@ fi
 # (B) 动态甄别并重挂载 ext4 极限参数
 # 检查刚刚挂载的这个设备是不是 ext4 格式
 FSTYPE=$(awk -v mp="$MOUNTPOINT" '$2==mp {print $3}' /proc/mounts)
-if [ "$FSTYPE" = "ext4" ]; then
+if[ "$FSTYPE" = "ext4" ]; then
     # 如果是，立刻在底层无缝“重挂载(remount)”，注入我们的减负参数
     mount -o remount,rw,noatime,nodiratime,errors=remount-ro,commit=60 "$MOUNTPOINT"
     logger -t "Disk-Optimizer" "已自动为 $MOUNTPOINT ($DEVICE) 开启 ext4 极限性能模式"
