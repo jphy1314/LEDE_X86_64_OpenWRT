@@ -62,17 +62,16 @@ jobs:
           sudo apt-get autoremove --purge -y
           sudo apt-get clean
           sudo timedatectl set-timezone "$TZ"
-          mkdir -p "${{ github.workspace }}/build"
           
           # Git 配置优化
           # git config --global http.postBuffer 524288000
           # git config --global http.sslVerify false
 
       - name: Clone Source Code
-        working-directory: ${{ github.workspace }}/build
+        working-directory: ${{ github.workspace }}
         run: |
+          # 直接在当前工作区拉取源码，自动生成 openwrt 文件夹
           git clone -b $REPO_BRANCH --single-branch --depth 1 $REPO_URL openwrt
-          ln -sf "${{ github.workspace }}/build/openwrt" "${{ github.workspace }}/openwrt"
 
       # 1. 生成动态时间戳 (日期级别)
       - name: Get Date
@@ -98,7 +97,7 @@ jobs:
           cd openwrt && "${{ github.workspace }}/diy-part1.sh" || true
 
       - name: Update, Patch & Install Feeds
-        working-directory: ${{ github.workspace }}/build/openwrt
+        working-directory: ${{ github.workspace }}/openwrt
         run: |
           ./scripts/feeds update -a
           
@@ -116,7 +115,6 @@ jobs:
           # 更安全的 sed（先备份）
           cp package/smartdns/Makefile package/smartdns/Makefile.bak
           sed -i 's|../../lang/rust|../../feeds/packages/lang/rust|g' package/smartdns/Makefile
-          #  sed -i 's/..\/..\/lang\/rust/..\/..\/feeds\/packages\/lang\/rust/g' package/smartdns/Makefile
 
           # Argon Theme
           rm -rf feeds/luci/themes/luci-theme-argon
@@ -135,7 +133,7 @@ jobs:
           cd openwrt && "${{ github.workspace }}/diy-part2.sh" || true
 
       - name: Generate Configuration
-        working-directory: ${{ github.workspace }}/build/openwrt
+        working-directory: ${{ github.workspace }}/openwrt
         run: |
           # -------------------------------------------------------
           # [核心逻辑修复] 1. 预设配置
@@ -258,7 +256,7 @@ jobs:
           fi
 
       - name: Check PassWall Dependencies
-        working-directory: ${{ github.workspace }}/build/openwrt
+        working-directory: ${{ github.workspace }}/openwrt
         run: |
           set -euo pipefail
           echo "Checking PassWall dependencies..."
@@ -270,7 +268,7 @@ jobs:
               if find package feeds -type d -name "$dep" | grep -q .; then
                 FOUND=1
               fi
-              if [ "$FOUND" -eq 0 ]; then
+              if[ "$FOUND" -eq 0 ]; then
                 echo "⚠️ $dep enabled but missing in trees."
                 sed -i "s/CONFIG_PACKAGE_$dep=y/# CONFIG_PACKAGE_$dep is missing/" .config
                 MISSING_DEPS="$MISSING_DEPS $dep"
@@ -279,12 +277,12 @@ jobs:
               fi
             fi
           done
-          if [ -n "$MISSING_DEPS" ]; then
+          if[ -n "$MISSING_DEPS" ]; then
             make defconfig
           fi
 
       - name: Download package
-        working-directory: ${{ github.workspace }}/build/openwrt
+        working-directory: ${{ github.workspace }}/openwrt
         run: |
           mkdir -p dl
           echo "⬇️ Starting parallel download..."
@@ -305,10 +303,10 @@ jobs:
 
       - name: Compile the firmware
         id: compile
-        working-directory: ${{ github.workspace }}/build/openwrt
+        working-directory: ${{ github.workspace }}/openwrt
         run: |
           # ----------------------------------------------------------------------
-          # [终极修复] 3. 编译前最后检查与软链接
+          #[终极修复] 3. 编译前最后检查与软链接
           # ----------------------------------------------------------------------
           
           # 1. 再次强制检查 .config
@@ -329,8 +327,8 @@ jobs:
           ln -s ${{ env.CCACHE_DIR }} .ccache
           echo "✅ Symlink created: .ccache -> ${{ env.CCACHE_DIR }}"
           
-          # 4. 环境变量辅助
-          export CCACHE_BASEDIR=${{ github.workspace }}/build/openwrt
+          # 4. 环境变量辅助 (路径更新为纯 openwrt)
+          export CCACHE_BASEDIR=${{ github.workspace }}/openwrt
           export CCACHE_SLOPPINESS=include_file_ctime,time_macros
           export CCACHE_COMPILERCHECK=content
           
@@ -357,7 +355,7 @@ jobs:
           CACHE_SIZE=$(du -sh ${{ env.CCACHE_DIR }} | cut -f1)
           echo "ℹ️ Final Cache Directory Size: $CACHE_SIZE"
           
-          if [ -d "bin/targets" ] && [ "$(ls -A bin/targets)" ]; then
+          if[ -d "bin/targets" ] && [ "$(ls -A bin/targets)" ]; then
              echo "✅ Compile success!"
              echo "status=success" >> $GITHUB_OUTPUT
           else
