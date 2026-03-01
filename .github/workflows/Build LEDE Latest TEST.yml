@@ -202,6 +202,14 @@ jobs:
           echo "CONFIG_SING_BOX_COMPRESS_UPX=n" >> .config
           echo "CONFIG_PACKAGE_xray-core_compress_upx=n" >> .config
           echo "CONFIG_PACKAGE_sing-box_compress_upx=n" >> .config
+
+          # --- 针对 Intel D525 性能优化的组件 ---
+          echo "CONFIG_PACKAGE_luci-app-wireguard=y" >> .config
+          echo "CONFIG_PACKAGE_irqbalance=y" >> .config
+          echo "CONFIG_PACKAGE_cpufreq=y" >> .config
+          echo "CONFIG_PACKAGE_luci-app-cpufreq=y" >> .config
+          echo "CONFIG_PACKAGE_kmod-tcp-bbr=y" >> .config
+          echo "CONFIG_DEFAULT_tcp_bbr=y" >> .config
           
           # Passwall 及其他插件
           cat >> .config <<'EOF'
