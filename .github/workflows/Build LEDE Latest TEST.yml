@@ -272,8 +272,8 @@ jobs:
               if find package feeds -type d -name "$dep" | grep -q .; then
                 FOUND=1
               fi
-              # ✅ 此处的 if 和 [ 之间已确保有空格，彻底修复报错
-              if[ "$FOUND" -eq 0 ]; then
+              # 已修复：补充 if 和[ 之间的空格
+              if [ "$FOUND" -eq 0 ]; then
                 echo "⚠️ $dep enabled but missing in trees."
                 sed -i "s/CONFIG_PACKAGE_$dep=y/# CONFIG_PACKAGE_$dep is missing/" .config
                 MISSING_DEPS="$MISSING_DEPS $dep"
@@ -282,7 +282,7 @@ jobs:
               fi
             fi
           done
-          # ✅ 此处也修复了空格
+          # 已修复：补充 if 和[ 之间的空格
           if [ -n "$MISSING_DEPS" ]; then
             make defconfig
           fi
@@ -361,8 +361,8 @@ jobs:
           CACHE_SIZE=$(du -sh ${{ env.CCACHE_DIR }} | cut -f1)
           echo "ℹ️ Final Cache Directory Size: $CACHE_SIZE"
           
-          # ✅ 此处的 if 和 [ 之间已确保有空格
-          if[ -d "bin/targets" ] && [ "$(ls -A bin/targets)" ]; then
+          # 已修复：补充 if 和[ 之间的空格
+          if [ -d "bin/targets" ] && [ "$(ls -A bin/targets)" ]; then
              echo "✅ Compile success!"
              echo "status=success" >> $GITHUB_OUTPUT
           else
@@ -371,8 +371,7 @@ jobs:
              exit 1
           fi
           
-          grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*DEVICE_(.*)=y/\1/' > DEVICE_NAME
-          [ -s DEVICE_NAME ] && echo "DEVICE_NAME=_$(cat DEVICE_NAME)" >> $GITHUB_ENV || echo "DEVICE_NAME=_Generic" >> $GITHUB_ENV
+          grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*DEVICE_(.*)=y/\1/' > DEVICE_NAME[ -s DEVICE_NAME ] && echo "DEVICE_NAME=_$(cat DEVICE_NAME)" >> $GITHUB_ENV || echo "DEVICE_NAME=_Generic" >> $GITHUB_ENV
           echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
           
       - name: Check space usage
