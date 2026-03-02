@@ -138,6 +138,14 @@ jobs:
           # 必须开启 DEVEL，否则 CCACHE 会被 defconfig 删除
           echo "CONFIG_DEVEL=y" >> .config
           echo "CONFIG_CCACHE=y" >> .config
+
+          # 启用kpp内核模块（提供kpp.ko）
+          echo "CONFIG_PACKAGE_kmod-crypto-kpp=y" >> .config
+
+          # 确保curve25519相关的加密库也启用（通常会自动选择，但可显式指定）
+          echo "CONFIG_PACKAGE_kmod-crypto-lib-curve25519=y" >> .config
+          echo "CONFIG_PACKAGE_kmod-crypto-lib-chacha20=y" >> .config
+          echo "CONFIG_PACKAGE_kmod-crypto-lib-poly1305=y" >> .config
           
           # 关闭调试信息
           echo "CONFIG_DEBUG=n" >> .config
