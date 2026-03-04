@@ -123,10 +123,19 @@ jobs:
           echo "✅ Feeds patched and installed successfully."
 
       - name: Load Custom Configuration (DIY Part 2)
+        working-directory: openwrt
         run: |
-          [ -e "${{ github.workspace }}/diy-part2.sh" ] && \
-          chmod +x "${{ github.workspace }}/diy-part2.sh" && \
-          cd openwrt && "${{ github.workspace }}/diy-part2.sh" || true
+          SCRIPT="${{ github.workspace }}/diy-part2.sh"
+          
+          # 1. 前置断言 (Fail-Fast)：找不到核心脚本立刻阻断流水线并大声报错
+          if [[ ! -f "$SCRIPT" ]]; then
+            echo "::error title=配置脚本丢失::找不到核心配置文件 $SCRIPT，请检查代码仓库结构！"
+            exit 1
+          fi
+          
+          # 2. 权限赋予与执行 (绝对路径，无懈可击)
+          chmod +x "$SCRIPT"
+          "$SCRIPT"
 
       - name: Generate Configuration
         working-directory: ${{ github.workspace }}/openwrt
