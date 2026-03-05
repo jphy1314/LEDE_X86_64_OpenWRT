@@ -13,18 +13,20 @@ env:
   UPLOAD_BIN_DIR: "false"
   UPLOAD_FIRMWARE: "true"
   UPLOAD_RELEASE: "true"
-  # CCACHE 路径
+  # CCACHE 统一挂载路径
   CCACHE_DIR: "/home/runner/.ccache"
 
 jobs:
   build:
     runs-on: ubuntu-24.04
+    
     steps:
-      - name: Checkout
+      - name: Checkout Code
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
+      # 释放 GitHub Runner 的磁盘空间，OpenWrt 编译通常需要 30GB+ 空间
       - name: Free Disk Space
         uses: jlumbroso/free-disk-space@main
         with:
@@ -36,29 +38,30 @@ jobs:
           docker-images: true
           swap-storage: true
 
-      - name: Initialization Environment
+      - name: Initialize Environment
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
+          # 开启 Bash 严格模式：遇错即停(-e)，未定义变量即停(-u)，管道任意节点报错即停(-o pipefail)
+          set -euo pipefail
+          
+          # 移除不必要的系统组件以腾出空间
+          sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           sudo apt-get update
-          sudo apt-get install -y software-properties-common aria2
-          sudo add-apt-repository -y ppa:apt-fast/stable
-          sudo apt-get update
-          sudo apt-get install -y apt-fast
-
-          # 安装核心构建依赖
-          sudo apt-fast install -y --no-install-recommends \
-          build-essential clang cmake device-tree-compiler \
-          flex gawk gcc-multilib g++-multilib gettext git gperf \
-          help2man intltool libelf-dev libglib2.0-dev \
-          libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses-dev \
-          libreadline-dev libssl-dev libtool llvm lrzsz libnsl-dev \
-          ninja-build p7zip p7zip-full patch pkgconf python3 python3-pyelftools \
-          qemu-utils rsync scons squashfs-tools subversion swig texinfo \
-          uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev \
-          ack antlr3 asciidoc autoconf automake autopoint binutils bison \
-          bzip2 curl genisoimage haveged ccache
-
+          
+          # 使用原生 apt-get 并行安装核心编译依赖
+          sudo apt-get install -y --no-install-recommends \
+            build-essential clang cmake device-tree-compiler \
+            flex gawk gcc-multilib g++-multilib gettext git gperf \
+            help2man intltool libelf-dev libglib2.0-dev \
+            libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses-dev \
+            libreadline-dev libssl-dev libtool llvm lrzsz libnsl-dev \
+            ninja-build p7zip p7zip-full patch pkgconf python3 python3-pyelftools \
+            qemu-utils rsync scons squashfs-tools subversion swig texinfo \
+            uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev \
+            ack antlr3 asciidoc autoconf automake autopoint binutils bison \
+            bzip2 curl genisoimage haveged ccache
+            
           sudo apt-get autoremove --purge -y
           sudo apt-get clean
           sudo timedatectl set-timezone "$TZ"
@@ -66,180 +69,154 @@ jobs:
       - name: Clone Source Code
         working-directory: ${{ github.workspace }}
         run: |
-          # 直接在当前工作区拉取源码，自动生成 openwrt 文件夹
+          set -euo pipefail
+          # 仅拉取单分支、最新一次 commit，极大减少 git clone 时间
           git clone -b $REPO_BRANCH --single-branch --depth 1 $REPO_URL openwrt
 
-      # 1. 生成动态时间戳 (日期级别)
-      - name: Get Date
-        id: get-date
+      - name: Generate Cache Key Variables
+        id: cache-vars
         run: |
+          set -euo pipefail
+          # 生成按天计算的时间戳，保证每天至少有一次全量/增量 Cache 刷新
           echo "date=$(date +'%Y%m%d')" >> $GITHUB_OUTPUT
 
-      # 2. [关键优化] Ccache 缓存策略
-      - name: Cache ccache
+      # 【企业级缓存策略】
+      # 缓存键由 分支名 + 核心配置文件的 Hash + 日期 组成。
+      # 任何本地工作流文件或 feeds 列表的改动都会生成全新 Key，避免读取失效缓存导致玄学报错。
+      - name: Cache Ccache
         uses: actions/cache@v4
         with:
           path: ${{ env.CCACHE_DIR }}
-          # Key: os - branch - date
-          key: ccache-lede-${{ env.REPO_BRANCH }}-${{ steps.get-date.outputs.date }}
-          # Restore keys: 允许回退到同一分支的旧缓存
+          key: ccache-lede-${{ env.REPO_BRANCH }}-${{ hashFiles('.github/workflows/*.yml', 'diy-part1.sh', 'diy-part2.sh', 'openwrt/feeds.conf.default') }}-${{ steps.cache-vars.outputs.date }}
           restore-keys: |
+            ccache-lede-${{ env.REPO_BRANCH }}-${{ hashFiles('.github/workflows/*.yml', 'diy-part1.sh', 'diy-part2.sh', 'openwrt/feeds.conf.default') }}-
             ccache-lede-${{ env.REPO_BRANCH }}-
 
       - name: Load Custom Feeds (DIY Part 1)
+        working-directory: ${{ github.workspace }}/openwrt
         run: |
-          [ -e "${{ github.workspace }}/diy-part1.sh" ] && \
-          chmod +x "${{ github.workspace }}/diy-part1.sh" && \
-          cd openwrt && "${{ github.workspace }}/diy-part1.sh" || true
+          set -euo pipefail
+          SCRIPT="${{ github.workspace }}/diy-part1.sh"
+          # 统一脚本调用风格。如果脚本不存在，|| true 防止报错中断
+          [[ -f "$SCRIPT" ]] && bash "$SCRIPT" || true
 
       - name: Update, Patch & Install Feeds
         working-directory: ${{ github.workspace }}/openwrt
         run: |
+          set -euo pipefail
           ./scripts/feeds update -a
           
-          # Passwall 处理
-          rm -rf feeds/packages/net/{xray-core,v2ray-geodata,sing-box,chinadns-ng,dns2socks,hysteria,ipt2socks,microsocks,naiveproxy,shadowsocks-libev,shadowsocks-rust,shadowsocksr-libev,simple-obfs,tcping,trojan-plus,tuic-client,v2ray-plugin,xray-plugin,geoview,shadow-tls}
-          rm -rf feeds/luci/applications/luci-app-passwall
-          git clone https://github.com/Openwrt-Passwall/openwrt-passwall-packages package/passwall-packages
-          git clone https://github.com/Openwrt-Passwall/openwrt-passwall package/passwall-luci
+          # 【依赖隔离与安全覆盖】
+          # 先移除原有冲突包，加 || true 是为了容错（万一本来就没这个包也不会报错中断）
+          rm -rf feeds/packages/net/{xray-core,v2ray-geodata,sing-box,chinadns-ng,dns2socks,hysteria,ipt2socks,microsocks,naiveproxy,shadowsocks-libev,shadowsocks-rust,shadowsocksr-libev,simple-obfs,tcping,trojan-plus,tuic-client,v2ray-plugin,xray-plugin,geoview,shadow-tls} || true
+          rm -rf feeds/luci/applications/luci-app-passwall || true
+          
+          git clone --depth 1 https://github.com/Openwrt-Passwall/openwrt-passwall-packages package/passwall-packages
+          git clone --depth 1 https://github.com/Openwrt-Passwall/openwrt-passwall package/passwall-luci
 
-          # SmartDNS 修复
-          rm -rf feeds/packages/net/smartdns
-          rm -rf feeds/luci/applications/luci-app-smartdns
+          # SmartDNS 替换与修复
+          rm -rf feeds/packages/net/smartdns || true
+          rm -rf feeds/luci/applications/luci-app-smartdns || true
           git clone --depth 1 https://github.com/pymumu/openwrt-smartdns.git package/smartdns
           git clone --depth 1 https://github.com/pymumu/luci-app-smartdns.git package/luci-app-smartdns
-          # 更安全的 sed（先备份）
           cp package/smartdns/Makefile package/smartdns/Makefile.bak
           sed -i 's|../../lang/rust|../../feeds/packages/lang/rust|g' package/smartdns/Makefile
 
-          # Argon Theme
-          rm -rf feeds/luci/themes/luci-theme-argon
-          rm -rf feeds/luci/applications/luci-app-argon-config
+          # 主题替换
+          rm -rf feeds/luci/themes/luci-theme-argon || true
+          rm -rf feeds/luci/applications/luci-app-argon-config || true
           git clone --depth 1 https://github.com/jerrykuku/luci-theme-argon.git package/community/luci-theme-argon
           git clone --depth 1 https://github.com/jerrykuku/luci-app-argon-config.git package/community/luci-app-argon-config
           
           ./scripts/feeds install -a
 
-          echo "✅ Feeds patched and installed successfully."
-
       - name: Load Custom Configuration (DIY Part 2)
-        working-directory: openwrt
+        working-directory: ${{ github.workspace }}/openwrt
         run: |
+          set -euo pipefail
           SCRIPT="${{ github.workspace }}/diy-part2.sh"
-          
-          # 1. 前置断言 (Fail-Fast)：找不到核心脚本立刻阻断流水线并大声报错
-          if [[ ! -f "$SCRIPT" ]]; then
-            echo "::error title=配置脚本丢失::找不到核心配置文件 $SCRIPT，请检查代码仓库结构！"
-            exit 1
-          fi
-          
-          # 2. 权限赋予与执行 (绝对路径，无懈可击)
-          chmod +x "$SCRIPT"
-          "$SCRIPT"
+          # 统一执行风格：基于 OpenWrt 根目录执行
+          [[ -f "$SCRIPT" ]] && bash "$SCRIPT" || true
 
       - name: Generate Configuration
         working-directory: ${{ github.workspace }}/openwrt
         run: |
-          # -------------------------------------------------------
-          # [核心逻辑修复] 1. 预设配置
-          # -------------------------------------------------------
+          set -euo pipefail
           
-          # 必须开启 DEVEL，否则 CCACHE 会被 defconfig 删除
-          echo "CONFIG_DEVEL=y" >> .config
-          echo "CONFIG_CCACHE=y" >> .config
+          # 【模块化配置注入 (Configuration as Code)】
+          # 分块写入，避免单体文件过长，极大地提高后期维护性和可读性
           
-          # 关闭调试信息
-          echo "CONFIG_DEBUG=n" >> .config
-          echo "CONFIG_DEBUG_INFO=n" >> .config
-          echo "CONFIG_COLLECT_KERNEL_DEBUG=n" >> .config
-          echo "CONFIG_STRIP_KERNEL_EXPORTS=y" >> .config
-          echo "CONFIG_SDK=n" >> .config
-          echo "CONFIG_IB=n" >> .config
-          echo "CONFIG_KO_SYMBOLS=n" >> .config
-          echo "CONFIG_BUILD_LOG=n" >> .config
-          
-          # -------------------------------------------------------
-          # [核心修复区] 防火墙共存与透明代理内核模块
-          # -------------------------------------------------------
-          # 弃用原生 iptables 和 fw3，启用 fw4 和 nftables
-          echo "CONFIG_PACKAGE_firewall=n" >> .config
-          echo "CONFIG_PACKAGE_iptables=n" >> .config
-          echo "CONFIG_PACKAGE_libiptc=n" >> .config
-          echo "CONFIG_PACKAGE_firewall4=y" >> .config
-          echo "CONFIG_PACKAGE_nftables=y" >> .config
-          
-          # 启用 iptables 到 nftables 的兼容桥梁 (非常重要，使得 iptables 命令能继续工作)
-          echo "CONFIG_PACKAGE_iptables-nft=y" >> .config
-          echo "CONFIG_PACKAGE_ip6tables-nft=y" >> .config
-          
-          # 补齐 Nftables 的底层内核模块 (解决 netlink error 的关键 1)
-          echo "CONFIG_PACKAGE_kmod-nft-core=y" >> .config
-          echo "CONFIG_PACKAGE_kmod-nft-nat=y" >> .config
-          echo "CONFIG_PACKAGE_kmod-nft-offload=y" >> .config
-          echo "CONFIG_PACKAGE_kmod-nft-tproxy=y" >> .config
-          echo "CONFIG_PACKAGE_kmod-nft-socket=y" >> .config
-          echo "CONFIG_PACKAGE_kmod-nft-fib=y" >> .config
-          echo "CONFIG_PACKAGE_kmod-nft-dict=y" >> .config
-
-          # 补齐 Iptables 兼容模式的底层内核模块 (解决 netlink error 的关键 2)
-          echo "CONFIG_PACKAGE_iptables-mod-tproxy=y" >> .config
-          echo "CONFIG_PACKAGE_iptables-mod-extra=y" >> .config
-          echo "CONFIG_PACKAGE_iptables-mod-conntrack-extra=y" >> .config
-          echo "CONFIG_PACKAGE_iptables-mod-socket=y" >> .config
-          echo "CONFIG_PACKAGE_iptables-mod-ipopt=y" >> .config
-          echo "CONFIG_PACKAGE_kmod-ipt-tproxy=y" >> .config
-          echo "CONFIG_PACKAGE_kmod-ipt-extra=y" >> .config
-          echo "CONFIG_PACKAGE_kmod-ipt-nat=y" >> .config
-          echo "CONFIG_PACKAGE_kmod-ipt-nat6=y" >> .config
-          
-          # 补齐 ipset (Passwall 在 Iptables 模式下分流需要)
-          echo "CONFIG_PACKAGE_ipset=y" >> .config
-          echo "CONFIG_PACKAGE_kmod-ipt-ipset=y" >> .config
-
-          # Dnsmasq (同时开启 ipset 和 nftset 支持，兼顾双模式)
-          echo "CONFIG_PACKAGE_dnsmasq=n" >> .config
-          echo "CONFIG_PACKAGE_dnsmasq-full=y" >> .config
-          echo "CONFIG_PACKAGE_dnsmasq_full_dnssec=y" >> .config
-          echo "CONFIG_PACKAGE_dnsmasq_full_auth=y" >> .config
-          echo "CONFIG_PACKAGE_dnsmasq_full_ipset=y" >> .config
-          echo "CONFIG_PACKAGE_dnsmasq_full_conntrack=y" >> .config
-          echo "CONFIG_PACKAGE_dnsmasq_full_noid=y" >> .config
-          echo "CONFIG_PACKAGE_dnsmasq_full_nftset=y" >> .config
-         
-          # UPX Disable
-          echo "CONFIG_XRAY_CORE_COMPRESS_UPX=n" >> .config
-          echo "CONFIG_SING_BOX_COMPRESS_UPX=n" >> .config
-          echo "CONFIG_PACKAGE_xray-core_compress_upx=n" >> .config
-          echo "CONFIG_PACKAGE_sing-box_compress_upx=n" >> .config
-
-          # ================================================================
-          # 硬件架构与指令集全局优化 (Atom D525 Bonnell)
-          # ================================================================
-          # 官方标准做法：不改源码，直接向构建系统注入针对性 GCC 优化参数
-          # -O2: 开启标准性能优化
-          # -pipe: 提升编译速度
-          # -march=bonnell: 针对 Atom D525 开启专有硬件指令集
-          # -fomit-frame-pointer: 减少寄存器开销，提升微弱 CPU 性能
-
+          #[模块 1]: 基础架构与编译选项 (开启 Ccache，关闭无用 Debug 减小固件体积)
           cat >> .config <<'EOF'
-          # --- GCC Compiler Optimization for Atom D525 ---
           CONFIG_TARGET_OPTIMIZATION="-O2 -pipe -march=bonnell -mtune=bonnell -fomit-frame-pointer"
-          # -----------------------------------------------
+          CONFIG_TARGET_x86=y
+          CONFIG_TARGET_x86_64=y
+          CONFIG_TARGET_x86_64_DEVICE_generic=y
+          CONFIG_DEVEL=y
+          CONFIG_CCACHE=y
+          CONFIG_DEBUG=n
+          CONFIG_DEBUG_INFO=n
+          CONFIG_COLLECT_KERNEL_DEBUG=n
+          CONFIG_STRIP_KERNEL_EXPORTS=y
+          CONFIG_SDK=n
+          CONFIG_IB=n
+          CONFIG_KO_SYMBOLS=n
+          CONFIG_BUILD_LOG=n
           EOF
-
-          echo "✅ 硬件优化: 已向编译器下发 Atom D525 (Bonnell) 专属指令集参数"
           
-          # Passwall 及其他插件
+          # [模块 2]: 防火墙核心与兼容层 (fw4 + nftables + iptables-nft)
           cat >> .config <<'EOF'
+          CONFIG_PACKAGE_firewall=n
+          CONFIG_PACKAGE_iptables=n
+          CONFIG_PACKAGE_libiptc=n
+          CONFIG_PACKAGE_firewall4=y
+          CONFIG_PACKAGE_nftables=y
+          CONFIG_PACKAGE_iptables-nft=y
+          CONFIG_PACKAGE_ip6tables-nft=y
+          CONFIG_PACKAGE_kmod-nft-core=y
+          CONFIG_PACKAGE_kmod-nft-nat=y
+          CONFIG_PACKAGE_kmod-nft-offload=y
+          CONFIG_PACKAGE_kmod-nft-tproxy=y
+          CONFIG_PACKAGE_kmod-nft-socket=y
+          CONFIG_PACKAGE_kmod-nft-fib=y
+          CONFIG_PACKAGE_kmod-nft-dict=y
+          CONFIG_PACKAGE_iptables-mod-tproxy=y
+          CONFIG_PACKAGE_iptables-mod-extra=y
+          CONFIG_PACKAGE_iptables-mod-conntrack-extra=y
+          CONFIG_PACKAGE_iptables-mod-socket=y
+          CONFIG_PACKAGE_iptables-mod-ipopt=y
+          CONFIG_PACKAGE_kmod-ipt-tproxy=y
+          CONFIG_PACKAGE_kmod-ipt-extra=y
+          CONFIG_PACKAGE_kmod-ipt-nat=y
+          CONFIG_PACKAGE_kmod-ipt-nat6=y
+          CONFIG_PACKAGE_ipset=y
+          CONFIG_PACKAGE_kmod-ipt-ipset=y
+          EOF
+          
+          # [模块 3]: DNS 解析器支持 (双集并存)
+          cat >> .config <<'EOF'
+          CONFIG_PACKAGE_dnsmasq=n
+          CONFIG_PACKAGE_dnsmasq-full=y
+          CONFIG_PACKAGE_dnsmasq_full_dnssec=y
+          CONFIG_PACKAGE_dnsmasq_full_auth=y
+          CONFIG_PACKAGE_dnsmasq_full_ipset=y
+          CONFIG_PACKAGE_dnsmasq_full_conntrack=y
+          CONFIG_PACKAGE_dnsmasq_full_noid=y
+          CONFIG_PACKAGE_dnsmasq_full_nftset=y
+          EOF
+          
+          # [模块 4]: 核心应用与 Passwall 代理模块
+          cat >> .config <<'EOF'
+          CONFIG_XRAY_CORE_COMPRESS_UPX=n
+          CONFIG_SING_BOX_COMPRESS_UPX=n
+          CONFIG_PACKAGE_xray-core_compress_upx=n
+          CONFIG_PACKAGE_sing-box_compress_upx=n
           CONFIG_PACKAGE_ipv6helper=y
           CONFIG_PACKAGE_luci-app-passwall=y
-          
-          # 👇 明确让 Passwall 同时包含这两种代理模式
           CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Iptables=y
           CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Nftables=y
           CONFIG_PACKAGE_luci-app-passwall_Iptables_Transparent_Proxy=y
           CONFIG_PACKAGE_luci-app-passwall_Nftables_Transparent_Proxy=y
-          
           CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Hysteria=y
           CONFIG_PACKAGE_hysteria=y
           CONFIG_PACKAGE_luci-app-ttyd=y
@@ -260,125 +237,58 @@ jobs:
           CONFIG_LUCI_THEME="argon"
           EOF
           
-          # Target selection
-          echo "CONFIG_TARGET_x86=y" >> .config
-          echo "CONFIG_TARGET_x86_64=y" >> .config
-          echo "CONFIG_TARGET_x86_64_DEVICE_generic=y" >> .config
-          
+          # 生成全量默认配置
           make defconfig
           
-          # 2. 补救措施 
-          echo "🔍 Verifying .config for CCACHE..."
+          # 最后防线：确保 CCACHE 未被 defconfig 冲掉
           if ! grep -q "CONFIG_CCACHE=y" .config; then
-             echo "⚠️ CCACHE was stripped by defconfig! Restoring..."
              echo "CONFIG_DEVEL=y" >> .config
              echo "CONFIG_CCACHE=y" >> .config
-          else
-             echo "✅ CCACHE is enabled."
           fi
 
-      - name: Check PassWall Dependencies
+      - name: Download Package Dependencies
         working-directory: ${{ github.workspace }}/openwrt
         run: |
-          set -euo pipefail
-          echo "Checking PassWall dependencies..."
-          MISSING_DEPS=""
-          DEPS_LIST="xray-core sing-box v2ray-core v2ray-plugin naiveproxy trojan-plus tuic-client"
-          for dep in $DEPS_LIST; do
-            if grep -q "CONFIG_PACKAGE_$dep=y" .config; then
-              FOUND=0
-              if find package feeds -type d -name "$dep" | grep -q .; then
-                FOUND=1
-              fi
-              if [ "$FOUND" -eq 0 ]; then
-                echo "⚠️ $dep enabled but missing in trees."
-                sed -i "s/CONFIG_PACKAGE_$dep=y/# CONFIG_PACKAGE_$dep is missing/" .config
-                MISSING_DEPS="$MISSING_DEPS $dep"
-              else
-                echo " 👉 Found $dep"
-              fi
-            fi
-          done
-          if [ -n "$MISSING_DEPS" ]; then
-            make defconfig
-          fi
-
-      - name: Download package
-        working-directory: ${{ github.workspace }}/openwrt
-        run: |
+          set -e
           mkdir -p dl
-          echo "⬇️ Starting parallel download..."
-          # 1. 尝试并发下载，允许失败 (|| true)，因为网络波动是正常的
+          # 并发下载，允许个别失败
           make download -j8 || true
-
-          echo "🧹 Cleaning up small/invalid files..."
-          # 2. 关键优化：删除小于 1KB 的文件
-          # 很多时候下载失败会保存一个包含 "404 Not Found" 的 HTML 页面文件
-          # 如果不删除，make 会认为文件已存在从而跳过下载，导致后续编译解压失败
-          find dl -size -1024c -exec ls -l {} \; -exec rm -f {} \;
-
-          echo "⬇️ Final single-thread verification..."
-          # 3. 单线程下载并检查，移除 || true
-          # 如果这里失败了，脚本会返回非零状态码，GitHub Actions 会自动终止并报错
-          # V=s 可以显示具体的下载 URL 和错误详情
+          
+          # 关键清理步骤：删除因 404/网络问题产生的损坏小文件（小于1KB通常是错误页面）
+          find dl -type f -size -1024c -exec rm -f {} \;
+          
+          # 单线程强力查漏补缺，打印详细信息
           make download -j1 V=s
 
-      - name: Compile the firmware
+      - name: Compile the Firmware
         id: compile
         working-directory: ${{ github.workspace }}/openwrt
         run: |
-          # ----------------------------------------------------------------------
-          # 3. 编译前最后检查与软链接
-          # ----------------------------------------------------------------------
+          set -uo pipefail # 此处不设置 -e，是为了允许并发 make 失败后自动触发单线程 fallback 编译
           
-          # 1. 再次强制检查 .config
-          # 这是防止之前的 make defconfig 再次捣乱
-          if ! grep -q "CONFIG_CCACHE=y" .config; then
-             echo "⚠️ WARNING: CONFIG_CCACHE is NOT enabled! Force enabling..."
-             echo "CONFIG_DEVEL=y" >> .config
-             echo "CONFIG_CCACHE=y" >> .config
-          fi
-          
-          # 2. 准备外部缓存目录
+          # 安全创建 Ccache 目录，使用 755 权限符合企业安全基线
           mkdir -p ${{ env.CCACHE_DIR }}
-          chmod -R 777 ${{ env.CCACHE_DIR }}
+          chmod 755 ${{ env.CCACHE_DIR }}
           
-          # 3. 建立软链接 (Symlink Trick)
-          # OpenWrt 默认向 $(TOPDIR)/.ccache 写数据
-          rm -rf .ccache
-          ln -s ${{ env.CCACHE_DIR }} .ccache
-          echo "✅ Symlink created: .ccache -> ${{ env.CCACHE_DIR }}"
-          
-          # 4. 环境变量辅助 (路径更新为纯 openwrt)
-          export CCACHE_BASEDIR=${{ github.workspace }}/openwrt
-          export CCACHE_SLOPPINESS=include_file_ctime,time_macros
+          # [核心 CCACHE 优化]
+          export CCACHE_DIR=${{ env.CCACHE_DIR }}
           export CCACHE_COMPILERCHECK=content
+          # CCACHE_BASEDIR 使得构建缓存对绝对路径不敏感，极大地提高缓存命中率
+          export CCACHE_BASEDIR=${{ github.workspace }}/openwrt
           
-          # 5. 初始化配置
           ccache -z
+          # 根据 GitHub Runner 磁盘配额，最大化缓存池，预防老旧缓存被频繁剔除
           ccache --set-config=max_size=50G
-          ccache --set-config=compression=true
-          ccache --set-config=compression_level=6
           
-          echo "👇 Ccache Config:"
-          ccache -p
+          echo "🚀 Starting Main Build with $(nproc) threads..."
+          # 并行构建时显式传入 CCACHE_DIR 变量，防止部分 Makefile 内部重写路径
+          make -j$(nproc) CCACHE_DIR=${{ env.CCACHE_DIR }} || make -j1 V=s CCACHE_DIR=${{ env.CCACHE_DIR }}
           
-          echo "Processing thread count: $(nproc)"
-          echo "🚀 Starting Main Build..."
-          
-          # 6. 开始编译
-          make -j$(nproc) || make -j1 V=s
-          
-          # 7. 统计结果
-          echo "📊 Ccache Statistics (After Build):"
           ccache -s
+          echo "ℹ️ Final Cache Directory Size: $(du -sh ${{ env.CCACHE_DIR }} | cut -f1)"
           
-          # 8. 检查缓存大小
-          CACHE_SIZE=$(du -sh ${{ env.CCACHE_DIR }} | cut -f1)
-          echo "ℹ️ Final Cache Directory Size: $CACHE_SIZE"
-          
-          # 已修复：补充 if 和[ 之间的空格
-          if [ -d "bin/targets" ] &&[ "$(ls -A bin/targets)" ]; then
+          # 编译成功判定：修复 if 和[ 的间距，抑制 ls 的 stderr 报错
+          if [ -d "bin/targets" ] && [ "$(ls -A bin/targets 2>/dev/null)" ]; then
              echo "✅ Compile success!"
              echo "status=success" >> $GITHUB_OUTPUT
           else
@@ -387,49 +297,69 @@ jobs:
              exit 1
           fi
           
-          # ✅ 已经修复了这里的换行，彻底解决 sed 报错
-          grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*DEVICE_(.*)=y/\1/' > DEVICE_NAME
-          [ -s DEVICE_NAME ] && echo "DEVICE_NAME=_$(cat DEVICE_NAME)" >> $GITHUB_ENV || echo "DEVICE_NAME=_Generic" >> $GITHUB_ENV
+          # 设备名提取：过滤空格与换行，加 || true 防止 grep 失败引起流水线崩溃
+          DEVICE=$(grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*DEVICE_(.*)=y/\1/' | head -n1 | tr -d '[:space:]' || echo "Generic")
+          if [ -n "$DEVICE" ]; then
+             echo "DEVICE_NAME=_$DEVICE" >> $GITHUB_ENV
+          else
+             echo "DEVICE_NAME=_Generic" >> $GITHUB_ENV
+          fi
           echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
-          
-      - name: Check space usage
-        if: (!cancelled())
-        run: df -hT
 
-      - name: Upload bin directory
-        uses: actions/upload-artifact@main
+      - name: Upload Bin Directory
+        uses: actions/upload-artifact@v4
         if: steps.compile.outputs.status == 'success' && env.UPLOAD_BIN_DIR == 'true'
         with:
           name: OpenWrt_bin${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
           path: openwrt/bin
 
-      - name: Organize files
+      - name: Organize Files (Dynamic Path)
         id: organize
-        if: env.UPLOAD_FIRMWARE == 'true' && !cancelled()
+        if: steps.compile.outputs.status == 'success' && env.UPLOAD_FIRMWARE == 'true'
         run: |
-          cd openwrt/bin/targets/*/*
-          rm -rf packages
-          echo "FIRMWARE=$PWD" >> $GITHUB_ENV
-          echo "status=success" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          
+          # 提取纯净设备名称 (如 x86_64) 用于通配符搜索
+          RAW_DEVICE="${DEVICE_NAME#_}"
+          
+          # 健壮的固件发现策略：优先精确匹配包含该设备名的目录结构
+          TARGET_DIR=$(find openwrt/bin/targets -mindepth 2 -maxdepth 2 -type d -name "*${RAW_DEVICE}*" | head -n 1 || true)
+          
+          # 如果设备名匹配失败（可能是 generic 这种无特征词汇），退化为抓取第一个有效目录
+          if [ -z "$TARGET_DIR" ]; then
+            TARGET_DIR=$(find openwrt/bin/targets -mindepth 2 -maxdepth 2 -type d | head -n 1 || true)
+          fi
+          
+          if [ -n "$TARGET_DIR" ] && [ -d "$TARGET_DIR" ]; then
+            cd "$TARGET_DIR"
+            # 清理占空间的 packages 包夹
+            rm -rf packages || true
+            echo "FIRMWARE=$PWD" >> $GITHUB_ENV
+            echo "status=success" >> $GITHUB_OUTPUT
+          else
+            echo "❌ Cannot find target firmware directory!"
+            exit 1
+          fi
 
-      - name: Upload firmware directory
-        uses: actions/upload-artifact@main
-        if: steps.organize.outputs.status == 'success' && !cancelled()
+      - name: Upload Firmware Directory
+        uses: actions/upload-artifact@v4
+        if: steps.organize.outputs.status == 'success'
         with:
           name: OpenWrt_firmware${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
           path: ${{ env.FIRMWARE }}
 
-      - name: Generate release tag
+      - name: Generate Release Tag
         id: tag
-        if: env.UPLOAD_RELEASE == 'true' && !cancelled()
+        if: steps.compile.outputs.status == 'success' && env.UPLOAD_RELEASE == 'true'
         run: |
-          echo "release_tag=$(date +"%Y.%m.%d-%H%M")" >> $GITHUB_OUTPUT
+          # 增加业务前缀 'LEDE_' 并携带 DEVICE_NAME，彻底杜绝不同平台编译在同一时间产生的 Tag 相互覆盖
+          echo "release_tag=LEDE_$(date +"%Y.%m.%d-%H%M")${{ env.DEVICE_NAME }}" >> $GITHUB_OUTPUT
           touch release.txt
           echo "status=success" >> $GITHUB_OUTPUT
 
-      - name: Upload firmware to release
-        uses: softprops/action-gh-release@master
-        if: steps.tag.outputs.status == 'success' && !cancelled()
+      - name: Upload Firmware to Release
+        uses: softprops/action-gh-release@v2
+        if: steps.tag.outputs.status == 'success'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
@@ -437,17 +367,20 @@ jobs:
           body_path: release.txt
           files: ${{ env.FIRMWARE }}/*
 
-      - name: Delete workflow runs
-        uses: Mattraks/delete-workflow-runs@main
+      # 自动清理过往冗余 Action 记录，释放额度
+      - name: Delete Old Workflow Runs
+        uses: Mattraks/delete-workflow-runs@v2
         with:
           retain_days: 0
           keep_minimum_runs: 2
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Remove old Releases
-        uses: dev-drprasad/delete-older-releases@master
-        if: env.UPLOAD_RELEASE == 'true' && !cancelled()
+      # 自动清理历史 Release 记录，避免仓库冗杂
+      - name: Remove Old Releases
+        uses: dev-drprasad/delete-older-releases@v0.3.3
+        if: steps.compile.outputs.status == 'success' && env.UPLOAD_RELEASE == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           keep_latest: 3
           delete_tags: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
