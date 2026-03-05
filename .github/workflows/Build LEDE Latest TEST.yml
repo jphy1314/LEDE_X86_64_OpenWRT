@@ -212,13 +212,23 @@ jobs:
           echo "CONFIG_PACKAGE_xray-core_compress_upx=n" >> .config
           echo "CONFIG_PACKAGE_sing-box_compress_upx=n" >> .config
 
-          # --- 针对 Intel D525 性能优化的组件 ---
-          echo "CONFIG_PACKAGE_luci-app-wireguard=y" >> .config
-          echo "CONFIG_PACKAGE_irqbalance=y" >> .config
-          echo "CONFIG_PACKAGE_cpufreq=y" >> .config
-          echo "CONFIG_PACKAGE_luci-app-cpufreq=y" >> .config
-          echo "CONFIG_PACKAGE_kmod-tcp-bbr=y" >> .config
-          echo "CONFIG_DEFAULT_tcp_bbr=y" >> .config
+          # ================================================================
+          # 硬件架构与指令集全局优化 (Atom D525 Bonnell)
+          # ================================================================
+          # 官方标准做法：不改源码，直接向构建系统注入针对性 GCC 优化参数
+          # -O2: 开启标准性能优化
+          # -pipe: 提升编译速度
+          # -march=bonnell: 针对 Atom D525 开启专有硬件指令集
+          # -fomit-frame-pointer: 减少寄存器开销，提升微弱 CPU 性能
+
+          cat << 'EOF' >> .config
+
+          # --- GCC Compiler Optimization for Atom D525 ---
+          CONFIG_TARGET_OPTIMIZATION="-O2 -pipe -march=bonnell -fomit-frame-pointer"
+          # -----------------------------------------------
+          EOF
+
+          log_success "硬件优化: 已向编译器下发 Atom D525 (Bonnell) 专属指令集参数"
           
           # Passwall 及其他插件
           cat >> .config <<'EOF'
