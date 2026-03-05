@@ -43,11 +43,18 @@ jobs:
           DEBIAN_FRONTEND: noninteractive
         run: |
           set -euo pipefail
-          # 清理无用的臃肿环境，释放磁盘空间
-          sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          
+          # 【致命错误修复】
+          # Ubuntu 24.04 将官方源移至 /etc/apt/sources.list.d/ubuntu.sources
+          # 严禁执行 rm -rf /etc/apt/sources.list.d/*
+          
+          # 仅清理占用极大的 .NET、Android SDK、Haskell 和 CodeQL 环境，释放超 20GB 空间
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          
+          # 正常更新软件源
           sudo apt-get update
           
-          # 针对 Ubuntu 24.04 优化后的依赖列表 (修复 exit code 100)
+          # Ubuntu 24.04 专属包名修正：7zip, libgmp-dev, python3-setuptools
           sudo apt-get install -y --no-install-recommends \
             build-essential clang cmake device-tree-compiler \
             flex gawk gcc-multilib g++-multilib gettext git gperf \
