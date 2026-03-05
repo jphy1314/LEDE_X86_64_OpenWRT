@@ -221,14 +221,13 @@ jobs:
           # -march=bonnell: 针对 Atom D525 开启专有硬件指令集
           # -fomit-frame-pointer: 减少寄存器开销，提升微弱 CPU 性能
 
-          cat << 'EOF' >> .config
-
+          cat >> .config <<'EOF'
           # --- GCC Compiler Optimization for Atom D525 ---
-          CONFIG_TARGET_OPTIMIZATION="-O2 -pipe -march=bonnell -fomit-frame-pointer"
+          CONFIG_TARGET_OPTIMIZATION="-O2 -pipe -march=bonnell -mtune=bonnell -fomit-frame-pointer"
           # -----------------------------------------------
           EOF
 
-          log_success "硬件优化: 已向编译器下发 Atom D525 (Bonnell) 专属指令集参数"
+          echo "✅ 硬件优化: 已向编译器下发 Atom D525 (Bonnell) 专属指令集参数"
           
           # Passwall 及其他插件
           cat >> .config <<'EOF'
