@@ -109,17 +109,20 @@ jobs:
         working-directory: ${{ github.workspace }}/openwrt
         run: |
           set -euo pipefail
+          
+          # 【企业级优雅注入】
+          # 不要把 Passwall 暴力克隆进 package/，而是将其注册为标准的 feed 源
+          echo "src-git passwall_packages https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git;main" >> feeds.conf.default
+          echo "src-git passwall_luci https://github.com/Openwrt-Passwall/openwrt-passwall.git;main" >> feeds.conf.default
+          
+          # 更新所有订阅源（此时 Passwall 会被系统作为原生部分拉取）
           ./scripts/feeds update -a
           
-          # 【依赖隔离与安全覆盖】
-          # 先移除原有冲突包，加 || true 是为了容错（万一本来就没这个包也不会报错中断）
+          # 清理官方 feeds 中过时的包，防止与 Passwall 发生依赖冲突
           rm -rf feeds/packages/net/{xray-core,v2ray-geodata,sing-box,chinadns-ng,dns2socks,hysteria,ipt2socks,microsocks,naiveproxy,shadowsocks-libev,shadowsocks-rust,shadowsocksr-libev,simple-obfs,tcping,trojan-plus,tuic-client,v2ray-plugin,xray-plugin,geoview,shadow-tls} || true
           rm -rf feeds/luci/applications/luci-app-passwall || true
           
-          git clone --depth 1 https://github.com/Openwrt-Passwall/openwrt-passwall-packages package/passwall-packages
-          git clone --depth 1 https://github.com/Openwrt-Passwall/openwrt-passwall package/passwall-luci
-
-          # SmartDNS 替换与修复
+          # SmartDNS 和 Argon 因为通常不提供独立 feeds，保持克隆到 package/
           rm -rf feeds/packages/net/smartdns || true
           rm -rf feeds/luci/applications/luci-app-smartdns || true
           git clone --depth 1 https://github.com/pymumu/openwrt-smartdns.git package/smartdns
@@ -127,12 +130,12 @@ jobs:
           cp package/smartdns/Makefile package/smartdns/Makefile.bak
           sed -i 's|../../lang/rust|../../feeds/packages/lang/rust|g' package/smartdns/Makefile
 
-          # 主题替换
           rm -rf feeds/luci/themes/luci-theme-argon || true
           rm -rf feeds/luci/applications/luci-app-argon-config || true
           git clone --depth 1 https://github.com/jerrykuku/luci-theme-argon.git package/community/luci-theme-argon
           git clone --depth 1 https://github.com/jerrykuku/luci-app-argon-config.git package/community/luci-app-argon-config
           
+          # 安装所有配置好的源
           ./scripts/feeds install -a
 
       - name: Load Custom Configuration (DIY Part 2)
