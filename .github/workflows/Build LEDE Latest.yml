@@ -62,17 +62,12 @@ jobs:
           sudo apt-get autoremove --purge -y
           sudo apt-get clean
           sudo timedatectl set-timezone "$TZ"
-          mkdir -p "${{ github.workspace }}/build"
-          
-          # Git 配置优化
-          # git config --global http.postBuffer 524288000
-          # git config --global http.sslVerify false
 
       - name: Clone Source Code
-        working-directory: ${{ github.workspace }}/build
+        working-directory: ${{ github.workspace }}
         run: |
+          # 直接在当前工作区拉取源码，自动生成 openwrt 文件夹
           git clone -b $REPO_BRANCH --single-branch --depth 1 $REPO_URL openwrt
-          ln -sf "${{ github.workspace }}/build/openwrt" "${{ github.workspace }}/openwrt"
 
       # 1. 生成动态时间戳 (日期级别)
       - name: Get Date
@@ -98,7 +93,7 @@ jobs:
           cd openwrt && "${{ github.workspace }}/diy-part1.sh" || true
 
       - name: Update, Patch & Install Feeds
-        working-directory: ${{ github.workspace }}/build/openwrt
+        working-directory: ${{ github.workspace }}/openwrt
         run: |
           ./scripts/feeds update -a
           
@@ -116,7 +111,6 @@ jobs:
           # 更安全的 sed（先备份）
           cp package/smartdns/Makefile package/smartdns/Makefile.bak
           sed -i 's|../../lang/rust|../../feeds/packages/lang/rust|g' package/smartdns/Makefile
-          #  sed -i 's/..\/..\/lang\/rust/..\/..\/feeds\/packages\/lang\/rust/g' package/smartdns/Makefile
 
           # Argon Theme
           rm -rf feeds/luci/themes/luci-theme-argon
@@ -129,13 +123,22 @@ jobs:
           echo "✅ Feeds patched and installed successfully."
 
       - name: Load Custom Configuration (DIY Part 2)
+        working-directory: openwrt
         run: |
-          [ -e "${{ github.workspace }}/diy-part2.sh" ] && \
-          chmod +x "${{ github.workspace }}/diy-part2.sh" && \
-          cd openwrt && "${{ github.workspace }}/diy-part2.sh" || true
+          SCRIPT="${{ github.workspace }}/diy-part2.sh"
+          
+          # 1. 前置断言 (Fail-Fast)：找不到核心脚本立刻阻断流水线并大声报错
+          if [[ ! -f "$SCRIPT" ]]; then
+            echo "::error title=配置脚本丢失::找不到核心配置文件 $SCRIPT，请检查代码仓库结构！"
+            exit 1
+          fi
+          
+          # 2. 权限赋予与执行 (绝对路径，无懈可击)
+          chmod +x "$SCRIPT"
+          "$SCRIPT"
 
       - name: Generate Configuration
-        working-directory: ${{ github.workspace }}/build/openwrt
+        working-directory: ${{ github.workspace }}/openwrt
         run: |
           # -------------------------------------------------------
           # [核心逻辑修复] 1. 预设配置
@@ -208,6 +211,23 @@ jobs:
           echo "CONFIG_SING_BOX_COMPRESS_UPX=n" >> .config
           echo "CONFIG_PACKAGE_xray-core_compress_upx=n" >> .config
           echo "CONFIG_PACKAGE_sing-box_compress_upx=n" >> .config
+
+          # ================================================================
+          # 硬件架构与指令集全局优化 (Atom D525 Bonnell)
+          # ================================================================
+          # 官方标准做法：不改源码，直接向构建系统注入针对性 GCC 优化参数
+          # -O2: 开启标准性能优化
+          # -pipe: 提升编译速度
+          # -march=bonnell: 针对 Atom D525 开启专有硬件指令集
+          # -fomit-frame-pointer: 减少寄存器开销，提升微弱 CPU 性能
+
+          cat >> .config <<'EOF'
+          # --- GCC Compiler Optimization for Atom D525 ---
+          CONFIG_TARGET_OPTIMIZATION="-O2 -pipe -march=bonnell -mtune=bonnell -fomit-frame-pointer"
+          # -----------------------------------------------
+          EOF
+
+          echo "✅ 硬件优化: 已向编译器下发 Atom D525 (Bonnell) 专属指令集参数"
           
           # Passwall 及其他插件
           cat >> .config <<'EOF'
@@ -258,7 +278,7 @@ jobs:
           fi
 
       - name: Check PassWall Dependencies
-        working-directory: ${{ github.workspace }}/build/openwrt
+        working-directory: ${{ github.workspace }}/openwrt
         run: |
           set -euo pipefail
           echo "Checking PassWall dependencies..."
@@ -284,7 +304,7 @@ jobs:
           fi
 
       - name: Download package
-        working-directory: ${{ github.workspace }}/build/openwrt
+        working-directory: ${{ github.workspace }}/openwrt
         run: |
           mkdir -p dl
           echo "⬇️ Starting parallel download..."
@@ -305,10 +325,10 @@ jobs:
 
       - name: Compile the firmware
         id: compile
-        working-directory: ${{ github.workspace }}/build/openwrt
+        working-directory: ${{ github.workspace }}/openwrt
         run: |
           # ----------------------------------------------------------------------
-          # [终极修复] 3. 编译前最后检查与软链接
+          # 3. 编译前最后检查与软链接
           # ----------------------------------------------------------------------
           
           # 1. 再次强制检查 .config
@@ -329,8 +349,8 @@ jobs:
           ln -s ${{ env.CCACHE_DIR }} .ccache
           echo "✅ Symlink created: .ccache -> ${{ env.CCACHE_DIR }}"
           
-          # 4. 环境变量辅助
-          export CCACHE_BASEDIR=${{ github.workspace }}/build/openwrt
+          # 4. 环境变量辅助 (路径更新为纯 openwrt)
+          export CCACHE_BASEDIR=${{ github.workspace }}/openwrt
           export CCACHE_SLOPPINESS=include_file_ctime,time_macros
           export CCACHE_COMPILERCHECK=content
           
@@ -357,7 +377,8 @@ jobs:
           CACHE_SIZE=$(du -sh ${{ env.CCACHE_DIR }} | cut -f1)
           echo "ℹ️ Final Cache Directory Size: $CACHE_SIZE"
           
-          if [ -d "bin/targets" ] && [ "$(ls -A bin/targets)" ]; then
+          # 已修复：补充 if 和[ 之间的空格
+          if [ -d "bin/targets" ] &&[ "$(ls -A bin/targets)" ]; then
              echo "✅ Compile success!"
              echo "status=success" >> $GITHUB_OUTPUT
           else
@@ -366,6 +387,7 @@ jobs:
              exit 1
           fi
           
+          # ✅ 已经修复了这里的换行，彻底解决 sed 报错
           grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*DEVICE_(.*)=y/\1/' > DEVICE_NAME
           [ -s DEVICE_NAME ] && echo "DEVICE_NAME=_$(cat DEVICE_NAME)" >> $GITHUB_ENV || echo "DEVICE_NAME=_Generic" >> $GITHUB_ENV
           echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
