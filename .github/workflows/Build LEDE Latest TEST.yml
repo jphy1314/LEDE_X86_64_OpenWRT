@@ -129,10 +129,10 @@ jobs:
           
           # 【修复1】严格规范的换行排版，防止 Bash 字典解析越界
           declare -A EXTERNAL_REPOS=(
-          ["package/smartdns"]="https://github.com/pymumu/openwrt-smartdns.git"
-          ["package/luci-app-smartdns"]="https://github.com/pymumu/luci-app-smartdns.git"
-          ["package/community/luci-theme-argon"]="https://github.com/jerrykuku/luci-theme-argon.git"
-          ["package/community/luci-app-argon-config"]="https://github.com/jerrykuku/luci-app-argon-config.git"
+            ["package/smartdns"]="https://github.com/pymumu/openwrt-smartdns.git"
+            ["package/luci-app-smartdns"]="https://github.com/pymumu/luci-app-smartdns.git"
+            ["package/community/luci-theme-argon"]="https://github.com/jerrykuku/luci-theme-argon.git"
+            ["package/community/luci-app-argon-config"]="https://github.com/jerrykuku/luci-app-argon-config.git"
           )
           
           declare -a PRIORITY_FEEDS=(
