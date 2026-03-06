@@ -114,8 +114,8 @@ jobs:
           ./scripts/feeds update -a
           
           # 清理官方 feeds 中过时的包，防止与 Passwall 发生依赖冲突
-          rm -rf feeds/packages/net/{xray-core,v2ray-geodata,sing-box,chinadns-ng,dns2socks,hysteria,ipt2socks,microsocks,naiveproxy,shadowsocks-libev,shadowsocks-rust,shadowsocksr-libev,simple-obfs,tcping,trojan-plus,tuic-client,v2ray-plugin,xray-plugin,geoview,shadow-tls} || true
-          rm -rf feeds/luci/applications/luci-app-passwall || true
+          # rm -rf feeds/packages/net/{xray-core,v2ray-geodata,sing-box,chinadns-ng,dns2socks,hysteria,ipt2socks,microsocks,naiveproxy,shadowsocks-libev,shadowsocks-rust,shadowsocksr-libev,simple-obfs,tcping,trojan-plus,tuic-client,v2ray-plugin,xray-plugin,geoview,shadow-tls} || true
+          # rm -rf feeds/luci/applications/luci-app-passwall || true
           
           # SmartDNS 和 Argon 因为通常不提供独立 feeds，保持克隆到 package/
           rm -rf feeds/packages/net/smartdns || true
