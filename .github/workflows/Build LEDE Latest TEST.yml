@@ -127,10 +127,13 @@ jobs:
               "dae" "daed" "v2raya" "luci-app-homeproxy" "luci-app-mosdns" "luci-app-passwall2"
           )
           
-          # 【致命错误修复】：SmartDNS 必须放在 package/ 根目录下（层级深度为2），
+          # SmartDNS 必须放在 package/ 根目录下（层级深度为2），
           # 绝不能为了规整放到 package/community/ 下，否则会破坏 Makefile 中的 ../../ 相对路径！
-          declare -A EXTERNAL_REPOS=(["package/smartdns"]="https://github.com/pymumu/openwrt-smartdns.git"["package/luci-app-smartdns"]="https://github.com/pymumu/luci-app-smartdns.git"
-              ["package/community/luci-theme-argon"]="https://github.com/jerrykuku/luci-theme-argon.git"["package/community/luci-app-argon-config"]="https://github.com/jerrykuku/luci-app-argon-config.git"
+          declare -A EXTERNAL_REPOS=(
+          ["package/smartdns"]="https://github.com/pymumu/openwrt-smartdns.git"
+          ["package/luci-app-smartdns"]="https://github.com/pymumu/luci-app-smartdns.git"
+          ["package/community/luci-theme-argon"]="https://github.com/jerrykuku/luci-theme-argon.git"
+          ["package/community/luci-app-argon-config"]="https://github.com/jerrykuku/luci-app-argon-config.git"
           )
           
           declare -a PRIORITY_FEEDS=(
