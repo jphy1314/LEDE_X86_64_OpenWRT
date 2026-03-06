@@ -108,7 +108,7 @@ jobs:
           
           # ---[ 1. 日志与基建模块 ] ---
           log_info() { echo -e "\e[32m[INFO][$(date +'%T')] $1\e[0m"; }
-          log_warn() { echo -e "\e[33m[WARN] [$(date +'%T')] $1\e[0m"; }
+          log_warn() { echo -e "\e[33m[WARN][$(date +'%T')] $1\e[0m"; }
           log_err()  { echo -e "\e[31m[ERROR][$(date +'%T')] $1\e[0m" >&2; exit 1; }
           
           # ---[ 2. 声明式配置区 (Data-Driven Configuration) ] ---
@@ -127,7 +127,6 @@ jobs:
               "dae" "daed" "v2raya" "luci-app-homeproxy" "luci-app-mosdns" "luci-app-passwall2"
           )
           
-          # 【修复1】严格规范的换行排版，防止 Bash 字典解析越界
           declare -A EXTERNAL_REPOS=(
             ["package/smartdns"]="https://github.com/pymumu/openwrt-smartdns.git"
             ["package/luci-app-smartdns"]="https://github.com/pymumu/luci-app-smartdns.git"
@@ -154,15 +153,14 @@ jobs:
           done
           
           for pkg in "${FEED_CONFLICT_PKGS[@]}"; do
-              # 【修复2】加入 grep -vE 白名单机制，绝对禁止触碰 passwall_packages 和 passwall_luci 里面的新代码！
-              pkg_paths=$(find feeds/ -maxdepth 4 -type d -name "${pkg}" 2>/dev/null | grep -vE "passwall_packages|passwall_luci" || true)
-              
-              if [[ -n "${pkg_paths}" ]]; then
-                  for p in ${pkg_paths}; do
-                      log_warn "铲除官方冗余冲突包: ${p}"
-                      rm -rf "${p}"
-                  done
-              fi
+              while IFS= read -r -d '' p; do
+                  if [[ "$p" == *"passwall_packages"* ]] || [[ "$p" == *"passwall_luci"* ]]; then
+                      log_info "保护专属最新源码，跳过清理: ${p}"
+                      continue
+                  fi
+                  log_warn "精准铲除官方冗余冲突包: ${p}"
+                  rm -rf "${p}"
+              done < <(find feeds/ -maxdepth 4 -type d -name "${pkg}" -print0 2>/dev/null || true)
           done
           
           log_info "Phase 3: 挂载独立第三方组件 (SmartDNS & Argon)..."
@@ -190,7 +188,7 @@ jobs:
           done
           
           log_info "✅ Feeds 部署与依赖劫持全部完成！"
-
+      
       - name: Load Custom Configuration (DIY Part 2)
         working-directory: ${{ github.workspace }}/openwrt
         run: |
