@@ -100,16 +100,16 @@ jobs:
           # 统一脚本调用风格。如果脚本不存在，|| true 防止报错中断
           [[ -f "$SCRIPT" ]] && bash "$SCRIPT" || true
 
-      - name: Update, Patch & Install Feeds
+      - name: Update, Patch & Install Feeds (Enterprise Priority Hijacking)
         working-directory: ${{ github.workspace }}/openwrt
         run: |
           #!/usr/bin/env bash
           set -euo pipefail
           
           # ---[ 1. 日志与基建模块 ] ---
-          log_info() { echo -e "\e[32m[INFO] [$(date +'%T')] $1\e[0m"; }
+          log_info() { echo -e "\e[32m[INFO][$(date +'%T')] $1\e[0m"; }
           log_warn() { echo -e "\e[33m[WARN] [$(date +'%T')] $1\e[0m"; }
-          log_err()  { echo -e "\e[31m[ERROR] [$(date +'%T')] $1\e[0m" >&2; exit 1; }
+          log_err()  { echo -e "\e[31m[ERROR][$(date +'%T')] $1\e[0m" >&2; exit 1; }
           
           # ---[ 2. 声明式配置区 (Data-Driven Configuration) ] ---
           declare -a LOCAL_OBSOLETE_PATHS=(
@@ -127,13 +127,12 @@ jobs:
               "dae" "daed" "v2raya" "luci-app-homeproxy" "luci-app-mosdns" "luci-app-passwall2"
           )
           
-          # SmartDNS 必须放在 package/ 根目录下（层级深度为2），
-          # 绝不能为了规整放到 package/community/ 下，否则会破坏 Makefile 中的 ../../ 相对路径！
+          # 【修复1】严格规范的换行排版，防止 Bash 字典解析越界
           declare -A EXTERNAL_REPOS=(
-          ["package/smartdns"]="https://github.com/pymumu/openwrt-smartdns.git"
-          ["package/luci-app-smartdns"]="https://github.com/pymumu/luci-app-smartdns.git"
-          ["package/community/luci-theme-argon"]="https://github.com/jerrykuku/luci-theme-argon.git"
-          ["package/community/luci-app-argon-config"]="https://github.com/jerrykuku/luci-app-argon-config.git"
+              ["package/smartdns"]="https://github.com/pymumu/openwrt-smartdns.git"
+              ["package/luci-app-smartdns"]="https://github.com/pymumu/luci-app-smartdns.git"
+              ["package/community/luci-theme-argon"]="https://github.com/jerrykuku/luci-theme-argon.git"
+              ["package/community/luci-app-argon-config"]="https://github.com/jerrykuku/luci-app-argon-config.git"
           )
           
           declare -a PRIORITY_FEEDS=(
@@ -155,10 +154,12 @@ jobs:
           done
           
           for pkg in "${FEED_CONFLICT_PKGS[@]}"; do
-              pkg_paths=$(find feeds/ -maxdepth 4 -type d -name "${pkg}" 2>/dev/null || true)
+              # 【修复2】加入 grep -vE 白名单机制，绝对禁止触碰 passwall_packages 和 passwall_luci 里面的新代码！
+              pkg_paths=$(find feeds/ -maxdepth 4 -type d -name "${pkg}" 2>/dev/null | grep -vE "passwall_packages|passwall_luci" || true)
+              
               if [[ -n "${pkg_paths}" ]]; then
                   for p in ${pkg_paths}; do
-                      log_warn "铲除 Feed 冲突包: ${p}"
+                      log_warn "铲除官方冗余冲突包: ${p}"
                       rm -rf "${p}"
                   done
               fi
@@ -173,14 +174,13 @@ jobs:
               git clone --depth 1 "${repo_url}" "${target_dir}"
           done
           
-          # 特定补丁注入：修复 SmartDNS 的 Rust 路径 (已恢复对应 package/smartdns 层级的正确相对路径)
           if [[ -f "package/smartdns/Makefile" ]]; then
               log_info "Patching SmartDNS Makefile (Rust path correction)..."
               sed -i 's|../../lang/rust|../../feeds/packages/lang/rust|g' package/smartdns/Makefile
           fi
           
           log_info "Phase 4: 重建索引与软链接分配..."
-          ./scripts/feeds update -a
+          ./scripts/feeds update -i
           ./scripts/feeds install -a
           
           log_info "Phase 5: 核心源优先级劫持 (Priority Hijacking)..."
