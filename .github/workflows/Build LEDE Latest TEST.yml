@@ -100,25 +100,23 @@ jobs:
           # 统一脚本调用风格。如果脚本不存在，|| true 防止报错中断
           [[ -f "$SCRIPT" ]] && bash "$SCRIPT" || true
 
-      - name: Update, Patch & Install Feeds (Enterprise Priority Hijacking)
+      - name: Update, Patch & Install Feeds
         working-directory: ${{ github.workspace }}/openwrt
         run: |
           #!/usr/bin/env bash
           set -euo pipefail
           
-          # --- [ 1. 日志与基建模块 ] ---
+          # ---[ 1. 日志与基建模块 ] ---
           log_info() { echo -e "\e[32m[INFO] [$(date +'%T')] $1\e[0m"; }
           log_warn() { echo -e "\e[33m[WARN] [$(date +'%T')] $1\e[0m"; }
           log_err()  { echo -e "\e[31m[ERROR] [$(date +'%T')] $1\e[0m" >&2; exit 1; }
           
           # ---[ 2. 声明式配置区 (Data-Driven Configuration) ] ---
-          # 2.1 物理路径清理 (优先铲除 Lean 源码本地硬编码的最高优先级老旧包)
           declare -a LOCAL_OBSOLETE_PATHS=(
               "package/lean/luci-app-passwall"
               "package/lean/passwall"
           )
           
-          # 2.2 Feed 冲突包清理 (为 Passwall 专用源与独立组件让路，顺带清理孤儿包防警告)
           declare -a FEED_CONFLICT_PKGS=(
               "luci-app-passwall" "xray-core" "v2ray-geodata" "sing-box" "chinadns-ng"
               "dns2socks" "hysteria" "ipt2socks" "microsocks" "naiveproxy"
@@ -129,27 +127,23 @@ jobs:
               "dae" "daed" "v2raya" "luci-app-homeproxy" "luci-app-mosdns" "luci-app-passwall2"
           )
           
-          # 2.3 独立克隆的第三方高优组件 (字典映射：目标路径 -> 仓库地址)
-          declare -A EXTERNAL_REPOS=(
-              ["package/community/smartdns"]="https://github.com/pymumu/openwrt-smartdns.git"
-              ["package/community/luci-app-smartdns"]="https://github.com/pymumu/luci-app-smartdns.git"
-              ["package/community/luci-theme-argon"]="https://github.com/jerrykuku/luci-theme-argon.git"
-              ["package/community/luci-app-argon-config"]="https://github.com/jerrykuku/luci-app-argon-config.git"
+          # 【致命错误修复】：SmartDNS 必须放在 package/ 根目录下（层级深度为2），
+          # 绝不能为了规整放到 package/community/ 下，否则会破坏 Makefile 中的 ../../ 相对路径！
+          declare -A EXTERNAL_REPOS=(["package/smartdns"]="https://github.com/pymumu/openwrt-smartdns.git"["package/luci-app-smartdns"]="https://github.com/pymumu/luci-app-smartdns.git"
+              ["package/community/luci-theme-argon"]="https://github.com/jerrykuku/luci-theme-argon.git"["package/community/luci-app-argon-config"]="https://github.com/jerrykuku/luci-app-argon-config.git"
           )
           
-          # 2.4 需要强制提权的自定义 Feed 源
           declare -a PRIORITY_FEEDS=(
               "passwall_packages"
               "passwall_luci"
           )
           
-          # --- [ 3. 执行逻辑区 ] ---
+          # ---[ 3. 执行逻辑区 ] ---
           
           log_info "Phase 1: 拉取全局 Feed 源数据..."
           ./scripts/feeds update -a
           
           log_info "Phase 2: 实施精确依赖清理 (Scrubbing)..."
-          # 2.1 清理本地霸权目录
           for path in "${LOCAL_OBSOLETE_PATHS[@]}"; do
               if [[ -d "${path}" ]]; then
                   log_warn "铲除本地霸权滞留包: ${path}"
@@ -157,9 +151,7 @@ jobs:
               fi
           done
           
-          # 2.2 动态搜索并清理 feeds 目录下的冲突包
           for pkg in "${FEED_CONFLICT_PKGS[@]}"; do
-              # 使用 find 精确匹配目录名，避免误杀，2>/dev/null 屏蔽权限报错
               pkg_paths=$(find feeds/ -maxdepth 4 -type d -name "${pkg}" 2>/dev/null || true)
               if [[ -n "${pkg_paths}" ]]; then
                   for p in ${pkg_paths}; do
@@ -172,27 +164,23 @@ jobs:
           log_info "Phase 3: 挂载独立第三方组件 (SmartDNS & Argon)..."
           for target_dir in "${!EXTERNAL_REPOS[@]}"; do
               repo_url="${EXTERNAL_REPOS[$target_dir]}"
-              # 安全移除可能存在的旧目录
               rm -rf "${target_dir}" 2>/dev/null || true
               
               log_info "克隆核心仓库: ${repo_url} -> ${target_dir}"
               git clone --depth 1 "${repo_url}" "${target_dir}"
           done
           
-          # 特定补丁注入：修复 SmartDNS 的 Rust 路径
-          if [[ -f "package/community/smartdns/Makefile" ]]; then
+          # 特定补丁注入：修复 SmartDNS 的 Rust 路径 (已恢复对应 package/smartdns 层级的正确相对路径)
+          if [[ -f "package/smartdns/Makefile" ]]; then
               log_info "Patching SmartDNS Makefile (Rust path correction)..."
-              sed -i 's|../../lang/rust|../../feeds/packages/lang/rust|g' package/community/smartdns/Makefile
+              sed -i 's|../../lang/rust|../../feeds/packages/lang/rust|g' package/smartdns/Makefile
           fi
           
           log_info "Phase 4: 重建索引与软链接分配..."
-          # 强制刷新刚才的 rm -rf 操作产生的索引差异
-          ./scripts/feeds update -i
-          # 第一遍常规挂载（补齐没有冲突的基础依赖）
+          ./scripts/feeds update -a
           ./scripts/feeds install -a
           
           log_info "Phase 5: 核心源优先级劫持 (Priority Hijacking)..."
-          # 终极必杀：遍历需要提权的源，利用 -f (force) 粉碎现有软链接，重新强制绑定到专用源
           for feed in "${PRIORITY_FEEDS[@]}"; do
               log_info "🚀 提升 Feed 优先级并强制挂载: ${feed}"
               ./scripts/feeds install -f -p "${feed}" -a
