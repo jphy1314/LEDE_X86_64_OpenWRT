@@ -218,32 +218,4 @@ sort -u "${CRON_FILE}.tmp" > "$CRON_FILE"
 rm -f "${CRON_FILE}.tmp"
 log "✅ SSD 定时 TRIM（多文件系统支持）注入完成"
 
-# ==============================================================================
-# 阶段 6: .config 依赖包注入
-# ==============================================================================
-# 【修复2：恢复依赖注入的幂等性函数，防止 .config 重复堆叠污染】
-inject_config() {
-    local key="$1"
-    sed -i "/^${key}=/d" .config 2>/dev/null || true
-    sed -i "/^# ${key} is not set/d" .config 2>/dev/null || true
-    echo "${key}=y" >> .config
-}
-
-if [ -f ".config" ]; then
-    log "🔧 检查并添加必要的依赖包..."
-    inject_config "CONFIG_PACKAGE_block-mount"
-    inject_config "CONFIG_PACKAGE_ethtool"
-    inject_config "CONFIG_PACKAGE_fstrim"
-    inject_config "CONFIG_PACKAGE_kmod-fs-ext4"
-    inject_config "CONFIG_PACKAGE_kmod-fs-btrfs"
-    inject_config "CONFIG_PACKAGE_kmod-fs-xfs"
-    inject_config "CONFIG_PACKAGE_libblkid"
-    inject_config "CONFIG_PACKAGE_libuuid"
-    inject_config "CONFIG_PACKAGE_uci"
-    inject_config "CONFIG_PACKAGE_blockd"
-    log "✅ 依赖包已注入 .config"
-else
-    log "⚠ .config 不存在，跳过依赖注入"
-fi
-
 log "🎉 DIY Part 2 脚本（企业增强版）执行完成"
