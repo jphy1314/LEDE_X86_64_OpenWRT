@@ -188,14 +188,6 @@ jobs:
           done
           
           log_info "✅ Feeds 部署与依赖劫持全部完成！"
-      
-      - name: Load Custom Configuration (DIY Part 2)
-        working-directory: ${{ github.workspace }}/openwrt
-        run: |
-          set -euo pipefail
-          SCRIPT="${{ github.workspace }}/diy-part2.sh"
-          # 统一执行风格：基于 OpenWrt 根目录执行
-          [[ -f "$SCRIPT" ]] && bash "$SCRIPT" || true
 
       - name: Generate Configuration
         working-directory: ${{ github.workspace }}/openwrt
@@ -304,6 +296,14 @@ jobs:
              echo "CONFIG_DEVEL=y" >> .config
              echo "CONFIG_CCACHE=y" >> .config
           fi
+
+      - name: Load Custom Configuration (DIY Part 2)
+        working-directory: ${{ github.workspace }}/openwrt
+        run: |
+          set -euo pipefail
+          SCRIPT="${{ github.workspace }}/diy-part2.sh"
+          # 统一执行风格：基于 OpenWrt 根目录执行
+          [[ -f "$SCRIPT" ]] && bash "$SCRIPT" || true
 
       - name: Download Package Dependencies
         working-directory: ${{ github.workspace }}/openwrt
