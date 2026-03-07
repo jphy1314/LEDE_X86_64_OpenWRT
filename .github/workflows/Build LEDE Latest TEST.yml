@@ -189,6 +189,14 @@ jobs:
           
           log_info "✅ Feeds 部署与依赖劫持全部完成！"
 
+      - name: Load Custom Configuration (DIY Part 2)
+        working-directory: ${{ github.workspace }}/openwrt
+        run: |
+          set -euo pipefail
+          SCRIPT="${{ github.workspace }}/diy-part2.sh"
+          # 统一执行风格：基于 OpenWrt 根目录执行
+          [[ -f "$SCRIPT" ]] && bash "$SCRIPT" || true
+
       - name: Generate Configuration
         working-directory: ${{ github.workspace }}/openwrt
         run: |
@@ -288,6 +296,21 @@ jobs:
           CONFIG_LUCI_THEME="argon"
           EOF
           
+          # [模块 5]: 硬件加速与磁盘优化组件 (由 DIY Part 2 需求引入)
+          cat >> .config <<'EOF'
+          CONFIG_PACKAGE_ethtool=y
+          CONFIG_PACKAGE_fstrim=y
+          CONFIG_PACKAGE_block-mount=y
+          CONFIG_PACKAGE_blockd=y
+          CONFIG_PACKAGE_kmod-fs-ext4=y
+          CONFIG_PACKAGE_kmod-fs-btrfs=y
+          CONFIG_PACKAGE_kmod-fs-xfs=y
+          CONFIG_PACKAGE_kmod-nvme=y
+          CONFIG_PACKAGE_libblkid=y
+          CONFIG_PACKAGE_libuuid=y
+          CONFIG_PACKAGE_uci=y
+          EOF
+          
           # 生成全量默认配置
           make defconfig
           
@@ -296,14 +319,6 @@ jobs:
              echo "CONFIG_DEVEL=y" >> .config
              echo "CONFIG_CCACHE=y" >> .config
           fi
-
-      - name: Load Custom Configuration (DIY Part 2)
-        working-directory: ${{ github.workspace }}/openwrt
-        run: |
-          set -euo pipefail
-          SCRIPT="${{ github.workspace }}/diy-part2.sh"
-          # 统一执行风格：基于 OpenWrt 根目录执行
-          [[ -f "$SCRIPT" ]] && bash "$SCRIPT" || true
 
       - name: Download Package Dependencies
         working-directory: ${{ github.workspace }}/openwrt
