@@ -53,14 +53,19 @@ jobs:
           
           # 正常更新软件源
           sudo apt-get update
-          sudo apt-get full-upgrade -y
-          sudo apt-get install -y ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential \
-          bzip2 ccache clang cmake cpio curl device-tree-compiler flex gawk gcc-multilib g++-multilib gettext \
-          genisoimage git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libfuse-dev libglib2.0-dev \
-          libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev libpython3-dev \
-          libreadline-dev libssl-dev libtool llvm lrzsz libnsl-dev ninja-build p7zip p7zip-full patch pkgconf \
-          python3 python3-pyelftools python3-setuptools qemu-utils rsync scons squashfs-tools subversion \
-          swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev
+          
+          # Ubuntu 24.04 专属包名修正：7zip, libgmp-dev, python3-setuptools
+          sudo apt-get install -y --no-install-recommends \
+            build-essential clang cmake device-tree-compiler \
+            flex gawk gcc-multilib g++-multilib gettext git gperf \
+            help2man intltool libelf-dev libglib2.0-dev \
+            libgmp-dev libltdl-dev libmpc-dev libmpfr-dev libncurses-dev \
+            libreadline-dev libssl-dev libtool llvm lrzsz libnsl-dev \
+            ninja-build 7zip patch pkgconf python3 python3-pyelftools python3-setuptools \
+            qemu-utils rsync scons squashfs-tools subversion swig texinfo \
+            uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev \
+            ack antlr3 asciidoc autoconf automake autopoint binutils bison \
+            bzip2 curl genisoimage haveged ccache libc6-dev-i386
             
           sudo apt-get autoremove --purge -y
           sudo apt-get clean
@@ -100,94 +105,35 @@ jobs:
           # 统一脚本调用风格。如果脚本不存在，|| true 防止报错中断
           [[ -f "$SCRIPT" ]] && bash "$SCRIPT" || true
 
-      - name: Update, Patch & Install Feeds (Enterprise Priority Hijacking)
+      - name: Update, Patch & Install Feeds
         working-directory: ${{ github.workspace }}/openwrt
         run: |
-          #!/usr/bin/env bash
           set -euo pipefail
           
-          # ---[ 1. 日志与基建模块 ] ---
-          log_info() { echo -e "\e[32m[INFO][$(date +'%T')] $1\e[0m"; }
-          log_warn() { echo -e "\e[33m[WARN][$(date +'%T')] $1\e[0m"; }
-          log_err()  { echo -e "\e[31m[ERROR][$(date +'%T')] $1\e[0m" >&2; exit 1; }
-          
-          # ---[ 2. 声明式配置区 (Data-Driven Configuration) ] ---
-          declare -a LOCAL_OBSOLETE_PATHS=(
-              "package/lean/luci-app-passwall"
-              "package/lean/passwall"
-          )
-          
-          declare -a FEED_CONFLICT_PKGS=(
-              "luci-app-passwall" "xray-core" "v2ray-geodata" "sing-box" "chinadns-ng"
-              "dns2socks" "hysteria" "ipt2socks" "microsocks" "naiveproxy"
-              "shadowsocks-libev" "shadowsocks-rust" "shadowsocksr-libev"
-              "simple-obfs" "tcping" "trojan-plus" "tuic-client"
-              "v2ray-plugin" "xray-plugin" "geoview" "shadow-tls"
-              "smartdns" "luci-app-smartdns" "luci-theme-argon" "luci-app-argon-config"
-              "dae" "daed" "v2raya" "luci-app-homeproxy" "luci-app-mosdns" "luci-app-passwall2"
-          )
-          
-          declare -A EXTERNAL_REPOS=(
-            ["package/smartdns"]="https://github.com/pymumu/openwrt-smartdns.git"
-            ["package/luci-app-smartdns"]="https://github.com/pymumu/luci-app-smartdns.git"
-            ["package/community/luci-theme-argon"]="https://github.com/jerrykuku/luci-theme-argon.git"
-            ["package/community/luci-app-argon-config"]="https://github.com/jerrykuku/luci-app-argon-config.git"
-          )
-          
-          declare -a PRIORITY_FEEDS=(
-              "passwall_packages"
-              "passwall_luci"
-          )
-          
-          # ---[ 3. 执行逻辑区 ] ---
-          
-          log_info "Phase 1: 拉取全局 Feed 源数据..."
+          # 更新所有订阅源（此时 Passwall 会被系统作为原生部分拉取）
           ./scripts/feeds update -a
           
-          log_info "Phase 2: 实施精确依赖清理 (Scrubbing)..."
-          for path in "${LOCAL_OBSOLETE_PATHS[@]}"; do
-              if [[ -d "${path}" ]]; then
-                  log_warn "铲除本地霸权滞留包: ${path}"
-                  rm -rf "${path}"
-              fi
-          done
+          # 清理官方 feeds 中过时的包，防止与 Passwall 发生依赖冲突
+          # rm -rf feeds/packages/net/{xray-core,v2ray-geodata,sing-box,chinadns-ng,dns2socks,hysteria,ipt2socks,microsocks,naiveproxy,shadowsocks-libev,shadowsocks-rust,shadowsocksr-libev,simple-obfs,tcping,trojan-plus,tuic-client,v2ray-plugin,xray-plugin,geoview,shadow-tls} || true
+          # rm -rf feeds/luci/applications/luci-app-passwall || true
           
-          for pkg in "${FEED_CONFLICT_PKGS[@]}"; do
-              while IFS= read -r -d '' p; do
-                  if [[ "$p" == *"passwall_packages"* ]] || [[ "$p" == *"passwall_luci"* ]]; then
-                      log_info "保护专属最新源码，跳过清理: ${p}"
-                      continue
-                  fi
-                  log_warn "精准铲除官方冗余冲突包: ${p}"
-                  rm -rf "${p}"
-              done < <(find feeds/ -maxdepth 4 -type d -name "${pkg}" -print0 2>/dev/null || true)
-          done
+          # SmartDNS 和 Argon 因为通常不提供独立 feeds，保持克隆到 package/
+          rm -rf feeds/packages/net/smartdns || true
+          rm -rf feeds/luci/applications/luci-app-smartdns || true
+          git clone --depth 1 https://github.com/pymumu/openwrt-smartdns.git package/smartdns
+          git clone --depth 1 https://github.com/pymumu/luci-app-smartdns.git package/luci-app-smartdns
+          cp package/smartdns/Makefile package/smartdns/Makefile.bak
+          sed -i 's|../../lang/rust|../../feeds/packages/lang/rust|g' package/smartdns/Makefile
+
+          rm -rf feeds/luci/themes/luci-theme-argon || true
+          rm -rf feeds/luci/applications/luci-app-argon-config || true
+          # 修复错误：创建 community 目录，避免 git clone 失败
+          mkdir -p package/community
+          git clone --depth 1 https://github.com/jerrykuku/luci-theme-argon.git package/community/luci-theme-argon
+          git clone --depth 1 https://github.com/jerrykuku/luci-app-argon-config.git package/community/luci-app-argon-config
           
-          log_info "Phase 3: 挂载独立第三方组件 (SmartDNS & Argon)..."
-          for target_dir in "${!EXTERNAL_REPOS[@]}"; do
-              repo_url="${EXTERNAL_REPOS[$target_dir]}"
-              rm -rf "${target_dir}" 2>/dev/null || true
-              
-              log_info "克隆核心仓库: ${repo_url} -> ${target_dir}"
-              git clone --depth 1 "${repo_url}" "${target_dir}"
-          done
-          
-          if [[ -f "package/smartdns/Makefile" ]]; then
-              log_info "Patching SmartDNS Makefile (Rust path correction)..."
-              sed -i 's|../../lang/rust|../../feeds/packages/lang/rust|g' package/smartdns/Makefile
-          fi
-          
-          log_info "Phase 4: 重建索引与软链接分配..."
-          ./scripts/feeds update -i
+          # 安装所有配置好的源
           ./scripts/feeds install -a
-          
-          log_info "Phase 5: 核心源优先级劫持 (Priority Hijacking)..."
-          for feed in "${PRIORITY_FEEDS[@]}"; do
-              log_info "🚀 提升 Feed 优先级并强制挂载: ${feed}"
-              ./scripts/feeds install -f -p "${feed}" -a
-          done
-          
-          log_info "✅ Feeds 部署与依赖劫持全部完成！"
 
       - name: Load Custom Configuration (DIY Part 2)
         working-directory: ${{ github.workspace }}/openwrt
@@ -296,7 +242,7 @@ jobs:
           CONFIG_LUCI_THEME="argon"
           EOF
           
-          # [模块 5]: 硬件加速与磁盘优化组件 (由 DIY Part 2 需求引入)
+          # [模块 5]: 硬件加速与高级磁盘优化组件 (由 DIY Part 2 需求引入解耦)
           cat >> .config <<'EOF'
           CONFIG_PACKAGE_ethtool=y
           CONFIG_PACKAGE_fstrim=y
