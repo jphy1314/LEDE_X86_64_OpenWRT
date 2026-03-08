@@ -247,21 +247,43 @@ jobs:
               package/luci-app-smartdns
 
 
-          # ===== rust 路径修补 (修正 SmartDNS Makefile 中 rust-package.mk 的路径) =====
+          # =========================
+          # 确保 Rust 支持文件存在 (供 smartdns 使用)
+          # 直接下载到源码根目录下的 lang/rust/，无需修改 Makefile
+          # =========================
 
-          if [ -f package/smartdns/Makefile ]; then
+          ensure_rust_mk() {
+              local rust_dir="lang/rust"
+              local base_url="https://raw.githubusercontent.com/openwrt/packages/master/lang/rust"
+              local files=("rust-package.mk" "rust-values.mk")
+              local retry=3
+              local delay=5
 
-              if grep -q "../../lang/rust/rust-package.mk" package/smartdns/Makefile; then
+              mkdir -p "$rust_dir"
 
-                  log_warn "修补 smartdns rust 路径"
+              for file in "${files[@]}"; do
+                  for i in $(seq 1 $retry); do
+                      if [ -f "$rust_dir/$file" ]; then
+                          log_info "文件 $rust_dir/$file 已存在，跳过下载"
+                          break
+                      fi
+                      log_info "下载 $file ($i/$retry)"
+                      if curl -fL --retry 2 --connect-timeout 10 -o "$rust_dir/$file" "$base_url/$file"; then
+                          log_info "下载成功: $file"
+                          break
+                      else
+                          if [ $i -lt $retry ]; then
+                              log_warn "下载失败，${delay}秒后重试..."
+                              sleep $delay
+                          else
+                              log_err "无法下载 $file，请检查网络"
+                          fi
+                      fi
+                  done
+              done
+          }
 
-                  sed -i \
-                    's|../../lang/rust|../../feeds/packages/lang/rust|g' \
-                    package/smartdns/Makefile
-
-              fi
-
-          fi
+          ensure_rust_mk
 
 
           # =========================
