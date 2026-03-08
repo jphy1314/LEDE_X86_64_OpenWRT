@@ -105,12 +105,18 @@ jobs:
           # 统一脚本调用风格。如果脚本不存在，|| true 防止报错中断
           [[ -f "$SCRIPT" ]] && bash "$SCRIPT" || true
 
-      - name: Update, Patch & Install Feeds (企业级增强版)
+      - name: Update, Patch & Install Feeds
         working-directory: ${{ github.workspace }}/openwrt
         run: |
           set -euo pipefail
-          
-          # 定义需要彻底清理的冲突包列表（防止与 Passwall 重复）
+
+          log_info() { echo -e "\e[32m[INFO][$(date +'%T')] $1\e[0m"; }
+          log_warn() { echo -e "\e[33m[WARN][$(date +'%T')] $1\e[0m"; }
+          log_err()  { echo -e "\e[31m[ERR ][$(date +'%T')] $1\e[0m"; exit 1; }
+
+          # =========================
+          # 冲突包列表
+          # =========================
           CONFLICT_PKGS=(
               "xray-core" "v2ray-geodata" "sing-box" "chinadns-ng"
               "dns2socks" "hysteria" "ipt2socks" "microsocks" "naiveproxy"
@@ -118,64 +124,154 @@ jobs:
               "simple-obfs" "tcping" "trojan-plus" "tuic-client"
               "v2ray-plugin" "xray-plugin" "geoview" "shadow-tls"
               "luci-app-passwall" "passwall" "luci-app-passwall2"
-              "smartdns" "luci-app-smartdns" "luci-theme-argon" "luci-app-argon-config"
+              "smartdns" "luci-app-smartdns"
+              "luci-theme-argon" "luci-app-argon-config"
           )
-          
-          # 更新所有订阅源
-          ./scripts/feeds update -a
-          
-          # 焦土清理：删除 feeds 目录下所有冲突包（无论来自哪个 feed）
-          log_info() { echo -e "\e[32m[INFO][$(date +'%T')] $1\e[0m"; }
-          log_warn() { echo -e "\e[33m[WARN][$(date +'%T')] $1\e[0m"; }
-          
-          for pkg in "${CONFLICT_PKGS[@]}"; do
-              # 查找所有同名目录并删除
-              while IFS= read -r -d '' dir; do
-                  log_warn "清理冲突包目录: $dir"
-                  rm -rf "$dir"
-              done < <(find feeds/ -type d -name "$pkg" -print0 2>/dev/null || true)
-          done
-          
-          # 【带重试的 git clone 函数】
-          git_clone_with_retry() {
-              local repo="$1"
-              local target="$2"
-              local retries=3
+
+          # =========================
+          # feeds update retry
+          # =========================
+
+          feeds_update_retry() {
+              local retry=3
               local delay=5
-              for i in $(seq 1 $retries); do
-                  log_info "克隆 $repo -> $target (尝试 $i/$retries)"
-                  if git clone --depth 1 "$repo" "$target" 2>/dev/null; then
+
+              for i in $(seq 1 $retry); do
+                  log_info "feeds update 尝试 $i/$retry"
+
+                  if ./scripts/feeds update -a; then
                       return 0
                   fi
-                  if [ $i -lt $retries ]; then
-                      log_warn "克隆失败，${delay}秒后重试..."
-                      sleep $delay
-                  fi
+
+                  log_warn "feeds update 失败，重试..."
+                  sleep $delay
               done
-              return 1
+
+              log_err "feeds update 连续失败"
           }
-          
-          # 克隆 SmartDNS
+
+          feeds_update_retry
+
+          # =========================
+          # 焦土清理 feeds 冲突包
+          # =========================
+
+          for pkg in "${CONFLICT_PKGS[@]}"; do
+              while IFS= read -r -d '' dir; do
+
+                  # 防止误删 package/ 下手动包
+                  if [[ "$dir" == feeds/* ]]; then
+                      log_warn "清理冲突包: $dir"
+                      rm -rf "$dir"
+                  fi
+
+              done < <(
+                  find feeds/ -type d -name "$pkg" -print0 2>/dev/null || true
+              )
+          done
+
+          # =========================
+          # git clone retry
+          # =========================
+
+          git_clone_with_retry() {
+
+              local repo="$1"
+              local target="$2"
+              local branch="${3:-}"
+              local retries=3
+              local delay=5
+
+              for i in $(seq 1 $retries); do
+
+                  log_info "克隆 $repo -> $target ($i/$retries)"
+
+                  rm -rf "$target"
+
+                  if [ -n "$branch" ]; then
+                      git clone --depth 1 -b "$branch" "$repo" "$target" && return 0
+                  else
+                      git clone --depth 1 "$repo" "$target" && return 0
+                  fi
+
+                  log_warn "clone失败，重试..."
+                  sleep $delay
+              done
+
+              log_err "克隆失败: $repo"
+          }
+
+          # =========================
+          # SmartDNS
+          # =========================
+
           rm -rf feeds/packages/net/smartdns || true
           rm -rf feeds/luci/applications/luci-app-smartdns || true
-          git_clone_with_retry https://github.com/pymumu/openwrt-smartdns.git package/smartdns
-          git_clone_with_retry https://github.com/pymumu/luci-app-smartdns.git package/luci-app-smartdns
-          
-          # 修补 SmartDNS Makefile（仅修正 DEPENDS 行中的 Rust 路径）
-          if [ -f package/smartdns/Makefile ]; then
-              cp package/smartdns/Makefile package/smartdns/Makefile.bak
-              sed -i '/DEPENDS:/s|../../lang/rust|../../feeds/packages/lang/rust|g' package/smartdns/Makefile
-          fi
-          
-          # 克隆 Argon 主题
+
+          git_clone_with_retry \
+              https://github.com/pymumu/openwrt-smartdns.git \
+              package/smartdns
+
+          git_clone_with_retry \
+              https://github.com/pymumu/luci-app-smartdns.git \
+              package/luci-app-smartdns
+
+          # =========================
+          # Argon Theme
+          # =========================
+
           rm -rf feeds/luci/themes/luci-theme-argon || true
           rm -rf feeds/luci/applications/luci-app-argon-config || true
+
           mkdir -p package/community
-          git_clone_with_retry https://github.com/jerrykuku/luci-theme-argon.git package/community/luci-theme-argon
-          git_clone_with_retry https://github.com/jerrykuku/luci-app-argon-config.git package/community/luci-app-argon-config
-          
-          # 安装所有配置好的源
-          ./scripts/feeds install -a
+
+          git_clone_with_retry \
+              https://github.com/jerrykuku/luci-theme-argon.git \
+              package/community/luci-theme-argon
+
+          git_clone_with_retry \
+              https://github.com/jerrykuku/luci-app-argon-config.git \
+              package/community/luci-app-argon-config
+
+          # =========================
+          # feeds install retry
+          # =========================
+
+          feeds_install_retry() {
+
+              local retry=3
+              local delay=5
+
+              for i in $(seq 1 $retry); do
+
+                  log_info "feeds install 尝试 $i/$retry"
+
+                  if ./scripts/feeds install -a; then
+                      return 0
+                  fi
+
+                  log_warn "feeds install 失败"
+                  sleep $delay
+              done
+
+              log_err "feeds install 连续失败"
+          }
+
+          feeds_install_retry
+
+          # =========================
+          # 完整性检查
+          # =========================
+
+          if [ ! -d feeds ]; then
+              log_err "feeds 目录不存在"
+          fi
+
+          if [ ! -d package ]; then
+              log_err "package 目录不存在"
+          fi
+
+          log_info "feeds 处理完成"
 
       - name: Load Custom Configuration (DIY Part 2)
         working-directory: ${{ github.workspace }}/openwrt
@@ -313,14 +409,16 @@ jobs:
         run: |
           set -e
           mkdir -p dl
+          
+          # 【修复核心】: 附加 CONFIG_CCACHE= 覆盖 .config，禁止 ccache 在下载阶段越权报错
           # 并发下载，允许个别失败
-          make download -j8 || true
+          make download -j8 CONFIG_CCACHE= || true
           
           # 关键清理步骤：删除因 404/网络问题产生的损坏小文件（小于1KB通常是错误页面）
           find dl -type f -size -1024c -exec rm -f {} \;
           
           # 单线程强力查漏补缺，打印详细信息
-          make download -j1 V=s
+          make download -j1 V=s CONFIG_CCACHE=
 
       - name: Compile the Firmware
         id: compile
