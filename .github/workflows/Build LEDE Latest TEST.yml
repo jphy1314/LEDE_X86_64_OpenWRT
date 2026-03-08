@@ -105,32 +105,74 @@ jobs:
           # 统一脚本调用风格。如果脚本不存在，|| true 防止报错中断
           [[ -f "$SCRIPT" ]] && bash "$SCRIPT" || true
 
-      - name: Update, Patch & Install Feeds
+      - name: Update, Patch & Install Feeds (企业级增强版)
         working-directory: ${{ github.workspace }}/openwrt
         run: |
           set -euo pipefail
           
-          # 更新所有订阅源（此时 Passwall 会被系统作为原生部分拉取）
+          # 定义需要彻底清理的冲突包列表（防止与 Passwall 重复）
+          CONFLICT_PKGS=(
+              "xray-core" "v2ray-geodata" "sing-box" "chinadns-ng"
+              "dns2socks" "hysteria" "ipt2socks" "microsocks" "naiveproxy"
+              "shadowsocks-libev" "shadowsocks-rust" "shadowsocksr-libev"
+              "simple-obfs" "tcping" "trojan-plus" "tuic-client"
+              "v2ray-plugin" "xray-plugin" "geoview" "shadow-tls"
+              "luci-app-passwall" "passwall" "luci-app-passwall2"
+              "smartdns" "luci-app-smartdns" "luci-theme-argon" "luci-app-argon-config"
+          )
+          
+          # 更新所有订阅源
           ./scripts/feeds update -a
           
-          # 清理官方 feeds 中过时的包，防止与 Passwall 发生依赖冲突
-          # rm -rf feeds/packages/net/{xray-core,v2ray-geodata,sing-box,chinadns-ng,dns2socks,hysteria,ipt2socks,microsocks,naiveproxy,shadowsocks-libev,shadowsocks-rust,shadowsocksr-libev,simple-obfs,tcping,trojan-plus,tuic-client,v2ray-plugin,xray-plugin,geoview,shadow-tls} || true
-          # rm -rf feeds/luci/applications/luci-app-passwall || true
+          # 焦土清理：删除 feeds 目录下所有冲突包（无论来自哪个 feed）
+          log_info() { echo -e "\e[32m[INFO][$(date +'%T')] $1\e[0m"; }
+          log_warn() { echo -e "\e[33m[WARN][$(date +'%T')] $1\e[0m"; }
           
-          # SmartDNS 和 Argon 因为通常不提供独立 feeds，保持克隆到 package/
+          for pkg in "${CONFLICT_PKGS[@]}"; do
+              # 查找所有同名目录并删除
+              while IFS= read -r -d '' dir; do
+                  log_warn "清理冲突包目录: $dir"
+                  rm -rf "$dir"
+              done < <(find feeds/ -type d -name "$pkg" -print0 2>/dev/null || true)
+          done
+          
+          # 【带重试的 git clone 函数】
+          git_clone_with_retry() {
+              local repo="$1"
+              local target="$2"
+              local retries=3
+              local delay=5
+              for i in $(seq 1 $retries); do
+                  log_info "克隆 $repo -> $target (尝试 $i/$retries)"
+                  if git clone --depth 1 "$repo" "$target" 2>/dev/null; then
+                      return 0
+                  fi
+                  if [ $i -lt $retries ]; then
+                      log_warn "克隆失败，${delay}秒后重试..."
+                      sleep $delay
+                  fi
+              done
+              return 1
+          }
+          
+          # 克隆 SmartDNS
           rm -rf feeds/packages/net/smartdns || true
           rm -rf feeds/luci/applications/luci-app-smartdns || true
-          git clone --depth 1 https://github.com/pymumu/openwrt-smartdns.git package/smartdns
-          git clone --depth 1 https://github.com/pymumu/luci-app-smartdns.git package/luci-app-smartdns
-          cp package/smartdns/Makefile package/smartdns/Makefile.bak
-          sed -i 's|../../lang/rust|../../feeds/packages/lang/rust|g' package/smartdns/Makefile
-
+          git_clone_with_retry https://github.com/pymumu/openwrt-smartdns.git package/smartdns
+          git_clone_with_retry https://github.com/pymumu/luci-app-smartdns.git package/luci-app-smartdns
+          
+          # 修补 SmartDNS Makefile（仅修正 DEPENDS 行中的 Rust 路径）
+          if [ -f package/smartdns/Makefile ]; then
+              cp package/smartdns/Makefile package/smartdns/Makefile.bak
+              sed -i '/DEPENDS:/s|../../lang/rust|../../feeds/packages/lang/rust|g' package/smartdns/Makefile
+          fi
+          
+          # 克隆 Argon 主题
           rm -rf feeds/luci/themes/luci-theme-argon || true
           rm -rf feeds/luci/applications/luci-app-argon-config || true
-          # 修复错误：创建 community 目录，避免 git clone 失败
           mkdir -p package/community
-          git clone --depth 1 https://github.com/jerrykuku/luci-theme-argon.git package/community/luci-theme-argon
-          git clone --depth 1 https://github.com/jerrykuku/luci-app-argon-config.git package/community/luci-app-argon-config
+          git_clone_with_retry https://github.com/jerrykuku/luci-theme-argon.git package/community/luci-theme-argon
+          git_clone_with_retry https://github.com/jerrykuku/luci-app-argon-config.git package/community/luci-app-argon-config
           
           # 安装所有配置好的源
           ./scripts/feeds install -a
@@ -317,8 +359,8 @@ jobs:
              exit 1
           fi
           
-          # 设备名提取：过滤空格与换行，加 || true 防止 grep 失败引起流水线崩溃
-          DEVICE=$(grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*DEVICE_(.*)=y/\1/' | head -n1 | tr -d '[:space:]' || echo "Generic")
+          # 设备名提取：使用 -E 替代 -r 提高兼容性，过滤空格与换行，加 || true 防止 grep 失败引起流水线崩溃
+          DEVICE=$(grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -E 's/.*DEVICE_(.*)=y/\1/' | head -n1 | tr -d '[:space:]' || echo "Generic")
           if [ -n "$DEVICE" ]; then
              echo "DEVICE_NAME=_$DEVICE" >> $GITHUB_ENV
           else
