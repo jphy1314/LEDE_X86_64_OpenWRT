@@ -114,36 +114,60 @@ jobs:
           log_warn() { echo -e "\e[33m[WARN][$(date +'%T')] $1\e[0m"; }
           log_err()  { echo -e "\e[31m[ERR ][$(date +'%T')] $1\e[0m"; exit 1; }
 
-          # =========================
-          # 冲突包列表
-          # =========================
-          CONFLICT_PKGS=(
-              "xray-core" "v2ray-geodata" "sing-box" "chinadns-ng"
-              "dns2socks" "hysteria" "ipt2socks" "microsocks" "naiveproxy"
-              "shadowsocks-libev" "shadowsocks-rust" "shadowsocksr-libev"
-              "simple-obfs" "tcping" "trojan-plus" "tuic-client"
-              "v2ray-plugin" "xray-plugin" "geoview" "shadow-tls"
-              "luci-app-passwall" "passwall" "luci-app-passwall2"
-              "smartdns" "luci-app-smartdns"
-              "luci-theme-argon" "luci-app-argon-config"
-          )
 
           # =========================
-          # feeds update retry
+          # 冲突包列表 (需要从 feeds 中清理的包)
+          # =========================
+
+          CONFLICT_PKGS=(
+              xray-core
+              v2ray-geodata
+              sing-box
+              chinadns-ng
+              dns2socks
+              hysteria
+              ipt2socks
+              microsocks
+              naiveproxy
+              shadowsocks-libev
+              shadowsocks-rust
+              shadowsocksr-libev
+              simple-obfs
+              tcping
+              trojan-plus
+              tuic-client
+              v2ray-plugin
+              xray-plugin
+              geoview
+              shadow-tls
+              luci-app-passwall
+              passwall
+              luci-app-passwall2
+              smartdns
+              luci-app-smartdns
+              luci-theme-argon
+              luci-app-argon-config
+          )
+
+
+          # =========================
+          # feeds update 重试函数
           # =========================
 
           feeds_update_retry() {
+
               local retry=3
               local delay=5
 
               for i in $(seq 1 $retry); do
+
                   log_info "feeds update 尝试 $i/$retry"
 
                   if ./scripts/feeds update -a; then
                       return 0
                   fi
 
-                  log_warn "feeds update 失败，重试..."
+                  log_warn "feeds update 失败"
                   sleep $delay
               done
 
@@ -152,26 +176,29 @@ jobs:
 
           feeds_update_retry
 
+
           # =========================
-          # 焦土清理 feeds 冲突包
+          # 焦土清理 feeds 冲突
           # =========================
 
           for pkg in "${CONFLICT_PKGS[@]}"; do
+
               while IFS= read -r -d '' dir; do
 
-                  # 防止误删 package/ 下手动包
                   if [[ "$dir" == feeds/* ]]; then
-                      log_warn "清理冲突包: $dir"
+                      log_warn "删除冲突包 $dir"
                       rm -rf "$dir"
                   fi
 
               done < <(
                   find feeds/ -type d -name "$pkg" -print0 2>/dev/null || true
               )
+
           done
 
+
           # =========================
-          # git clone retry
+          # git clone 重试函数 (带失败提示)
           # =========================
 
           git_clone_with_retry() {
@@ -179,12 +206,12 @@ jobs:
               local repo="$1"
               local target="$2"
               local branch="${3:-}"
-              local retries=3
+              local retry=3
               local delay=5
 
-              for i in $(seq 1 $retries); do
+              for i in $(seq 1 $retry); do
 
-                  log_info "克隆 $repo -> $target ($i/$retries)"
+                  log_info "clone $repo ($i/$retry)"
 
                   rm -rf "$target"
 
@@ -194,15 +221,18 @@ jobs:
                       git clone --depth 1 "$repo" "$target" && return 0
                   fi
 
-                  log_warn "clone失败，重试..."
-                  sleep $delay
+                  if [ $i -lt $retry ]; then
+                      log_warn "clone 失败，${delay}秒后重试..."
+                      sleep $delay
+                  fi
               done
 
-              log_err "克隆失败: $repo"
+              log_err "clone失败 $repo"
           }
 
+
           # =========================
-          # SmartDNS
+          # 克隆 SmartDNS (放置到 package/ 下)
           # =========================
 
           rm -rf feeds/packages/net/smartdns || true
@@ -216,8 +246,26 @@ jobs:
               https://github.com/pymumu/luci-app-smartdns.git \
               package/luci-app-smartdns
 
+
+          # ===== rust 路径修补 (修正 SmartDNS Makefile 中 rust-package.mk 的路径) =====
+
+          if [ -f package/smartdns/Makefile ]; then
+
+              if grep -q "../../lang/rust/rust-package.mk" package/smartdns/Makefile; then
+
+                  log_warn "修补 smartdns rust 路径"
+
+                  sed -i \
+                    's|../../lang/rust|../../feeds/packages/lang/rust|g' \
+                    package/smartdns/Makefile
+
+              fi
+
+          fi
+
+
           # =========================
-          # Argon Theme
+          # 克隆 Argon 主题 (放置到 package/community/ 下)
           # =========================
 
           rm -rf feeds/luci/themes/luci-theme-argon || true
@@ -233,8 +281,9 @@ jobs:
               https://github.com/jerrykuku/luci-app-argon-config.git \
               package/community/luci-app-argon-config
 
+
           # =========================
-          # feeds install retry
+          # feeds install 重试函数
           # =========================
 
           feeds_install_retry() {
@@ -250,28 +299,26 @@ jobs:
                       return 0
                   fi
 
-                  log_warn "feeds install 失败"
-                  sleep $delay
+                  if [ $i -lt $retry ]; then
+                      log_warn "feeds install 失败，${delay}秒后重试..."
+                      sleep $delay
+                  fi
               done
 
-              log_err "feeds install 连续失败"
+              log_err "feeds install 失败"
           }
 
           feeds_install_retry
+
 
           # =========================
           # 完整性检查
           # =========================
 
-          if [ ! -d feeds ]; then
-              log_err "feeds 目录不存在"
-          fi
+          [ -d feeds ] || log_err "feeds 不存在"
+          [ -d package ] || log_err "package 不存在"
 
-          if [ ! -d package ]; then
-              log_err "package 目录不存在"
-          fi
-
-          log_info "feeds 处理完成"
+          log_info "Feeds 处理完成"
 
       - name: Load Custom Configuration (DIY Part 2)
         working-directory: ${{ github.workspace }}/openwrt
