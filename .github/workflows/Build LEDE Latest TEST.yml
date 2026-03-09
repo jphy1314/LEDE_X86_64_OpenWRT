@@ -105,7 +105,7 @@ jobs:
           # 统一脚本调用风格。如果脚本不存在，|| true 防止报错中断
           [[ -f "$SCRIPT" ]] && bash "$SCRIPT" || true
 
-      - name: Update, Patch & Install Feeds (Enterprise v8.1)
+      - name: Update, Patch & Install Feeds (Enterprise v8.2 – 终极修复)
         working-directory: ${{ github.workspace }}/openwrt
         run: |
           #!/usr/bin/env bash
@@ -115,7 +115,7 @@ jobs:
           log_w(){ echo -e "\e[33m[WARN] $1\e[0m"; }
           log_e(){ echo -e "\e[31m[ERR ] $1\e[0m"; exit 1; }
 
-          # 带重试的命令执行
+          # 带重试的命令执行（重试耗尽后退出）
           retry() {
               local n=3
               for i in $(seq 1 $n); do
@@ -129,7 +129,7 @@ jobs:
           }
 
           # ----------------------------
-          # 冲突包列表（强烈建议保留完整的 Passwall 依赖列表）
+          # 冲突包列表（完整保留 Passwall 依赖）
           # ----------------------------
           CONFLICT_PKGS=(
               xray-core v2ray-geodata sing-box chinadns-ng dns2socks hysteria
@@ -151,7 +151,7 @@ jobs:
           # 安全删除冲突包（保护 passwall 专属源）
           # ----------------------------
           for pkg in "${CONFLICT_PKGS[@]}"; do
-              # 仅在 feeds/ 下删除，但跳过 passwall 专属源路径
+              # 仅在 feeds/ 下删除，跳过 passwall 专属源路径
               while IFS= read -r -d '' dir; do
                   if [[ "$dir" == *passwall_packages* ]] || [[ "$dir" == *passwall_luci* ]]; then
                       log_i "🛡️ 保护专属源: $dir"
@@ -179,19 +179,52 @@ jobs:
           retry git clone --depth 1 https://github.com/jerrykuku/luci-app-argon-config.git package/community/luci-app-argon-config
 
           # ----------------------------
-          # 解决 SmartDNS Rust 依赖问题（稳健版）
+          # 【增强版】解决 SmartDNS Rust 依赖（双文件下载 + 彻底绕过）
           # ----------------------------
-          if [ ! -f lang/rust/rust-package.mk ]; then
-              log_w "Rust 支持文件缺失，尝试下载..."
-              mkdir -p lang/rust
-              curl -fL --retry 3 --connect-timeout 10 \
-                  https://raw.githubusercontent.com/openwrt/packages/master/lang/rust/rust-package.mk \
-                  -o lang/rust/rust-package.mk || {
-                  log_w "下载失败，注入空变量以绕过 SmartDNS 编译报错"
+          fix_rust() {
+              local rust_dir="lang/rust"
+              local raw_url="https://raw.githubusercontent.com/openwrt/packages/master/lang/rust"
+              local files=("rust-package.mk" "rust-values.mk")
+              local need_patch=0
+
+              mkdir -p "$rust_dir"
+
+              # 尝试下载两个文件，若任一失败则标记需要修补
+              for f in "${files[@]}"; do
+                  log_i "下载 Rust 支持文件: $f"
+                  if curl -fL --retry 3 --connect-timeout 10 "$raw_url/$f" -o "$rust_dir/$f" && [ -s "$rust_dir/$f" ]; then
+                      log_i "✅ 下载成功: $f"
+                  else
+                      log_w "⚠️ 下载失败或文件为空: $f"
+                      need_patch=1
+                      break
+                  fi
+              done
+
+              if [ $need_patch -eq 1 ]; then
+                  log_w "Rust 支持文件不完整，执行彻底绕过方案"
+                  # 删除可能残留的 rust-package.mk，避免其内部 include 导致错误
+                  rm -rf "$rust_dir"
+                  # 备份原 Makefile
+                  cp package/smartdns/Makefile package/smartdns/Makefile.bak
+                  # 注释掉 include 行（保留行结构）
                   sed -i 's|^include \.\./\.\./lang/rust/rust-package\.mk|# include ../../lang/rust/rust-package.mk|' package/smartdns/Makefile
-                  echo -e "\nRUST_TARGET_HOST:=\nRUST_TARGET_ARCH:=\nRUST_ARCH_DEPENDS:=\nRUSTC_VARS:=\nCARGO_PACKAGE_VARS:=" >> package/smartdns/Makefile
-              }
-          fi
+                  # 注入必要的空变量，防止后续引用报错
+                  cat >> package/smartdns/Makefile << 'EOF'
+          # 手动定义 Rust 相关空变量（因下载失败而添加）
+          RUST_TARGET_HOST:=
+          RUST_TARGET_ARCH:=
+          RUST_ARCH_DEPENDS:=
+          RUSTC_VARS:=
+          CARGO_PACKAGE_VARS:=
+          EOF
+                  log_i "✅ SmartDNS Makefile 已修补，绕过 Rust 依赖"
+              else
+                  log_i "Rust 支持文件已就绪，无需修补"
+              fi
+          }
+
+          fix_rust
 
           # ----------------------------
           # 安装 feeds（带重试）
@@ -199,13 +232,19 @@ jobs:
           retry ./scripts/feeds install -a
 
           # ----------------------------
-          # 【终极核心】：强制提权劫持，绝杀旧版本！
+          # 【核心提权】强制安装 Passwall 专属源，覆盖旧版
           # ----------------------------
           log_i "🚀 强制提升专属源优先级并覆写依赖..."
           ./scripts/feeds install -f -p passwall_packages -a
           ./scripts/feeds install -f -p passwall_luci -a
 
-          log_i "LEDE feeds 处理完成 ✅ 可以编译固件"
+          # ----------------------------
+          # 完整性检查
+          # ----------------------------
+          [ -d feeds ] || log_e "feeds 目录不存在"
+          [ -d package ] || log_e "package 目录不存在"
+
+          log_i "✅ Enterprise v8.2 Feeds 处理完成，可以开始编译"
 
       - name: Load Custom Configuration (DIY Part 2)
         working-directory: ${{ github.workspace }}/openwrt
