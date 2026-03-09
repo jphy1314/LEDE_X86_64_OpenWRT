@@ -105,7 +105,7 @@ jobs:
           # 统一脚本调用风格。如果脚本不存在，|| true 防止报错中断
           [[ -f "$SCRIPT" ]] && bash "$SCRIPT" || true
 
-      - name: Update, Patch & Install Feeds (Enterprise v8.2 – 终极修复)
+      - name: Update, Patch & Install Feeds
         working-directory: ${{ github.workspace }}/openwrt
         run: |
           #!/usr/bin/env bash
@@ -244,7 +244,7 @@ jobs:
           [ -d feeds ] || log_e "feeds 目录不存在"
           [ -d package ] || log_e "package 目录不存在"
 
-          log_i "✅ Enterprise v8.2 Feeds 处理完成，可以开始编译"
+          log_i "✅ Enterprise Feeds 处理完成，可以开始编译"
 
       - name: Load Custom Configuration (DIY Part 2)
         working-directory: ${{ github.workspace }}/openwrt
