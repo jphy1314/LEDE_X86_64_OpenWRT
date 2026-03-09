@@ -105,248 +105,107 @@ jobs:
           # 统一脚本调用风格。如果脚本不存在，|| true 防止报错中断
           [[ -f "$SCRIPT" ]] && bash "$SCRIPT" || true
 
-      - name: Update, Patch & Install Feeds
+      - name: Update, Patch & Install Feeds (Enterprise v8.1)
         working-directory: ${{ github.workspace }}/openwrt
         run: |
+          #!/usr/bin/env bash
           set -euo pipefail
 
-          log_info() { echo -e "\e[32m[INFO][$(date +'%T')] $1\e[0m"; }
-          log_warn() { echo -e "\e[33m[WARN][$(date +'%T')] $1\e[0m"; }
-          log_err()  { echo -e "\e[31m[ERR ][$(date +'%T')] $1\e[0m"; exit 1; }
+          log_i(){ echo -e "\e[32m[INFO] $1\e[0m"; }
+          log_w(){ echo -e "\e[33m[WARN] $1\e[0m"; }
+          log_e(){ echo -e "\e[31m[ERR ] $1\e[0m"; exit 1; }
 
+          # 带重试的命令执行
+          retry() {
+              local n=3
+              for i in $(seq 1 $n); do
+                  if "$@"; then
+                      return 0
+                  fi
+                  log_w "命令失败，重试 $i/$n: $*"
+                  sleep 5
+              done
+              log_e "命令失败已达最大重试次数: $*"
+          }
 
-          # =========================
-          # 冲突包列表
-          # =========================
+          # ----------------------------
+          # 冲突包列表（强烈建议保留完整的 Passwall 依赖列表）
+          # ----------------------------
           CONFLICT_PKGS=(
-              xray-core
-              v2ray-geodata
-              sing-box
-              chinadns-ng
-              dns2socks
-              hysteria
-              ipt2socks
-              microsocks
-              naiveproxy
-              shadowsocks-libev
-              shadowsocks-rust
-              shadowsocksr-libev
-              simple-obfs
-              tcping
-              trojan-plus
-              tuic-client
-              v2ray-plugin
-              xray-plugin
-              geoview
-              shadow-tls
-              luci-app-passwall
-              passwall
-              luci-app-passwall2
-              smartdns
-              luci-app-smartdns
-              luci-theme-argon
-              luci-app-argon-config
+              xray-core v2ray-geodata sing-box chinadns-ng dns2socks hysteria
+              ipt2socks microsocks naiveproxy shadowsocks-libev shadowsocks-rust
+              shadowsocksr-libev simple-obfs tcping trojan-plus tuic-client
+              v2ray-plugin xray-plugin geoview shadow-tls
+              smartdns luci-app-smartdns
+              luci-theme-argon luci-app-argon-config
+              luci-app-passwall passwall luci-app-passwall2
           )
 
+          # ----------------------------
+          # 更新 feeds（带重试）
+          # ----------------------------
+          log_i "更新 feeds"
+          retry ./scripts/feeds update -a
 
-          # =========================
-          # feeds update 重试函数
-          # =========================
-          feeds_update_retry() {
-              local retry=3
-              local delay=5
-              for i in $(seq 1 $retry); do
-                  log_info "feeds update 尝试 $i/$retry"
-                  if ./scripts/feeds update -a; then
-                      return 0
-                  fi
-                  log_warn "feeds update 失败"
-                  sleep $delay
-              done
-              log_err "feeds update 连续失败"
-          }
-
-          feeds_update_retry
-
-
-          # =========================
-          # 焦土清理 feeds 冲突
-          # =========================
+          # ----------------------------
+          # 安全删除冲突包（保护 passwall 专属源）
+          # ----------------------------
           for pkg in "${CONFLICT_PKGS[@]}"; do
+              # 仅在 feeds/ 下删除，但跳过 passwall 专属源路径
               while IFS= read -r -d '' dir; do
-                  if [[ "$dir" == feeds/* ]]; then
-                      log_warn "删除冲突包 $dir"
-                      rm -rf "$dir"
-                  fi
-              done < <(find feeds/ -type d -name "$pkg" -print0 2>/dev/null || true)
-          done
-
-
-          # =========================
-          # git clone 重试函数
-          # =========================
-          git_clone_with_retry() {
-              local repo="$1"
-              local target="$2"
-              local branch="${3:-}"
-              local retry=3
-              local delay=5
-              for i in $(seq 1 $retry); do
-                  log_info "clone $repo ($i/$retry)"
-                  rm -rf "$target"
-                  if [ -n "$branch" ]; then
-                      git clone --depth 1 -b "$branch" "$repo" "$target" && return 0
-                  else
-                      git clone --depth 1 "$repo" "$target" && return 0
-                  fi
-                  if [ $i -lt $retry ]; then
-                      log_warn "clone 失败，${delay}秒后重试..."
-                      sleep $delay
-                  fi
-              done
-              log_err "clone失败 $repo"
-          }
-
-
-          # =========================
-          # 克隆 SmartDNS
-          # =========================
-          rm -rf feeds/packages/net/smartdns || true
-          rm -rf feeds/luci/applications/luci-app-smartdns || true
-
-          git_clone_with_retry \
-              https://github.com/pymumu/openwrt-smartdns.git \
-              package/smartdns
-
-          git_clone_with_retry \
-              https://github.com/pymumu/luci-app-smartdns.git \
-              package/luci-app-smartdns
-
-
-          # =========================
-          # 【增强版】确保 Rust 支持文件存在
-          # 使用多个镜像源，并验证文件完整性
-          # =========================
-          ensure_rust_mk() {
-              local rust_dir="lang/rust"
-              local files=("rust-package.mk" "rust-values.mk")
-              local urls=(
-                  "https://raw.githubusercontent.com/openwrt/packages/master/lang/rust"
-                  "https://cdn.jsdelivr.net/gh/openwrt/packages@master/lang/rust"
-                  "https://ghproxy.com/https://raw.githubusercontent.com/openwrt/packages/master/lang/rust"
-              )
-              local retry=3
-              local delay=5
-
-              mkdir -p "$rust_dir"
-
-              for file in "${files[@]}"; do
-                  if [ -f "$rust_dir/$file" ] && [ -s "$rust_dir/$file" ]; then
-                      log_info "文件 $rust_dir/$file 已存在且非空，跳过下载"
+                  if [[ "$dir" == *passwall_packages* ]] || [[ "$dir" == *passwall_luci* ]]; then
+                      log_i "🛡️ 保护专属源: $dir"
                       continue
                   fi
+                  log_w "删除冲突包: $dir"
+                  rm -rf "$dir"
+              done < <(find feeds/ -type d -name "$pkg" -print0 2>/dev/null || true)
 
-                  local downloaded=0
-                  for url_base in "${urls[@]}"; do
-                      for i in $(seq 1 $retry); do
-                          log_info "下载 $file 从 $url_base ($i/$retry)"
-                          if curl -fL --retry 2 --connect-timeout 10 -o "$rust_dir/$file" "$url_base/$file"; then
-                              if [ -s "$rust_dir/$file" ]; then
-                                  log_info "✅ 下载成功: $file (大小: $(stat -c%s "$rust_dir/$file") 字节)"
-                                  downloaded=1
-                                  break 2
-                              else
-                                  log_warn "下载的文件为空，重试..."
-                              fi
-                          else
-                              log_warn "下载失败，${delay}秒后重试..."
-                              sleep $delay
-                          fi
-                      done
-                  done
+              # 清理 package/ 下的硬编码包（深度限制，避免误删）
+              while IFS= read -r -d '' dir; do
+                  log_w "删除本地硬编码包: $dir"
+                  rm -rf "$dir"
+              done < <(find package/ -maxdepth 3 -type d -name "$pkg" -print0 2>/dev/null || true)
+          done
 
-                  if [ $downloaded -eq 0 ]; then
-                      log_warn "⚠️ 无法下载 $file，将尝试直接修改 SmartDNS Makefile 绕过 Rust 依赖"
-                      # 标记需要修补
-                      touch /tmp/smartdns_patch_needed
-                  fi
-              done
-          }
-
-          ensure_rust_mk
-
-
-          # =========================
-          # 【最终保障】如果 Rust 文件下载失败，则修补 SmartDNS Makefile
-          # 注释掉 include 行，并添加变量定义避免错误
-          # =========================
-          if [ -f /tmp/smartdns_patch_needed ]; then
-              log_warn "修补 SmartDNS Makefile 以绕过 Rust 依赖"
-              if [ -f package/smartdns/Makefile ]; then
-                  # 备份原文件
-                  cp package/smartdns/Makefile package/smartdns/Makefile.bak
-                  # 注释掉 include 行
-                  sed -i 's|^include \.\./\.\./lang/rust/rust-package\.mk|# include ../../lang/rust/rust-package.mk|' package/smartdns/Makefile
-                  # 添加缺失的变量定义（防止后续错误）
-                  echo "
-                  # 手动定义 Rust 相关变量（因下载失败而添加）
-                  RUST_TARGET_HOST:=
-                  RUST_TARGET_ARCH:=
-                  RUST_ARCH_DEPENDS:=
-                  RUSTC_VARS:=
-                  CARGO_PACKAGE_VARS:=
-                  " >> package/smartdns/Makefile
-                  log_info "SmartDNS Makefile 已修补"
-              fi
-              rm -f /tmp/smartdns_patch_needed
-          fi
-
-
-          # =========================
-          # 克隆 Argon 主题
-          # =========================
-          rm -rf feeds/luci/themes/luci-theme-argon || true
-          rm -rf feeds/luci/applications/luci-app-argon-config || true
+          # ----------------------------
+          # 克隆最新 SmartDNS 和 Argon（带重试）
+          # ----------------------------
           mkdir -p package/community
 
-          git_clone_with_retry \
-              https://github.com/jerrykuku/luci-theme-argon.git \
-              package/community/luci-theme-argon
+          retry git clone --depth 1 https://github.com/pymumu/openwrt-smartdns.git package/smartdns
+          retry git clone --depth 1 https://github.com/pymumu/luci-app-smartdns.git package/luci-app-smartdns
+          retry git clone --depth 1 https://github.com/jerrykuku/luci-theme-argon.git package/community/luci-theme-argon
+          retry git clone --depth 1 https://github.com/jerrykuku/luci-app-argon-config.git package/community/luci-app-argon-config
 
-          git_clone_with_retry \
-              https://github.com/jerrykuku/luci-app-argon-config.git \
-              package/community/luci-app-argon-config
+          # ----------------------------
+          # 解决 SmartDNS Rust 依赖问题（稳健版）
+          # ----------------------------
+          if [ ! -f lang/rust/rust-package.mk ]; then
+              log_w "Rust 支持文件缺失，尝试下载..."
+              mkdir -p lang/rust
+              curl -fL --retry 3 --connect-timeout 10 \
+                  https://raw.githubusercontent.com/openwrt/packages/master/lang/rust/rust-package.mk \
+                  -o lang/rust/rust-package.mk || {
+                  log_w "下载失败，注入空变量以绕过 SmartDNS 编译报错"
+                  sed -i 's|^include \.\./\.\./lang/rust/rust-package\.mk|# include ../../lang/rust/rust-package.mk|' package/smartdns/Makefile
+                  echo -e "\nRUST_TARGET_HOST:=\nRUST_TARGET_ARCH:=\nRUST_ARCH_DEPENDS:=\nRUSTC_VARS:=\nCARGO_PACKAGE_VARS:=" >> package/smartdns/Makefile
+              }
+          fi
 
+          # ----------------------------
+          # 安装 feeds（带重试）
+          # ----------------------------
+          retry ./scripts/feeds install -a
 
-          # =========================
-          # feeds install 重试函数
-          # =========================
-          feeds_install_retry() {
-              local retry=3
-              local delay=5
-              for i in $(seq 1 $retry); do
-                  log_info "feeds install 尝试 $i/$retry"
-                  if ./scripts/feeds install -a; then
-                      return 0
-                  fi
-                  if [ $i -lt $retry ]; then
-                      log_warn "feeds install 失败，${delay}秒后重试..."
-                      sleep $delay
-                  fi
-              done
-              log_err "feeds install 失败"
-          }
+          # ----------------------------
+          # 【终极核心】：强制提权劫持，绝杀旧版本！
+          # ----------------------------
+          log_i "🚀 强制提升专属源优先级并覆写依赖..."
+          ./scripts/feeds install -f -p passwall_packages -a
+          ./scripts/feeds install -f -p passwall_luci -a
 
-          feeds_install_retry
-
-
-          # =========================
-          # 完整性检查
-          # =========================
-          [ -d feeds ] || log_err "feeds 不存在"
-          [ -d package ] || log_err "package 不存在"
-
-          log_info "Feeds 处理完成"
+          log_i "LEDE feeds 处理完成 ✅ 可以编译固件"
 
       - name: Load Custom Configuration (DIY Part 2)
         working-directory: ${{ github.workspace }}/openwrt
