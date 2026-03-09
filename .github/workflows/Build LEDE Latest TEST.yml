@@ -116,9 +116,8 @@ jobs:
 
 
           # =========================
-          # 冲突包列表 (需要从 feeds 中清理的包)
+          # 冲突包列表
           # =========================
-
           CONFLICT_PKGS=(
               xray-core
               v2ray-geodata
@@ -153,24 +152,17 @@ jobs:
           # =========================
           # feeds update 重试函数
           # =========================
-
           feeds_update_retry() {
-
               local retry=3
               local delay=5
-
               for i in $(seq 1 $retry); do
-
                   log_info "feeds update 尝试 $i/$retry"
-
                   if ./scripts/feeds update -a; then
                       return 0
                   fi
-
                   log_warn "feeds update 失败"
                   sleep $delay
               done
-
               log_err "feeds update 连续失败"
           }
 
@@ -180,61 +172,45 @@ jobs:
           # =========================
           # 焦土清理 feeds 冲突
           # =========================
-
           for pkg in "${CONFLICT_PKGS[@]}"; do
-
               while IFS= read -r -d '' dir; do
-
                   if [[ "$dir" == feeds/* ]]; then
                       log_warn "删除冲突包 $dir"
                       rm -rf "$dir"
                   fi
-
-              done < <(
-                  find feeds/ -type d -name "$pkg" -print0 2>/dev/null || true
-              )
-
+              done < <(find feeds/ -type d -name "$pkg" -print0 2>/dev/null || true)
           done
 
 
           # =========================
-          # git clone 重试函数 (带失败提示)
+          # git clone 重试函数
           # =========================
-
           git_clone_with_retry() {
-
               local repo="$1"
               local target="$2"
               local branch="${3:-}"
               local retry=3
               local delay=5
-
               for i in $(seq 1 $retry); do
-
                   log_info "clone $repo ($i/$retry)"
-
                   rm -rf "$target"
-
                   if [ -n "$branch" ]; then
                       git clone --depth 1 -b "$branch" "$repo" "$target" && return 0
                   else
                       git clone --depth 1 "$repo" "$target" && return 0
                   fi
-
                   if [ $i -lt $retry ]; then
                       log_warn "clone 失败，${delay}秒后重试..."
                       sleep $delay
                   fi
               done
-
               log_err "clone失败 $repo"
           }
 
 
           # =========================
-          # 克隆 SmartDNS (放置到 package/ 下)
+          # 克隆 SmartDNS
           # =========================
-
           rm -rf feeds/packages/net/smartdns || true
           rm -rf feeds/luci/applications/luci-app-smartdns || true
 
@@ -248,38 +224,52 @@ jobs:
 
 
           # =========================
-          # 确保 Rust 支持文件存在 (供 smartdns 使用)
-          # 直接下载到源码根目录下的 lang/rust/，无需修改 Makefile
+          # 【增强版】确保 Rust 支持文件存在
+          # 使用多个镜像源，并验证文件完整性
           # =========================
-
           ensure_rust_mk() {
               local rust_dir="lang/rust"
-              local base_url="https://raw.githubusercontent.com/openwrt/packages/master/lang/rust"
               local files=("rust-package.mk" "rust-values.mk")
+              local urls=(
+                  "https://raw.githubusercontent.com/openwrt/packages/master/lang/rust"
+                  "https://cdn.jsdelivr.net/gh/openwrt/packages@master/lang/rust"
+                  "https://ghproxy.com/https://raw.githubusercontent.com/openwrt/packages/master/lang/rust"
+              )
               local retry=3
               local delay=5
 
               mkdir -p "$rust_dir"
 
               for file in "${files[@]}"; do
-                  for i in $(seq 1 $retry); do
-                      if [ -f "$rust_dir/$file" ]; then
-                          log_info "文件 $rust_dir/$file 已存在，跳过下载"
-                          break
-                      fi
-                      log_info "下载 $file ($i/$retry)"
-                      if curl -fL --retry 2 --connect-timeout 10 -o "$rust_dir/$file" "$base_url/$file"; then
-                          log_info "下载成功: $file"
-                          break
-                      else
-                          if [ $i -lt $retry ]; then
+                  if [ -f "$rust_dir/$file" ] && [ -s "$rust_dir/$file" ]; then
+                      log_info "文件 $rust_dir/$file 已存在且非空，跳过下载"
+                      continue
+                  fi
+
+                  local downloaded=0
+                  for url_base in "${urls[@]}"; do
+                      for i in $(seq 1 $retry); do
+                          log_info "下载 $file 从 $url_base ($i/$retry)"
+                          if curl -fL --retry 2 --connect-timeout 10 -o "$rust_dir/$file" "$url_base/$file"; then
+                              if [ -s "$rust_dir/$file" ]; then
+                                  log_info "✅ 下载成功: $file (大小: $(stat -c%s "$rust_dir/$file") 字节)"
+                                  downloaded=1
+                                  break 2
+                              else
+                                  log_warn "下载的文件为空，重试..."
+                              fi
+                          else
                               log_warn "下载失败，${delay}秒后重试..."
                               sleep $delay
-                          else
-                              log_err "无法下载 $file，请检查网络"
                           fi
-                      fi
+                      done
                   done
+
+                  if [ $downloaded -eq 0 ]; then
+                      log_warn "⚠️ 无法下载 $file，将尝试直接修改 SmartDNS Makefile 绕过 Rust 依赖"
+                      # 标记需要修补
+                      touch /tmp/smartdns_patch_needed
+                  fi
               done
           }
 
@@ -287,12 +277,36 @@ jobs:
 
 
           # =========================
-          # 克隆 Argon 主题 (放置到 package/community/ 下)
+          # 【最终保障】如果 Rust 文件下载失败，则修补 SmartDNS Makefile
+          # 注释掉 include 行，并添加变量定义避免错误
           # =========================
+          if [ -f /tmp/smartdns_patch_needed ]; then
+              log_warn "修补 SmartDNS Makefile 以绕过 Rust 依赖"
+              if [ -f package/smartdns/Makefile ]; then
+                  # 备份原文件
+                  cp package/smartdns/Makefile package/smartdns/Makefile.bak
+                  # 注释掉 include 行
+                  sed -i 's|^include \.\./\.\./lang/rust/rust-package\.mk|# include ../../lang/rust/rust-package.mk|' package/smartdns/Makefile
+                  # 添加缺失的变量定义（防止后续错误）
+                  echo "
+                  # 手动定义 Rust 相关变量（因下载失败而添加）
+                  RUST_TARGET_HOST:=
+                  RUST_TARGET_ARCH:=
+                  RUST_ARCH_DEPENDS:=
+                  RUSTC_VARS:=
+                  CARGO_PACKAGE_VARS:=
+                  " >> package/smartdns/Makefile
+                  log_info "SmartDNS Makefile 已修补"
+              fi
+              rm -f /tmp/smartdns_patch_needed
+          fi
 
+
+          # =========================
+          # 克隆 Argon 主题
+          # =========================
           rm -rf feeds/luci/themes/luci-theme-argon || true
           rm -rf feeds/luci/applications/luci-app-argon-config || true
-
           mkdir -p package/community
 
           git_clone_with_retry \
@@ -307,26 +321,19 @@ jobs:
           # =========================
           # feeds install 重试函数
           # =========================
-
           feeds_install_retry() {
-
               local retry=3
               local delay=5
-
               for i in $(seq 1 $retry); do
-
                   log_info "feeds install 尝试 $i/$retry"
-
                   if ./scripts/feeds install -a; then
                       return 0
                   fi
-
                   if [ $i -lt $retry ]; then
                       log_warn "feeds install 失败，${delay}秒后重试..."
                       sleep $delay
                   fi
               done
-
               log_err "feeds install 失败"
           }
 
@@ -336,7 +343,6 @@ jobs:
           # =========================
           # 完整性检查
           # =========================
-
           [ -d feeds ] || log_err "feeds 不存在"
           [ -d package ] || log_err "package 不存在"
 
