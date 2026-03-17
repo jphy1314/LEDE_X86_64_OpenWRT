@@ -15,6 +15,8 @@ env:
   UPLOAD_RELEASE: "true"
   # CCACHE 统一挂载路径
   CCACHE_DIR: "/home/runner/.ccache"
+  # [修复 Node20 警告] 强制所有底层 Action 使用 Node.js 24 运行
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
   build:
@@ -89,7 +91,7 @@ jobs:
       # 缓存键由 分支名 + 核心配置文件的 Hash + 日期 组成。
       # 任何本地工作流文件或 feeds 列表的改动都会生成全新 Key，避免读取失效缓存导致玄学报错。
       - name: Cache Ccache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ env.CCACHE_DIR }}
           key: ccache-lede-${{ env.REPO_BRANCH }}-${{ hashFiles('.github/workflows/*.yml', 'diy-part1.sh', 'diy-part2.sh', 'openwrt/feeds.conf.default') }}-${{ steps.cache-vars.outputs.date }}
@@ -488,12 +490,19 @@ jobs:
           keep_minimum_runs: 2
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      # 自动清理历史 Release 记录，避免仓库冗杂
+      # 自动清理历史 Release 记录 (企业级原生方案，零第三方依赖)
       - name: Remove Old Releases
-        uses: dev-drprasad/delete-older-releases@v0.3.3
         if: steps.compile.outputs.status == 'success' && env.UPLOAD_RELEASE == 'true'
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          keep_latest: 3
-          delete_tags: true
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "开始清理过旧的 Releases，仅保留最新 3 个..."
+          # 获取所有 Release 的 Tag (按时间倒序)，跳过前 3 个，其余全部删除
+          gh release list --repo ${{ github.repository }} --limit 100 | awk -F'\t' '{print $3}' | tail -n +4 | while read tag; do
+            if[ -n "$tag" ]; then
+              echo "🗑️ 正在删除旧版本: $tag"
+              gh release delete "$tag" --cleanup-tag -y || true
+            fi
+          done
+          echo "✅ 清理完成！"
