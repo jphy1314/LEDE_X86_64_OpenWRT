@@ -516,9 +516,9 @@ jobs:
         run: |
           set -euo pipefail
           echo "开始清理过旧的 Releases，仅保留最新 3 个..."
-          # 获取所有 Release 的 Tag (按时间倒序)，跳过前 3 个，其余全部删除
-          gh release list --repo ${{ github.repository }} --limit 100 | awk -F'\t' '{print $3}' | tail -n +4 | while read tag; do
-            if[ -n "$tag" ]; then
+          # 使用 JSON 输出获取所有 tag（更健壮）
+          gh release list --repo ${{ github.repository }} --limit 100 --json tagName -q '.[].tagName' | tail -n +4 | while IFS= read -r tag; do
+            if [ -n "$tag" ]; then
               echo "🗑️ 正在删除旧版本: $tag"
               gh release delete "$tag" --cleanup-tag -y || true
             fi
