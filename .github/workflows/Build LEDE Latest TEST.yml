@@ -355,15 +355,12 @@ jobs:
           CONFIG_PACKAGE_luci-app-ksmbd=n
           CONFIG_PACKAGE_ksmbd-server=n
           CONFIG_PACKAGE_kmod-fs-ksmbd=n
-          
           # 2. 安装企业级 Samba4 主程序与界面
           CONFIG_PACKAGE_luci-app-samba4=y
           CONFIG_PACKAGE_samba4-libs=y
           CONFIG_PACKAGE_samba4-server=y
-          
           # 3. 增强组件：让路由器在 Windows "网络" 邻居中自动出现 (极其提升体验)
           CONFIG_PACKAGE_wsdd2=y
-          
           # 4. 增强组件：支持苹果 macOS Time Machine (时间机器备份)
           CONFIG_PACKAGE_samba4-server-vfs=y
           EOF
