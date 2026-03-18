@@ -184,7 +184,8 @@ log "✅ Procd 网卡硬件加速服务（vendor 白名单版）注入完成"
 # 阶段 3 & 4: 磁盘运行时优化 & LuCI 配置同步（企业增强版）
 # ==============================================================================
 
-# 【架构师修正：打通次元壁】先用无单引号的 EOF 注入 CI 的环境变量到脚本头部
+# 【企业级架构修补：打通 CI 次元壁】
+# 使用不带单引号的 EOF，让 GitHub Actions 的环境变量在构建期直接渲染并硬编码到路由器脚本顶部
 cat << EOF > "${FILES_DIR}/etc/hotplug.d/mount/99-optimize-disk"
 #!/bin/sh
 # --- 自动注入的 CI 配置变量 ---
@@ -196,13 +197,13 @@ ENABLE_DISCARD="${ENABLE_DISCARD}"
 # ------------------------------
 EOF
 
-# 【架构师修正：保护运行时逻辑】再用带单引号的 'EOF' 追加路由器的实际执行逻辑
+# 然后使用带单引号的 'EOF'，保护原生路由器的执行逻辑不被过早解析
 cat << 'EOF' >> "${FILES_DIR}/etc/hotplug.d/mount/99-optimize-disk"
 [ "$ACTION" != "add" ] && exit 0
 [ -z "$MOUNTPOINT" ] && exit 0
 [ -z "$DEVICE" ] && exit 0
 
-# 引入日志函数（变量已在脚本头部注入）
+# 引入日志函数（变量已在脚本头部被 CI 注入）
 log_opt() {
     local msg="$1"
     logger -t "Disk-Opt" "$msg"
@@ -231,7 +232,7 @@ case "$FSTYPE" in
         if [ -n "$DEV_BASE" ] && [ -f "/sys/block/$DEV_BASE/queue/rotational" ]; then
             rotational=$(cat "/sys/block/$DEV_BASE/queue/rotational")
         else
-            rotational=1  # 默认保守
+            rotational=1  # 默认保守设为机械硬盘
         fi
 
         # ---------- 1. 智能预读缓存（支持环境变量）----------
@@ -250,27 +251,27 @@ case "$FSTYPE" in
         fi
 
         # ---------- 2. I/O 调度器优化 ----------
-        # 【架构师修正：严谨的 if-elif 结构替代 || &&，防止报错污染】
+        # 【严谨修正：使用 if-elif 结构替代容易产生假阳性的 || && 逻辑】
         set_scheduler() {
             local dev="$1"
             local sched1="$2"
             local sched2="$3"
             if echo "$sched1" > "/sys/block/$dev/queue/scheduler" 2>/dev/null; then
-                log_opt "$dev I/O 调度器成功设为 $sched1"
+                log_opt "调度器 $dev 成功设为 $sched1"
             elif echo "$sched2" > "/sys/block/$dev/queue/scheduler" 2>/dev/null; then
-                log_opt "$dev I/O 调度器成功设为 $sched2"
+                log_opt "调度器 $dev 成功设为 $sched2"
             fi
         }
 
         if [ -n "$DEV_BASE" ] && [ -f "/sys/block/$DEV_BASE/queue/scheduler" ]; then
             if [ "$REMOVABLE" = "1" ]; then
-                # USB 设备使用 none 或 noop
+                # USB 设备使用 none 或 noop，减少磁头寻道算法开销
                 set_scheduler "$DEV_BASE" "none" "noop"
             elif [ "$rotational" = "0" ]; then
                 # SSD: 使用 none 或 noop
                 set_scheduler "$DEV_BASE" "none" "noop"
             else
-                # HDD: 使用 mq-deadline 或 bfq
+                # HDD: 机械硬盘使用 mq-deadline 或 bfq，优化寻道顺序
                 set_scheduler "$DEV_BASE" "mq-deadline" "bfq"
             fi
         fi
@@ -282,24 +283,23 @@ case "$FSTYPE" in
         # 移除已有的 noatime/nodiratime/relatime 等时间相关选项，避免重复
         new_opts=$(echo "$current_opts" | sed -E 's/\b(noatime|nodiratime|relatime|strictatime|lazyatime|sync)\b,?//g; s/,$//; s/,,+/,/g')
         
-        # 构建优化基础选项
+        # 构建优化基础选项：彻底关闭访问时间记录，大幅减少元数据写入
         base_opts="noatime,nodiratime"
+        
+        # 【致命 Bug 防御：绝对禁止给 USB 移动设备添加 sync 参数！这会导致 U 盘失去页缓存保护，性能暴跌至几MB/s 且闪存被迅速烧毁】
         if [ "$REMOVABLE" = "1" ]; then
-            # 【架构师修正：绝对禁止给 USB 添加 sync 参数，防止掉速至几MB/s 及烧毁闪存！】
-            : # 维持默认 async 提升性能与寿命
+            : # 维持原生系统的 async (异步挂载)，保护 USB 设备寿命与读写性能
         fi
         
-        # 根据 rotational 添加 data=ordered / commit
+        # 根据硬盘类型添加 data=ordered / commit
         if [ "$rotational" = "0" ]; then
             base_opts="${base_opts},data=ordered"
-            # 可选 discard
-            if [ "$ENABLE_DISCARD" = "1" ]; then
-                if ! echo "$new_opts" | grep -q '\bdiscard\b'; then
-                    base_opts="${base_opts},discard"
-                fi
+            # 仅在启用 discard 且原来没有时添加（防重复）
+            if [ "$ENABLE_DISCARD" = "1" ] && ! echo "$new_opts" | grep -q '\bdiscard\b'; then
+                base_opts="${base_opts},discard"
             fi
         else
-            base_opts="${base_opts},data=ordered,commit=30"
+            base_opts="${base_opts},data=ordered,commit=30" # 机械盘每 30 秒刷入一次数据，大幅减少噪音和磁头磨损
         fi
         
         # 合并并去除可能的重复逗号
@@ -322,6 +322,7 @@ case "$FSTYPE" in
                 if [ -n "$SEC" ]; then
                     OPTS=$(uci -q get fstab."$SEC".options || echo "")
                     if echo "$OPTS" | grep -q "relatime"; then
+                        # 强行劫持并修正界面点击生成的 relatime
                         NEW_OPTS=$(echo "$OPTS" | sed 's/relatime/noatime,nodiratime/g')
                         uci set fstab."$SEC".options="$NEW_OPTS"
                         uci commit fstab
@@ -343,7 +344,7 @@ log "✅ 磁盘优化与 LuCI 反向劫持（企业增强版）注入完成"
 CRON_FILE="${FILES_DIR}/etc/crontabs/root"
 mkdir -p "$(dirname "$CRON_FILE")"
 
-# 优雅拼接 Cron 行（使用双引号允许 TRIM_SCHEDULE 变量注入，内部 $ 需转义防提前解析）
+# 优雅拼接 Cron 行（使用双引号允许 TRIM_SCHEDULE 变量在运行期注入，内部 $ 需转义防被当场解析）
 CRON_LINE="${TRIM_SCHEDULE} command -v fstrim >/dev/null && for fs in ext4 btrfs xfs f2fs zfs; do for mp in \$(awk -v fs=\"\$fs\" '\$3==fs {print \$2}' /proc/mounts); do fstrim \"\$mp\" 2>/dev/null; done; done"
 
 if [ -f "$CRON_FILE" ]; then
@@ -358,4 +359,4 @@ else
     log "✅ fstrim cron 任务已创建（时间: ${TRIM_SCHEDULE}）"
 fi
 
-log "🎉 DIY Part 2 脚本（企业终级增强版）执行完成"
+log "🎉 DIY Part 2 脚本（满血带注释重构版）执行完成"
