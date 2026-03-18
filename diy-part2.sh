@@ -66,6 +66,28 @@ uci set system.@system[0].hostname='${TARGET_HOSTNAME}'
 uci commit network
 uci commit system
 
+# =========================================================================
+# 【新增】：修复 Samba4 缺失全局配置标签页的 Bug，并清理祖传垃圾目录
+# =========================================================================
+if command -v uci >/dev/null 2>&1; then
+    # 1. 补齐缺失的全局配置块 (常规设置标签页)
+    if ! uci -q get samba4.@samba[0] >/dev/null; then
+        uci add samba4 samba
+        uci set samba4.@samba[-1].workgroup='WORKGROUP'
+        uci set samba4.@samba[-1].charset='UTF-8'
+        uci set samba4.@samba[-1].description='LEDE NAS'
+        uci set samba4.@samba[-1].interface='lan'
+    fi
+
+    # 2. 顺手清理 Lean 祖传的无用默认共享目录 (sda1, sdb1, boot)
+    while uci -q delete samba4.@sambashare[0]; do
+        :
+    done
+    
+    uci commit samba4
+fi
+# =========================================================================
+
 if command -v uci >/dev/null 2>&1; then
     # 正确提取所有 global 节名（修正：过滤出纯净的节名）
     GLOBAL_SECS=\$(uci -q show fstab | grep '=global' | sed -n 's/^fstab\.\([^=]*\)=.*/\1/p')
