@@ -149,16 +149,31 @@ jobs:
           retry ./scripts/feeds update -a
 
           # ----------------------------
-          # 2. 删除本地 package/ 下的老旧硬编码包（避免与 feeds 冲突）
+          # 2. 彻底剿灭本地 package/ 下的老旧硬编码包（双引擎扫荡，无视深度与改名）
           # ----------------------------
-          log_i "2. 删除本地硬编码老旧冲突包..."
+          log_i "2. 扫荡本地硬编码老旧冲突包..."
           for pkg in "${CONFLICT_PKGS[@]}"; do
-              while IFS= read -r -d '' dir; do
-                  log_w "删除本地硬编码包: $dir"
-                  rm -rf "$dir"
-              done < <(find package/ -maxdepth 3 -type d -name "$pkg" -print0 2>/dev/null || true)
-          done
+              # 【新增防护】：对 pkg 变量中的所有正则特殊字符进行转义，彻底堵死正则注入漏洞！
+              # 将 . * [ ] ^ $ \ + ? { } | ( ) 全部加上反斜杠转义
+              safe_pkg=$(printf '%s\n' "$pkg" | sed 's/[][\\.*^$()+?{}\|]/\\&/g')
 
+              # 【引擎 1】：按目录名无差别扫荡（解除 maxdepth 限制）
+              while IFS= read -r -d '' dir; do
+                  log_w "删除本地冲突目录: $dir"
+                  rm -rf "$dir"
+              done < <(find package/ -type d -name "$pkg" -print0 2>/dev/null || true)
+              
+              # 【引擎 2】：暴力解剖 Makefile，揪出被改名的“幽灵包”
+              while IFS= read -r -d '' makefile; do
+                  # 正则精准匹配，此时注入的是经过严格转义的 safe_pkg
+                  if grep -q -E "^[[:space:]]*PKG_NAME[[:space:]]*:?=[[:space:]]*${safe_pkg}[[:space:]]*$" "$makefile" 2>/dev/null; then
+                      ghost_dir=$(dirname "$makefile")
+                      log_w "揪出隐藏的幽灵冲突包 ($pkg): $ghost_dir"
+                      rm -rf "$ghost_dir"
+                  fi
+              done < <(find package/ -type f -name "Makefile" -print0 2>/dev/null || true)
+          done
+          
           # ----------------------------
           # 3. 克隆最新社区插件（SmartDNS、Argon 主题）
           # ----------------------------
