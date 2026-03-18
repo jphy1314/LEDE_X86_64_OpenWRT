@@ -2,6 +2,11 @@ name: Build LEDE Latest TEST
 on:
   workflow_dispatch:
 
+# [优化]: 并发控制，自动取消排队或正在运行的旧任务，节省运算时长
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: write
   actions: write
@@ -21,6 +26,8 @@ env:
 jobs:
   build:
     runs-on: ubuntu-24.04
+    # [优化]: 全局超时熔断，防止编译死锁耗尽 GitHub 免费额度 (5小时)
+    timeout-minutes: 300 
     
     steps:
       - name: Checkout Code
@@ -45,10 +52,6 @@ jobs:
           DEBIAN_FRONTEND: noninteractive
         run: |
           set -euo pipefail
-          
-          # 【致命错误修复】
-          # Ubuntu 24.04 将官方源移至 /etc/apt/sources.list.d/ubuntu.sources
-          # 严禁执行 rm -rf /etc/apt/sources.list.d/*
           
           # 仅清理占用极大的 .NET、Android SDK、Haskell 和 CodeQL 环境，释放超 20GB 空间
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
@@ -130,54 +133,81 @@ jobs:
           }
 
           # ----------------------------
-          # 冲突包列表（需要从 package/ 下清理的老旧硬编码包）
+          # 【核心架构】：将冲突包一分为二，实施分类精准打击，解决双重软链接劫持
           # ----------------------------
-          CONFLICT_PKGS=(
+          
+          # [类 1]: 底层依赖包 (绝对不能从 feeds/ 里删，防止断链引发静默剔除)
+          DEP_PKGS=(
               xray-core v2ray-geodata sing-box chinadns-ng dns2socks hysteria
               ipt2socks microsocks naiveproxy shadowsocks-libev shadowsocks-rust
               shadowsocksr-libev simple-obfs tcping trojan-plus tuic-client
               v2ray-plugin xray-plugin geoview shadow-tls
               smartdns luci-app-smartdns
               luci-theme-argon luci-app-argon-config
+          )
+          
+          # [类 2]: UI 主程序 (必须同时从 package/ 和 feeds/ 里删光，确立最新版的唯一合法性)
+          UI_PKGS=(
               luci-app-passwall passwall luci-app-passwall2
           )
 
           # ----------------------------
           # 1. 更新 feeds（带重试）
           # ----------------------------
-          log_i "1. 更新 feeds"
+          log_i "1. 更新 feeds (拉取全局基础数据)"
           retry ./scripts/feeds update -a
 
           # ----------------------------
-          # 2. 彻底剿灭本地 package/ 下的老旧硬编码包（双引擎扫荡，无视深度与改名）
+          # 2. 扫荡底层依赖包 (仅限扫荡本地 package/ 目录，保留 feeds 兜底)
           # ----------------------------
-          log_i "2. 扫荡本地硬编码老旧冲突包..."
-          for pkg in "${CONFLICT_PKGS[@]}"; do
-              # 【新增防护】：对 pkg 变量中的所有正则特殊字符进行转义，彻底堵死正则注入漏洞！
-              # 将 . * [ ] ^ $ \ + ? { } | ( ) 全部加上反斜杠转义
+          log_i "2. 扫荡本地硬编码的老旧依赖包 (双引擎扫荡，无视深度与改名)..."
+          for pkg in "${DEP_PKGS[@]}"; do
+              # 【防注入装甲】：对包名中的正则特殊字符进行转义，堵死正则崩溃漏洞
               safe_pkg=$(printf '%s\n' "$pkg" | sed 's/[][\\.*^$()+?{}\|]/\\&/g')
 
-              # 【引擎 1】：按目录名无差别扫荡（解除 maxdepth 限制）
+              # 引擎 A: 按目录名无差别扫荡
               while IFS= read -r -d '' dir; do
-                  log_w "删除本地冲突目录: $dir"
                   rm -rf "$dir"
               done < <(find package/ -type d -name "$pkg" -print0 2>/dev/null || true)
               
-              # 【引擎 2】：暴力解剖 Makefile，揪出被改名的“幽灵包”
+              # 引擎 B: 暴力解剖 Makefile，揪出被改名的“幽灵包”
               while IFS= read -r -d '' makefile; do
-                  # 正则精准匹配，此时注入的是经过严格转义的 safe_pkg
                   if grep -q -E "^[[:space:]]*PKG_NAME[[:space:]]*:?=[[:space:]]*${safe_pkg}[[:space:]]*$" "$makefile" 2>/dev/null; then
-                      ghost_dir=$(dirname "$makefile")
-                      log_w "揪出隐藏的幽灵冲突包 ($pkg): $ghost_dir"
-                      rm -rf "$ghost_dir"
+                      rm -rf "$(dirname "$makefile")"
                   fi
               done < <(find package/ -type f -name "Makefile" -print0 2>/dev/null || true)
           done
-          
+
           # ----------------------------
-          # 3. 克隆最新社区插件（SmartDNS、Argon 主题）
+          # 3. 彻底绞杀旧版 UI 主程序 (同时扫荡 package/ 和 feeds/)
           # ----------------------------
-          log_i "3. 克隆社区专属插件..."
+          log_i "3. 彻底绞杀旧版 Passwall UI (解除双重软链接危机)..."
+          for pkg in "${UI_PKGS[@]}"; do
+              safe_pkg=$(printf '%s\n' "$pkg" | sed 's/[][\\.*^$()+?{}\|]/\\&/g')
+
+              # 第一步：扫荡本地 package/ 目录
+              while IFS= read -r -d '' dir; do rm -rf "$dir"; done < <(find package/ -type d -name "$pkg" -print0 2>/dev/null || true)
+              while IFS= read -r -d '' makefile; do
+                  if grep -q -E "^[[:space:]]*PKG_NAME[[:space:]]*:?=[[:space:]]*${safe_pkg}[[:space:]]*$" "$makefile" 2>/dev/null; then
+                      rm -rf "$(dirname "$makefile")"
+                  fi
+              done < <(find package/ -type f -name "Makefile" -print0 2>/dev/null || true)
+
+              # 第二步：扫荡 feeds/ 目录 (必须严格避开我们的专属新源)
+              while IFS= read -r -d '' dir; do
+                  if [[ "$dir" == *passwall_packages* ]] || [[ "$dir" == *passwall_luci* ]]; then 
+                      log_i "🛡️ 保护专属最新 UI 源码: $dir"
+                      continue
+                  fi
+                  log_w "删除 feeds 中的旧版 UI: $dir"
+                  rm -rf "$dir"
+              done < <(find feeds/ -type d -name "$pkg" -print0 2>/dev/null || true)
+          done
+
+          # ----------------------------
+          # 4. 克隆最新社区插件（SmartDNS、Argon 主题）
+          # ----------------------------
+          log_i "4. 克隆社区专属插件..."
           mkdir -p package/community
           retry git clone --depth 1 https://github.com/pymumu/openwrt-smartdns.git package/smartdns
           retry git clone --depth 1 https://github.com/pymumu/luci-app-smartdns.git package/luci-app-smartdns
@@ -185,7 +215,7 @@ jobs:
           retry git clone --depth 1 https://github.com/jerrykuku/luci-app-argon-config.git package/community/luci-app-argon-config
 
           # ----------------------------
-          # 4. 解决 SmartDNS Rust 依赖问题
+          # 5. 解决 SmartDNS Rust 依赖问题
           # ----------------------------
           fix_rust() {
               local rust_dir="lang/rust"
@@ -197,7 +227,7 @@ jobs:
 
               for f in "${files[@]}"; do
                   log_i "下载 Rust 支持文件: $f"
-                  # 注意 && 与 [ 之间添加空格
+                  # 注意 && 与 [ 之间添加空格防报错
                   if curl -fL --retry 3 --connect-timeout 10 "$raw_url/$f" -o "$rust_dir/$f" && [ -s "$rust_dir/$f" ]; then
                       log_i "✅ 下载成功: $f"
                   else
@@ -212,7 +242,7 @@ jobs:
                   rm -rf "$rust_dir"
                   cp package/smartdns/Makefile package/smartdns/Makefile.bak
                   sed -i 's|^include \.\./\.\./lang/rust/rust-package\.mk|# include ../../lang/rust/rust-package.mk|' package/smartdns/Makefile
-                  # 使用 echo 逐行追加，避免 here-document 缩进问题
+                  # 使用 echo 逐行追加，避免 here-document 缩进问题引发 bash 解析灾难
                   echo "RUST_TARGET_HOST:=" >> package/smartdns/Makefile
                   echo "RUST_TARGET_ARCH:=" >> package/smartdns/Makefile
                   echo "RUST_ARCH_DEPENDS:=" >> package/smartdns/Makefile
@@ -223,13 +253,13 @@ jobs:
           fix_rust
 
           # ----------------------------
-          # 5. 常规安装 feeds，建立基础依赖链
+          # 6. 常规安装 feeds，建立基础依赖链
           # ----------------------------
           log_i "5. 常规安装 feeds（建立底层兜底依赖链）..."
           retry ./scripts/feeds install -a
 
           # ----------------------------
-          # 6. 【核心提权】强制安装 Passwall 专属源，覆盖旧版
+          # 7. 【核心提权】强制安装 Passwall 专属源，覆盖旧版
           # ----------------------------
           log_i "6. 🚀 核心提权：强制提升 Passwall 专属源优先级并覆写！"
           ./scripts/feeds install -f -p passwall_packages -a
@@ -241,7 +271,7 @@ jobs:
           [ -d feeds ] || log_e "feeds 目录不存在"
           [ -d package ] || log_e "package 目录不存在"
 
-          log_i "✅ Feeds 处理完成，依赖树完整！"
+          log_i "✅ Feeds 处理完成，依赖树完整，旧版软链接已被彻底切断！"
 
       - name: Load Custom Configuration (DIY Part 2)
         working-directory: ${{ github.workspace }}/openwrt
@@ -362,9 +392,24 @@ jobs:
           CONFIG_PACKAGE_libblkid=y
           CONFIG_PACKAGE_libuuid=y
           CONFIG_PACKAGE_uci=y
+          
+          # 显式锁定硬盘休眠底层引擎与驱动工具，防止 UI 被静默剔除
+          CONFIG_PACKAGE_luci-app-hd-idle=y
+          CONFIG_PACKAGE_hd-idle=y
+          CONFIG_PACKAGE_hdparm=y
           EOF
 
-          # [模块 6]: NAS 文件共享服务 (纯血 Samba4)
+          #[模块 6]: 监控与统计组件
+          cat >> .config <<'EOF'
+          # 极简实时网速表格 (状态 -> 流量监控)
+          CONFIG_PACKAGE_luci-app-wrtbwmon=y
+          # 精准流量饼图与占比分析 (强烈推荐)
+          CONFIG_PACKAGE_luci-app-nlbwmon=y
+          # 顶级酷炫仪表盘前端 (适合 x86 高性能软路由)
+          CONFIG_PACKAGE_luci-app-netdata=y
+          EOF
+
+          # [模块 7]: NAS 文件共享服务 (纯血 Samba4)
           cat >> .config <<'EOF'
           # 1. 彻底卸载内核级 ksmbd、老旧的 samba36 以及 Lean 专属的有冲突的 autosamba
           CONFIG_PACKAGE_luci-app-ksmbd=n
@@ -460,6 +505,8 @@ jobs:
         with:
           name: OpenWrt_bin${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
           path: openwrt/bin
+          # [优化]: 限制中间产物保留 3 天，防止 GitHub 免费存储空间爆仓
+          retention-days: 3
 
       - name: Organize Files (Dynamic Path)
         id: organize
@@ -495,6 +542,8 @@ jobs:
         with:
           name: OpenWrt_firmware${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
           path: ${{ env.FIRMWARE }}
+          # [优化]: 限制中间产物保留 3 天
+          retention-days: 3
 
       - name: Generate Release Tag
         id: tag
@@ -523,7 +572,7 @@ jobs:
           keep_minimum_runs: 2
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      # 自动清理历史 Release 记录 (企业级原生方案，零第三方依赖)
+      # 自动清理历史 Release 记录 (企业级原生方案，彻底剔除已废弃的第三方依赖)
       - name: Remove Old Releases
         if: steps.compile.outputs.status == 'success' && env.UPLOAD_RELEASE == 'true'
         env:
@@ -531,8 +580,9 @@ jobs:
         run: |
           set -euo pipefail
           echo "开始清理过旧的 Releases，仅保留最新 3 个..."
-          # 使用 JSON 输出获取所有 tag（更健壮）
+          # 使用 JSON 输出获取所有 tag（免疫一切特殊字符的健壮提取法）
           gh release list --repo ${{ github.repository }} --limit 100 --json tagName -q '.[].tagName' | tail -n +4 | while IFS= read -r tag; do
+            # 严格保留空格，防止 Exit code 2 报错
             if [ -n "$tag" ]; then
               echo "🗑️ 正在删除旧版本: $tag"
               gh release delete "$tag" --cleanup-tag -y || true
