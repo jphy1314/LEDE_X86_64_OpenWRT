@@ -12,13 +12,12 @@
 set -euo pipefail
 
 # --------------------------------------------------------------------------
-# 全局配置 & 错误捕获基建
+# 全局配置 & 可调优参数 (CI 环境变量)
 # --------------------------------------------------------------------------
 readonly TARGET_IP="192.168.5.1"
 readonly TARGET_HOSTNAME="LEDE"
 readonly FILES_DIR="files"
 
-# --- 可调优参数（支持环境变量覆盖）---
 : "${TRIM_SCHEDULE:="0 4 * * *"}"            # fstrim 定时任务时间
 : "${SSD_READ_AHEAD_KB:="2048"}"              # SSD 预读缓存大小 (KB)
 : "${HDD_READ_AHEAD_KB:="128"}"                # HDD 预读缓存大小 (KB)
@@ -26,25 +25,14 @@ readonly FILES_DIR="files"
 : "${DEBUG_OPT:="0"}"                           # 调试模式 (0/1)
 : "${OPT_LOG_FILE:="/var/log/opt.log"}"         # 优化日志文件路径
 
-# --- 日志增强：同时写入系统日志和独立文件 ---
-log_opt() {
-    local msg="$1"
-    logger -t "Opt" "$msg"
-    echo "[$(date +'%Y-%m-%d %H:%M:%S')] $msg" >> "$OPT_LOG_FILE"
-    [ "$DEBUG_OPT" = "1" ] && echo "[DEBUG] $msg" >&2
-}
-
 # 错误捕获函数
 trap 'catch_error $? $LINENO' ERR
 catch_error() {
     local exit_code="$1"
     local line_no="$2"
     echo "::error file=${BASH_SOURCE[0]},line=${line_no}::❌ 致命错误于第 ${line_no} 行! 退出码: ${exit_code}"
-    [[ -n "${GITHUB_STEP_SUMMARY:-}" ]] && \
-        echo "❌ DIY 脚本执行失败 (Line: ${line_no})" >> "$GITHUB_STEP_SUMMARY"
     exit "$exit_code"
 }
-
 log() { echo -e "\033[36m[INFO]\033[0m $1"; }
 
 [[ -f "scripts/feeds" ]] || { echo "❌ 必须在 OpenWrt 源码根目录执行"; exit 1; }
@@ -66,11 +54,8 @@ uci set system.@system[0].hostname='${TARGET_HOSTNAME}'
 uci commit network
 uci commit system
 
-# =========================================================================
-# 【新增】：修复 Samba4 缺失全局配置标签页的 Bug，并清理祖传垃圾目录
-# =========================================================================
+# 自动配置 Samba4（若存在）
 if command -v uci >/dev/null 2>&1; then
-    # 1. 补齐缺失的全局配置块 (常规设置标签页)
     if ! uci -q get samba4.@samba[0] >/dev/null; then
         uci add samba4 samba
         uci set samba4.@samba[-1].workgroup='WORKGROUP'
@@ -78,16 +63,11 @@ if command -v uci >/dev/null 2>&1; then
         uci set samba4.@samba[-1].description='LEDE NAS'
         uci set samba4.@samba[-1].interface='lan'
     fi
-
-    # 2. 顺手清理 Lean 祖传的无用默认共享目录 (sda1, sdb1, boot)
-    while uci -q delete samba4.@sambashare[0]; do
-        :
-    done
-    
+    while uci -q delete samba4.@sambashare[0]; do :; done
     uci commit samba4
 fi
-# =========================================================================
 
+# 修正 fstab 全局配置和挂载选项
 if command -v uci >/dev/null 2>&1; then
     # 正确提取所有 global 节名（修正：过滤出纯净的节名）
     GLOBAL_SECS=\$(uci -q show fstab | grep '=global' | sed -n 's/^fstab\.\([^=]*\)=.*/\1/p')
@@ -108,10 +88,13 @@ if command -v uci >/dev/null 2>&1; then
 
     # 修正 mount 节中的 relatime 选项（仅当 options 存在且包含 relatime 时）
     for sec in \$(uci -q show fstab | grep '=mount' | sed -n 's/^fstab\.\([^=]*\)=.*/\1/p'); do
-        opts=\$(uci -q get fstab."\$sec".options || echo "")
-        if echo "\$opts" | grep -q "relatime"; then
-            new_opts=\$(echo "\$opts" | sed 's/relatime/noatime,nodiratime/g')
-            uci set fstab."\$sec".options="\$new_opts"
+        opts=\$(uci -q get fstab."\$sec".options || echo "defaults")
+        # 强行塞入 noatime，无视空值
+        if ! echo "\$opts" | grep -q "noatime"; then
+            new_opts=\$(echo "\$opts" | sed -E 's/\b(relatime|strictatime)\b,?//g')
+            [ "\$new_opts" = "defaults" ] && new_opts=""
+            uci set fstab."\$sec".options="noatime,nodiratime,\${new_opts}"
+            uci set fstab."\$sec".options="\$(uci -q get fstab."\$sec".options | sed 's/,$//; s/^,//')"
         fi
     done
 
@@ -158,9 +141,7 @@ start() {
                 if [ $matched -eq 1 ]; then
                     ethtool -K "$iface_name" tso on 2>/dev/null || true
                     ethtool -K "$iface_name" gso on 2>/dev/null || true
-                    logger -t "Network-Opt" "网卡 $iface_name (vendor $vendor) 硬件加速已启用"
-                else
-                    logger -t "Network-Opt" "网卡 $iface_name (vendor $vendor) 不在白名单，跳过加速"
+                    logger -t "Network-Opt" "网卡 $iface_name 硬件加速已启用"
                 fi
             else
                 # 无 vendor 文件的接口（如 USB 网卡），按名称启发式匹配
@@ -168,7 +149,6 @@ start() {
                     eth*|enp*|enx*|eno*)
                         ethtool -K "$iface_name" tso on 2>/dev/null || true
                         ethtool -K "$iface_name" gso on 2>/dev/null || true
-                        logger -t "Network-Opt" "网卡 $iface_name (无 vendor 信息) 按名称规则启用加速"
                         ;;
                 esac
             fi
@@ -181,29 +161,23 @@ chmod 0755 "${FILES_DIR}/etc/init.d/network-accel"
 log "✅ Procd 网卡硬件加速服务（vendor 白名单版）注入完成"
 
 # ==============================================================================
-# 阶段 3 & 4: 磁盘运行时优化 & LuCI 配置同步（企业增强版）
+# 阶段 3 & 4: 磁盘运行时优化 & LuCI 配置同步（终极排错版）
 # ==============================================================================
-
-# 【企业级架构修补：打通 CI 次元壁】
-# 使用不带单引号的 EOF，让 GitHub Actions 的环境变量在构建期直接渲染并硬编码到路由器脚本顶部
 cat << EOF > "${FILES_DIR}/etc/hotplug.d/mount/99-optimize-disk"
 #!/bin/sh
-# --- 自动注入的 CI 配置变量 ---
 OPT_LOG_FILE="${OPT_LOG_FILE}"
 DEBUG_OPT="${DEBUG_OPT}"
 SSD_READ_AHEAD_KB="${SSD_READ_AHEAD_KB}"
 HDD_READ_AHEAD_KB="${HDD_READ_AHEAD_KB}"
 ENABLE_DISCARD="${ENABLE_DISCARD}"
-# ------------------------------
 EOF
 
-# 然后使用带单引号的 'EOF'，保护原生路由器的执行逻辑不被过早解析
 cat << 'EOF' >> "${FILES_DIR}/etc/hotplug.d/mount/99-optimize-disk"
 [ "$ACTION" != "add" ] && exit 0
 [ -z "$MOUNTPOINT" ] && exit 0
 [ -z "$DEVICE" ] && exit 0
 
-# 引入日志函数（变量已在脚本头部被 CI 注入）
+# 日志函数
 log_opt() {
     local msg="$1"
     logger -t "Disk-Opt" "$msg"
@@ -211,11 +185,12 @@ log_opt() {
     [ "$DEBUG_OPT" = "1" ] && echo "[DEBUG] $msg" >&2
 }
 
+# 扩展支持常见的外置文件系统
 FSTYPE=$(awk -v mp="$MOUNTPOINT" '$2==mp {print $3}' /proc/mounts)
 
 case "$FSTYPE" in
-    ext4|btrfs|xfs|f2fs|zfs)
-        # 【修复：精准提取块设备名，完美兼容 NVMe (nvme0n1p1) 与 eMMC (mmcblk0p1)】
+    ext4|btrfs|xfs|f2fs|zfs|ntfs|ntfs3|exfat|vfat)
+        # 【修复1：精准提取块设备名，完美兼容 NVMe (nvme0n1p1) 与 eMMC (mmcblk0p1)】
         DEV_RAW="${DEVICE##*/}"
         case "$DEV_RAW" in
             nvme*p*|mmcblk*p*) DEV_BASE=$(echo "$DEV_RAW" | sed -E 's/p[0-9]+$//') ;;
@@ -224,110 +199,105 @@ case "$FSTYPE" in
 
         # 判断是否为可移动设备（USB）
         REMOVABLE=0
-        if [ -n "$DEV_BASE" ] && [ -f "/sys/block/$DEV_BASE/removable" ]; then
-            REMOVABLE=$(cat "/sys/block/$DEV_BASE/removable")
-        fi
-
+        [ -n "$DEV_BASE" ] && [ -f "/sys/block/$DEV_BASE/removable" ] && REMOVABLE=$(cat "/sys/block/$DEV_BASE/removable")
+        
         # 获取 rotational 值（0=SSD,1=HDD）
-        if [ -n "$DEV_BASE" ] && [ -f "/sys/block/$DEV_BASE/queue/rotational" ]; then
-            rotational=$(cat "/sys/block/$DEV_BASE/queue/rotational")
-        else
-            rotational=1  # 默认保守设为机械硬盘
-        fi
+        rotational=1
+        [ -n "$DEV_BASE" ] && [ -f "/sys/block/$DEV_BASE/queue/rotational" ] && rotational=$(cat "/sys/block/$DEV_BASE/queue/rotational")
 
         # ---------- 1. 智能预读缓存（支持环境变量）----------
         if [ -n "$DEV_BASE" ] && [ -f "/sys/block/$DEV_BASE/queue/read_ahead_kb" ]; then
             if [ "$REMOVABLE" = "1" ]; then
                 # USB 设备：降低预读，提升响应
-                echo 128 > "/sys/block/$DEV_BASE/queue/read_ahead_kb" 2>/dev/null && \
-                    log_opt "USB $DEV_BASE 预读缓存设为 128KB"
+                echo 128 > "/sys/block/$DEV_BASE/queue/read_ahead_kb" 2>/dev/null && log_opt "USB $DEV_BASE 预读缓存设为 128KB"
             elif [ "$rotational" = "0" ]; then
-                echo "$SSD_READ_AHEAD_KB" > "/sys/block/$DEV_BASE/queue/read_ahead_kb" 2>/dev/null && \
-                    log_opt "SSD $DEV_BASE 预读缓存设为 ${SSD_READ_AHEAD_KB}KB"
+                echo "$SSD_READ_AHEAD_KB" > "/sys/block/$DEV_BASE/queue/read_ahead_kb" 2>/dev/null && log_opt "SSD $DEV_BASE 预读缓存设为 ${SSD_READ_AHEAD_KB}KB"
             else
-                echo "$HDD_READ_AHEAD_KB" > "/sys/block/$DEV_BASE/queue/read_ahead_kb" 2>/dev/null && \
-                    log_opt "HDD $DEV_BASE 预读缓存设为 ${HDD_READ_AHEAD_KB}KB"
+                echo "$HDD_READ_AHEAD_KB" > "/sys/block/$DEV_BASE/queue/read_ahead_kb" 2>/dev/null && log_opt "HDD $DEV_BASE 预读缓存设为 ${HDD_READ_AHEAD_KB}KB"
             fi
         fi
 
         # ---------- 2. I/O 调度器优化 ----------
-        # 【严谨修正：使用 if-elif 结构替代容易产生假阳性的 || && 逻辑】
         set_scheduler() {
             local dev="$1"
             local sched1="$2"
             local sched2="$3"
             if echo "$sched1" > "/sys/block/$dev/queue/scheduler" 2>/dev/null; then
-                log_opt "调度器 $dev 成功设为 $sched1"
+                log_opt "调度器 $dev 设为 $sched1"
             elif echo "$sched2" > "/sys/block/$dev/queue/scheduler" 2>/dev/null; then
-                log_opt "调度器 $dev 成功设为 $sched2"
+                log_opt "调度器 $dev 设为 $sched2"
             fi
         }
 
         if [ -n "$DEV_BASE" ] && [ -f "/sys/block/$DEV_BASE/queue/scheduler" ]; then
-            if [ "$REMOVABLE" = "1" ]; then
-                # USB 设备使用 none 或 noop，减少磁头寻道算法开销
-                set_scheduler "$DEV_BASE" "none" "noop"
-            elif [ "$rotational" = "0" ]; then
-                # SSD: 使用 none 或 noop
+            if [ "$REMOVABLE" = "1" ] || [ "$rotational" = "0" ]; then
+                # USB 或 SSD: 使用 none 或 noop
                 set_scheduler "$DEV_BASE" "none" "noop"
             else
-                # HDD: 机械硬盘使用 mq-deadline 或 bfq，优化寻道顺序
+                # HDD: 使用 mq-deadline 或 bfq
                 set_scheduler "$DEV_BASE" "mq-deadline" "bfq"
             fi
         fi
 
-        # ---------- 3. 挂载选项动态优化（保留所有原始选项，仅修改时间相关）----------
+        # ---------- 3. 挂载选项动态优化（破除报错陷阱）----------
         # 获取当前挂载选项
         current_opts=$(awk -v mp="$MOUNTPOINT" '$2==mp {print $4}' /proc/mounts)
         
         # 移除已有的 noatime/nodiratime/relatime 等时间相关选项，避免重复
         new_opts=$(echo "$current_opts" | sed -E 's/\b(noatime|nodiratime|relatime|strictatime|lazyatime|sync)\b,?//g; s/,$//; s/,,+/,/g')
         
-        # 构建优化基础选项：彻底关闭访问时间记录，大幅减少元数据写入
+        # 构建优化基础选项
         base_opts="noatime,nodiratime"
         
-        # 【致命 Bug 防御：绝对禁止给 USB 移动设备添加 sync 参数！这会导致 U 盘失去页缓存保护，性能暴跌至几MB/s 且闪存被迅速烧毁】
-        if [ "$REMOVABLE" = "1" ]; then
-            : # 维持原生系统的 async (异步挂载)，保护 USB 设备寿命与读写性能
-        fi
-        
-        # 根据硬盘类型添加 data=ordered / commit
-        if [ "$rotational" = "0" ]; then
-            base_opts="${base_opts},data=ordered"
-            # 仅在启用 discard 且原来没有时添加（防重复）
-            if [ "$ENABLE_DISCARD" = "1" ] && ! echo "$new_opts" | grep -q '\bdiscard\b'; then
-                base_opts="${base_opts},discard"
+        # 【核心修复】：Ext4 专属参数必须被严格限制，否则 Btrfs/NTFS 会报错并拒绝挂载！
+        if [ "$FSTYPE" = "ext4" ]; then
+            if [ "$rotational" = "0" ]; then
+                base_opts="${base_opts},data=ordered"
+                [ "$ENABLE_DISCARD" = "1" ] && ! echo "$new_opts" | grep -q '\bdiscard\b' && base_opts="${base_opts},discard"
+            else
+                base_opts="${base_opts},data=ordered,commit=30"
             fi
-        else
-            base_opts="${base_opts},data=ordered,commit=30" # 机械盘每 30 秒刷入一次数据，大幅减少噪音和磁头磨损
+        elif [ "$rotational" = "0" ] && [ "$ENABLE_DISCARD" = "1" ]; then
+            # 其他支持 discard 的文件系统 (btrfs, xfs) 仅追加 discard
+            if [ "$FSTYPE" = "btrfs" ] || [ "$FSTYPE" = "xfs" ] || [ "$FSTYPE" = "f2fs" ]; then
+                ! echo "$new_opts" | grep -q '\bdiscard\b' && base_opts="${base_opts},discard"
+            fi
         fi
         
         # 合并并去除可能的重复逗号
         final_opts="${base_opts},${new_opts}"
-        final_opts=$(echo "$final_opts" | sed 's/^,//; s/,,*/,/g')
+        final_opts=$(echo "$final_opts" | sed 's/^,//; s/,,*/,/g; s/,$//')
         
         if mountpoint -q "$MOUNTPOINT" && [ -w "$MOUNTPOINT" ]; then
             if mount -o remount,"$final_opts" "$MOUNTPOINT" 2>/dev/null; then
-                log_opt "已优化 $MOUNTPOINT 挂载选项: $final_opts"
+                log_opt "已优化 $MOUNTPOINT 挂载选项: $final_opts ($FSTYPE)"
             else
-                log_opt "⚠ 无法修改 $MOUNTPOINT 挂载选项"
+                log_opt "⚠ 无法修改 $MOUNTPOINT 挂载选项 (可能是文件系统不支持某些参数)"
             fi
         fi
 
-        # ---------- 4. LuCI 配置反向修复（持久化）----------
+        # ---------- 4. LuCI 配置反向修复（破除空值陷阱）----------
         if command -v uci >/dev/null 2>&1 && command -v block >/dev/null 2>&1; then
+            # 同时兼容 UUID 和 DEVICE 的匹配方式
             UUID=$(block info "$DEVICE" | grep -o 'UUID="[^"]*"' | cut -d'"' -f2 | head -n1)
-            if [ -n "$UUID" ]; then
-                SEC=$(uci -q show fstab | grep "uuid='$UUID'" | cut -d'.' -f2 | head -n1)
-                if [ -n "$SEC" ]; then
-                    OPTS=$(uci -q get fstab."$SEC".options || echo "")
-                    if echo "$OPTS" | grep -q "relatime"; then
-                        # 强行劫持并修正界面点击生成的 relatime
-                        NEW_OPTS=$(echo "$OPTS" | sed 's/relatime/noatime,nodiratime/g')
-                        uci set fstab."$SEC".options="$NEW_OPTS"
-                        uci commit fstab
-                        log_opt "已修复 LuCI 生成的 relatime 参数"
-                    fi
+            SEC=""
+            [ -n "$UUID" ] && SEC=$(uci -q show fstab | grep "uuid='$UUID'" | cut -d'.' -f2 | head -n1)
+            [ -z "$SEC" ] && SEC=$(uci -q show fstab | grep "device='$DEVICE'" | cut -d'.' -f2 | head -n1)
+
+            if [ -n "$SEC" ]; then
+                OPTS=$(uci -q get fstab."$SEC".options || echo "")
+                
+                # 【核心修复】：不管它是空值、defaults 还是 relatime，只要没有 noatime，就强行塞进去！
+                if ! echo "$OPTS" | grep -q "noatime"; then
+                    NEW_OPTS=$(echo "$OPTS" | sed -E 's/\b(relatime|strictatime|sync)\b,?//g')
+                    [ -z "$NEW_OPTS" ] || [ "$NEW_OPTS" = "defaults" ] && NEW_OPTS=""
+                    
+                    FINAL_UCI_OPTS="noatime,nodiratime,${NEW_OPTS}"
+                    FINAL_UCI_OPTS=$(echo "$FINAL_UCI_OPTS" | sed 's/^,//; s/,,*/,/g; s/,$//')
+                    
+                    uci set fstab."$SEC".options="$FINAL_UCI_OPTS"
+                    uci commit fstab
+                    log_opt "已暴改 LuCI 生成的挂载参数: -> $FINAL_UCI_OPTS"
                 fi
             fi
         fi
@@ -336,7 +306,7 @@ esac
 EOF
 
 chmod 0755 "${FILES_DIR}/etc/hotplug.d/mount/99-optimize-disk"
-log "✅ 磁盘优化与 LuCI 反向劫持（企业增强版）注入完成"
+log "✅ 磁盘优化与 LuCI 反向劫持（终极修障版）注入完成"
 
 # ==============================================================================
 # 阶段 5: SSD 定时 TRIM（扩展支持 ext4/btrfs/xfs/f2fs/zfs）
@@ -344,19 +314,15 @@ log "✅ 磁盘优化与 LuCI 反向劫持（企业增强版）注入完成"
 CRON_FILE="${FILES_DIR}/etc/crontabs/root"
 mkdir -p "$(dirname "$CRON_FILE")"
 
-# 优雅拼接 Cron 行（使用双引号允许 TRIM_SCHEDULE 变量在运行期注入，内部 $ 需转义防被当场解析）
 CRON_LINE="${TRIM_SCHEDULE} command -v fstrim >/dev/null && for fs in ext4 btrfs xfs f2fs zfs; do for mp in \$(awk -v fs=\"\$fs\" '\$3==fs {print \$2}' /proc/mounts); do fstrim \"\$mp\" 2>/dev/null; done; done"
 
 if [ -f "$CRON_FILE" ]; then
     if ! grep -Fxq "$CRON_LINE" "$CRON_FILE"; then
         echo "$CRON_LINE" >> "$CRON_FILE"
-        log "✅ fstrim cron 任务已添加（时间: ${TRIM_SCHEDULE}）"
-    else
-        log "ℹ️ fstrim cron 任务已存在，跳过"
     fi
 else
     echo "$CRON_LINE" > "$CRON_FILE"
-    log "✅ fstrim cron 任务已创建（时间: ${TRIM_SCHEDULE}）"
 fi
+log "✅ fstrim cron 任务配置完成"
 
-log "🎉 DIY Part 2 脚本（满血带注释重构版）执行完成"
+log "🎉 DIY Part 2 脚本执行完成"
