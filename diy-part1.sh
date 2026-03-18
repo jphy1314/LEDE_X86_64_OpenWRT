@@ -9,7 +9,7 @@ set -euo pipefail
 # ---[ 日志与可观测性模块 ] ---
 log_info() { echo -e "\e[32m[INFO][$(date +'%Y-%m-%dT%H:%M:%S%z')] $1\e[0m"; }
 log_warn() { echo -e "\e[33m[WARN][$(date +'%Y-%m-%dT%H:%M:%S%z')] $1\e[0m"; }
-log_err()  { echo -e "\e[31m[ERROR] [$(date +'%Y-%m-%dT%H:%M:%S%z')] $1\e[0m" >&2; exit 1; }
+log_err()  { echo -e "\e[31m[ERROR][$(date +'%Y-%m-%dT%H:%M:%S%z')] $1\e[0m" >&2; exit 1; }
 
 readonly FEEDS_CONF="feeds.conf.default"
 readonly FEEDS_CONF_BAK="${FEEDS_CONF}.orig"
@@ -22,10 +22,11 @@ readonly SCRUB_LIST=(
     "openclash"
 )
 
-# 待注入的自定义源（规范格式：<类型> <源名称> <URL地址;分支>）
+# 待注入的自定义源（规范格式：<类型> <源名称> <URL地址>）
+# 【修复】：已彻底移除末尾的 ;main 分支指定，让 git 自动追随作者的最新默认分支 (无论是 main 还是 master)
 readonly CUSTOM_FEEDS=(
-    "src-git passwall_packages https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git;main"
-    "src-git passwall_luci https://github.com/Openwrt-Passwall/openwrt-passwall.git;main"
+    "src-git passwall_packages https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git"
+    "src-git passwall_luci https://github.com/Openwrt-Passwall/openwrt-passwall.git"
 )
 
 # --- [ 环境预检与备份 ] ---
