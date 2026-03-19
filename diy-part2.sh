@@ -31,7 +31,7 @@ log() { echo -e "\033[36m[INFO]\033[0m $1"; }
 mkdir -p "${FILES_DIR}/etc/"{uci-defaults,init.d,hotplug.d/mount,config,crontabs}
 
 # ==============================================================================
-# 阶段 1: 系统初始化与 fstab 修复
+# 阶段 1: 系统初始化修复 (Samba4 补齐与全局 Fstab 清理)
 # ==============================================================================
 cat << EOF > "${FILES_DIR}/etc/uci-defaults/99-system-init"
 #!/bin/sh
@@ -62,27 +62,52 @@ if command -v uci >/dev/null 2>&1; then
     uci set fstab.@global[-1].auto_mount='1'
     uci set fstab.@global[-1].delay_root='5'
     uci set fstab.@global[-1].check_fs='0'
-
-    # 纯 POSIX 方案安全移除旧的 relatime (杜绝 BusyBox sed -E 不兼容)
-    for sec in \$(uci -q show fstab | grep '=mount' | sed -n 's/^fstab\.\([^=]*\)=.*/\1/p'); do
-        opts=\$(uci -q get fstab."\$sec".options || echo "defaults")
-        if ! echo "\$opts" | grep -q "noatime"; then
-            new_opts=\$(echo ",\$opts," | sed 's/,relatime,/,/g; s/,strictatime,/,/g; s/,defaults,/,/g')
-            new_opts=\$(echo "\$new_opts" | sed 's/,,*/,/g; s/^,//; s/,$//')
-            
-            uci set fstab."\$sec".options="noatime,nodiratime\${new_opts:+,}\${new_opts}"
-        fi
-    done
     uci commit fstab
 fi
 [ -x /etc/init.d/network-accel ] && /etc/init.d/network-accel enable
 exit 0
 EOF
 chmod 0755 "${FILES_DIR}/etc/uci-defaults/99-system-init"
-log "✅ 系统初始化及 fstab 基础修复注入完成"
+log "✅ 系统初始化基础修复注入完成"
 
 # ==============================================================================
-# 阶段 2: Procd 网卡硬件加速服务
+# 阶段 2: 注入 fstab 同步拦截器 (彻底解决 LuCI 点击生成配置时重置 relatime 的顽疾)
+# ==============================================================================
+FSTAB_INIT="package/system/fstools/files/fstab.init"
+if [ -f "$FSTAB_INIT" ]; then
+    log "🔥 正在注入 fstab 同步拦截器 (Synchronous Interceptor)..."
+
+    # 创建临时文件存放要插入的函数
+    TMP_SANITIZE=$(mktemp)
+    cat << 'FUNC_EOF' > "$TMP_SANITIZE"
+sanitize_fstab() {
+    if command -v uci >/dev/null 2>&1; then
+        local changed=0
+        for sec in $(uci -q show fstab | grep "=mount" | sed -n "s/^fstab\.\([^=]*\)=.*/\1/p"); do
+            opts=$(uci -q get fstab."$sec".options || echo "defaults")
+            if ! echo "$opts" | grep -q "noatime"; then
+                new_opts=$(echo ",$opts," | sed "s/,relatime,/,/g; s/,strictatime,/,/g; s/,defaults,/,/g" | sed "s/,,*/,/g; s/^,//; s/,$//")
+                uci set fstab."$sec".options="noatime,nodiratime${new_opts:+,}${new_opts}"
+                changed=1
+            fi
+        done
+        [ "$changed" = "1" ] && uci commit fstab
+    fi
+}
+FUNC_EOF
+
+    # 在 START=99 行后插入函数定义（使用 r 命令避免转义地狱）
+    sed -i "/^START=/r $TMP_SANITIZE" "$FSTAB_INIT"
+    rm -f "$TMP_SANITIZE"
+
+    # 将原始的 /sbin/block mount 替换为先执行清洗再挂载（用分号连接，兼容所有 shell）
+    sed -i 's|/sbin/block mount|sanitize_fstab; /sbin/block mount|g' "$FSTAB_INIT"
+
+    log "✅ fstab 同步拦截器注入完成，从此免疫一切 LuCI 生成脏数据！"
+fi
+
+# ==============================================================================
+# 阶段 3: Procd 网卡硬件加速服务
 # ==============================================================================
 cat << 'EOF' > "${FILES_DIR}/etc/init.d/network-accel"
 #!/bin/sh /etc/rc.common
@@ -95,7 +120,7 @@ start() {
         for iface in /sys/class/net/*; do [ -e "$iface" ] || continue
             iface_name=$(basename "$iface")
             case "$iface_name" in lo|docker*|veth*|br-*) continue ;; esac
-            
+
             vendor_file="$iface/device/vendor"
             if [ -f "$vendor_file" ]; then
                 vendor=$(cat "$vendor_file" 2>/dev/null | tr -d '\n')
@@ -106,7 +131,6 @@ start() {
                 if [ $matched -eq 1 ]; then
                     ethtool -K "$iface_name" tso on 2>/dev/null || true
                     ethtool -K "$iface_name" gso on 2>/dev/null || true
-                    logger -t "Network-Opt" "网卡 $iface_name 硬件加速已启用"
                 fi
             else
                 case "$iface_name" in
@@ -124,7 +148,7 @@ chmod 0755 "${FILES_DIR}/etc/init.d/network-accel"
 log "✅ Procd 网卡硬件加速服务注入完成"
 
 # ==============================================================================
-# 阶段 3 & 4: 磁盘运行时优化 & LuCI 配置同步（终极兼容版）
+# 阶段 4: 物理磁盘硬件级运行时优化 (调度器、预读与底层挂载参数)
 # ==============================================================================
 cat << EOF > "${FILES_DIR}/etc/hotplug.d/mount/99-optimize-disk"
 #!/bin/sh
@@ -141,12 +165,10 @@ cat << 'EOF' >> "${FILES_DIR}/etc/hotplug.d/mount/99-optimize-disk"
 [ -z "$DEVICE" ] && exit 0
 
 mkdir -p "$(dirname "$OPT_LOG_FILE")" 2>/dev/null || true
-
 log_opt() {
     local msg="$1"
     logger -t "Disk-Opt" "$msg"
     [ -w "$OPT_LOG_FILE" ] && echo "[$(date +'%Y-%m-%d %H:%M:%S')] $msg" >> "$OPT_LOG_FILE"
-    [ "$DEBUG_OPT" = "1" ] && echo "[DEBUG] $msg" >&2
 }
 
 FSTYPE=$(awk -v mp="$MOUNTPOINT" '$2==mp {print $3}' /proc/mounts)
@@ -154,7 +176,6 @@ FSTYPE=$(awk -v mp="$MOUNTPOINT" '$2==mp {print $3}' /proc/mounts)
 case "$FSTYPE" in
     ext4|btrfs|xfs|f2fs|zfs|ntfs|ntfs3|exfat|vfat)
         DEV_RAW="${DEVICE##*/}"
-        # 【终极修复 1】：采用纯正的 POSIX BRE 替换扩展正则 -E，100%兼容极简 BusyBox
         case "$DEV_RAW" in
             nvme*p*|mmcblk*p*) DEV_BASE=$(echo "$DEV_RAW" | sed 's/p[0-9][0-9]*$//') ;;
             *) DEV_BASE=$(echo "$DEV_RAW" | sed 's/[0-9][0-9]*$//') ;;
@@ -180,10 +201,8 @@ case "$FSTYPE" in
         # 2. IO调度器
         set_scheduler() {
             local dev="$1"; local sched1="$2"; local sched2="$3"
-            if echo "$sched1" > "/sys/block/$dev/queue/scheduler" 2>/dev/null; then
-                log_opt "调度器 $dev 设为 $sched1"
-            elif echo "$sched2" > "/sys/block/$dev/queue/scheduler" 2>/dev/null; then
-                log_opt "调度器 $dev 设为 $sched2"
+            if echo "$sched1" > "/sys/block/$dev/queue/scheduler" 2>/dev/null; then log_opt "调度器 $dev 设为 $sched1"
+            elif echo "$sched2" > "/sys/block/$dev/queue/scheduler" 2>/dev/null; then log_opt "调度器 $dev 设为 $sched2"
             fi
         }
         if [ -n "$DEV_BASE" ] && [ -f "/sys/block/$DEV_BASE/queue/scheduler" ]; then
@@ -194,10 +213,8 @@ case "$FSTYPE" in
             fi
         fi
 
-        # 3. 挂载选项动态优化 (破除兼容性与 \b 陷阱)
+        # 3. 硬件级挂载选项动态优化 (UI 看不见，但底层疯狂加速)
         current_opts=$(awk -v mp="$MOUNTPOINT" '$2==mp {print $4}' /proc/mounts)
-        
-        # 【终极修复 2】：原生逗号包裹清洗法，彻底替代不兼容的 sed -E \b
         clean_opts=$(echo ",$current_opts," | sed 's/,noatime,/,/g; s/,nodiratime,/,/g; s/,relatime,/,/g; s/,strictatime,/,/g; s/,lazyatime,/,/g; s/,sync,/,/g')
         clean_opts=$(echo "$clean_opts" | sed 's/,,*/,/g; s/^,//; s/,$//')
         
@@ -220,38 +237,14 @@ case "$FSTYPE" in
         
         if mountpoint -q "$MOUNTPOINT" && [ -w "$MOUNTPOINT" ]; then
             if /bin/mount -o remount,"$final_opts" "$MOUNTPOINT" 2>/dev/null; then
-                log_opt "已优化 $MOUNTPOINT 挂载选项: $final_opts ($FSTYPE)"
-            else
-                log_opt "⚠ 无法修改 $MOUNTPOINT 挂载选项 (可能是文件系统不支持某些参数)"
-            fi
-        fi
-
-        # 4. LuCI 配置反向修复 (破除空值陷阱)
-        if command -v uci >/dev/null 2>&1 && command -v block >/dev/null 2>&1; then
-            UUID=$(block info "$DEVICE" | grep -o 'UUID="[^"]*"' | cut -d'"' -f2 | head -n1)
-            SEC=""
-            [ -n "$UUID" ] && SEC=$(uci -q show fstab | grep "uuid='$UUID'" | cut -d'.' -f2 | head -n1)
-            [ -z "$SEC" ] && SEC=$(uci -q show fstab | grep "device='$DEVICE'" | cut -d'.' -f2 | head -n1)
-
-            if [ -n "$SEC" ]; then
-                OPTS=$(uci -q get fstab."$SEC".options || echo "")
-                if ! echo "\$OPTS" | grep -q "noatime"; then
-                    NEW_OPTS=$(echo ",\$OPTS," | sed 's/,relatime,/,/g; s/,strictatime,/,/g; s/,sync,/,/g; s/,defaults,/,/g')
-                    NEW_OPTS=$(echo "\$NEW_OPTS" | sed 's/,,*/,/g; s/^,//; s/,$//')
-                    
-                    FINAL_UCI_OPTS="noatime,nodiratime${NEW_OPTS:+,}${NEW_OPTS}"
-                    
-                    uci set fstab."$SEC".options="$FINAL_UCI_OPTS"
-                    uci commit fstab
-                    log_opt "已暴改 LuCI 生成的挂载参数: -> $FINAL_UCI_OPTS"
-                fi
+                log_opt "已底层优化 $MOUNTPOINT 挂载选项: $final_opts ($FSTYPE)"
             fi
         fi
         ;;
 esac
 EOF
 chmod 0755 "${FILES_DIR}/etc/hotplug.d/mount/99-optimize-disk"
-log "✅ 磁盘优化与 LuCI 反向劫持（原生防弹版）注入完成"
+log "✅ 物理磁盘硬件级热插拔优化注入完成"
 
 # ==============================================================================
 # 阶段 5: SSD 定时 TRIM
@@ -260,15 +253,10 @@ CRON_FILE="${FILES_DIR}/etc/crontabs/root"
 mkdir -p "$(dirname "$CRON_FILE")"
 [ -f "$CRON_FILE" ] && sed -i '/fstrim/d' "$CRON_FILE" 2>/dev/null || true
 
-# 【终极修复 3】：变量解耦注入，完全规避反斜杠及嵌套引号地狱
-# 步骤 1：利用 printf 严谨写入 CI 解析的时间变量（无换行）
 printf "%s " "${TRIM_SCHEDULE}" >> "$CRON_FILE"
-
-# 步骤 2：利用无转义的单引号 heredoc 注入纯原生 awk 脚本，保证最终 crontab 里的特殊符号完好无损
 cat << 'EOF' >> "$CRON_FILE"
 command -v fstrim >/dev/null && for fs in ext4 btrfs xfs f2fs zfs; do for mp in $(awk -v fs="$fs" '$3==fs {print $2}' /proc/mounts); do fstrim "$mp" 2>/dev/null; done; done
 EOF
-
 log "✅ fstrim cron 任务配置完成"
 
 log "🎉 DIY Part 2 脚本（满血100分排错版）执行完成"
