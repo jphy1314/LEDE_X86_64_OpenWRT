@@ -537,23 +537,36 @@ jobs:
           touch release.txt
           echo "status=success" >> $GITHUB_OUTPUT
 
+      # [纯原生重构] 替代软瘫的 softprops/action-gh-release，极速创建发布并上传固件
       - name: Upload Firmware to Release
-        uses: softprops/action-gh-release@v2
-        if: steps.tag.outputs.status == 'success'
+        if: steps.tag.outputs.status == 'success' && env.UPLOAD_RELEASE == 'true'
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: ${{ steps.tag.outputs.release_tag }}
-          body_path: release.txt
-          files: ${{ env.FIRMWARE }}/*
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "🚀 开始使用 GitHub CLI 创建 Release 并上传固件..."
+          gh release create "${{ steps.tag.outputs.release_tag }}" \
+            --title "${{ steps.tag.outputs.release_tag }}" \
+            --notes-file release.txt \
+            ${{ env.FIRMWARE }}/*
+          echo "✅ Release 创建及固件上传成功！"
 
-      # 自动清理过往冗余 Action 记录，释放额度
+      # [纯原生重构] 替代弃更的 Mattraks/delete-workflow-runs，自动清理历史运行记录
       - name: Delete Old Workflow Runs
-        uses: Mattraks/delete-workflow-runs@v2
-        with:
-          retain_days: 0
-          keep_minimum_runs: 2
-          token: ${{ secrets.GITHUB_TOKEN }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "开始清理过旧的 Workflow 运行记录，仅保留最新 2 个..."
+          
+          # 利用 jq JSON 引擎健壮提取 ID，并调用 GitHub 原生 API 进行静默删除
+          gh run list --workflow "${{ github.workflow }}" --limit 100 --json databaseId -q '.[].databaseId' | tail -n +3 | while IFS= read -r run_id; do
+            if [ -n "$run_id" ]; then
+              echo "🗑️ 正在删除冗余运行记录: $run_id"
+              gh api -X DELETE "/repos/${{ github.repository }}/actions/runs/$run_id" --silent || true
+            fi
+          done
+          echo "✅ Action 运行记录清理完成！"
 
       # 自动清理历史 Release 记录 (企业级原生方案，彻底剔除已废弃的第三方依赖)
       - name: Remove Old Releases
