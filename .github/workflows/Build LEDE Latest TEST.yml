@@ -31,7 +31,7 @@ jobs:
     
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 1
 
@@ -483,7 +483,7 @@ jobs:
           echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
 
       - name: Upload Bin Directory
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         if: steps.compile.outputs.status == 'success' && env.UPLOAD_BIN_DIR == 'true'
         with:
           name: OpenWrt_bin${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
@@ -520,7 +520,7 @@ jobs:
           fi
 
       - name: Upload Firmware Directory
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         if: steps.organize.outputs.status == 'success'
         with:
           name: OpenWrt_firmware${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
