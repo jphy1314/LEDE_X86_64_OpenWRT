@@ -227,21 +227,16 @@ case "$FSTYPE" in
             fi
         fi
 
-        # 3. 挂载选项动态优化 (已移除 data=ordered 避免 remount 报错)
+        # 3. 挂载选项动态优化 (【真正彻底移除】所有会导致 remount 失败的文件系统专属参数)
         current_opts=$(awk -v mp="$MOUNTPOINT" '$2==mp {print $4}' /proc/mounts)
         clean_opts=$(echo ",$current_opts," | sed 's/,noatime,/,/g; s/,nodiratime,/,/g; s/,relatime,/,/g; s/,strictatime,/,/g; s/,lazyatime,/,/g; s/,sync,/,/g')
         clean_opts=$(echo "$clean_opts" | sed 's/,,*/,/g; s/^,//; s/,$//')
         
         base_opts="noatime,nodiratime"
         
-        if [ "$FSTYPE" = "ext4" ]; then
-            if [ "$rotational" = "0" ]; then
-                [ "$ENABLE_DISCARD" = "1" ] && ! echo ",$clean_opts," | grep -q ",discard," && base_opts="${base_opts},discard"
-            else
-                base_opts="${base_opts},commit=30"
-            fi
-        elif [ "$rotational" = "0" ] && [ "$ENABLE_DISCARD" = "1" ]; then
-            if [ "$FSTYPE" = "btrfs" ] || [ "$FSTYPE" = "xfs" ] || [ "$FSTYPE" = "f2fs" ]; then
+        # 仅针对支持的固态硬盘追加 discard (TRIM)，绝不碰 data=ordered 和 commit=30
+        if [ "$rotational" = "0" ] && [ "$ENABLE_DISCARD" = "1" ]; then
+            if [ "$FSTYPE" = "ext4" ] || [ "$FSTYPE" = "btrfs" ] || [ "$FSTYPE" = "xfs" ] || [ "$FSTYPE" = "f2fs" ]; then
                 ! echo ",$clean_opts," | grep -q ",discard," && base_opts="${base_opts},discard"
             fi
         fi
@@ -251,6 +246,8 @@ case "$FSTYPE" in
         if mountpoint -q "$MOUNTPOINT" && [ -w "$MOUNTPOINT" ]; then
             if /bin/mount -o remount,"$final_opts" "$MOUNTPOINT" 2>/dev/null; then
                 log_opt "已底层优化 $MOUNTPOINT 挂载选项: $final_opts ($FSTYPE)"
+            else
+                log_opt "⚠ 无法修改 $MOUNTPOINT 挂载选项: $final_opts"
             fi
         fi
 
