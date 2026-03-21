@@ -64,10 +64,8 @@ if command -v uci >/dev/null 2>&1; then
     uci set fstab.@global[-1].delay_root='5'
     uci set fstab.@global[-1].check_fs='0'
 
-    # 纯 POSIX 方案安全移除旧的 relatime
     for sec in \$(uci -q show fstab | grep '=mount' | sed -n 's/^fstab\.\([^=]*\)=.*/\1/p'); do
         target=\$(uci -q get fstab."\$sec".target || echo "")
-        # 【护盾】：绝对不碰系统引导盘和内部虚拟分区，保持系统纯净
         case "\$target" in / | /rom | /overlay | /boot | /mnt/loop*) continue ;; esac
 
         opts=\$(uci -q get fstab."\$sec".options || echo "defaults")
@@ -99,7 +97,6 @@ sanitize_fstab() {
         local changed=0
         for sec in $(uci -q show fstab | grep "=mount" | sed -n "s/^fstab\.\([^=]*\)=.*/\1/p"); do
             local target=$(uci -q get fstab."$sec".target || echo "")
-            # 【护盾】：不碰系统盘
             case "$target" in / | /rom | /overlay | /boot | /mnt/loop*) continue ;; esac
 
             local opts=$(uci -q get fstab."$sec".options || echo "defaults")
@@ -117,7 +114,6 @@ FUNC_EOF
     sed -i "/^START=/r $TMP_SANITIZE" "$FSTAB_INIT"
     rm -f "$TMP_SANITIZE"
     sed -i 's|/sbin/block mount|sanitize_fstab; /sbin/block mount|g' "$FSTAB_INIT"
-
     log "✅ fstab 同步拦截器注入完成"
 fi
 
@@ -228,7 +224,7 @@ case "$FSTYPE" in
             fi
         fi
 
-        # 3. 挂载选项动态优化
+        # 3. 挂载选项动态优化 (已移除 data=ordered 避免 remount 报错)
         current_opts=$(awk -v mp="$MOUNTPOINT" '$2==mp {print $4}' /proc/mounts)
         clean_opts=$(echo ",$current_opts," | sed 's/,noatime,/,/g; s/,nodiratime,/,/g; s/,relatime,/,/g; s/,strictatime,/,/g; s/,lazyatime,/,/g; s/,sync,/,/g')
         clean_opts=$(echo "$clean_opts" | sed 's/,,*/,/g; s/^,//; s/,$//')
@@ -237,10 +233,9 @@ case "$FSTYPE" in
         
         if [ "$FSTYPE" = "ext4" ]; then
             if [ "$rotational" = "0" ]; then
-                base_opts="${base_opts},data=ordered"
                 [ "$ENABLE_DISCARD" = "1" ] && ! echo ",$clean_opts," | grep -q ",discard," && base_opts="${base_opts},discard"
             else
-                base_opts="${base_opts},data=ordered,commit=30"
+                base_opts="${base_opts},commit=30"
             fi
         elif [ "$rotational" = "0" ] && [ "$ENABLE_DISCARD" = "1" ]; then
             if [ "$FSTYPE" = "btrfs" ] || [ "$FSTYPE" = "xfs" ] || [ "$FSTYPE" = "f2fs" ]; then
@@ -265,7 +260,6 @@ case "$FSTYPE" in
 
             if [ -n "$SEC" ]; then
                 TARGET=$(uci -q get fstab."$SEC".target || echo "")
-                # 【护盾】：绝不洗涤系统盘的 UI 配置
                 case "$TARGET" in
                     /|/rom|/overlay|/boot|/mnt/loop*) ;;
                     *)
@@ -289,9 +283,8 @@ chmod 0755 "${FILES_DIR}/etc/hotplug.d/mount/99-optimize-disk"
 log "✅ 物理磁盘硬件级热插拔优化注入完成"
 
 # ==============================================================================
-# 阶段 5: SSD 定时 TRIM (彻底解耦防覆盖版)
+# 阶段 5: SSD 定时 TRIM (利用 uci-defaults 开机注入，完美绕过编译期抹除)
 # ==============================================================================
-# 【核心重构】：生成独立可执行程序，杜绝了 Bash 引号转义的史诗级难题
 cat << 'EOF' > "${FILES_DIR}/usr/bin/auto-fstrim"
 #!/bin/sh
 command -v fstrim >/dev/null || exit 0
@@ -303,14 +296,13 @@ done
 EOF
 chmod 0755 "${FILES_DIR}/usr/bin/auto-fstrim"
 
-# 【核心重构】：通过 uci-defaults 首次开机时写入，彻底解决被 Lean 源码抹除的问题
 cat << EOF > "${FILES_DIR}/etc/uci-defaults/99-system-cron"
 #!/bin/sh
 CRON_FILE="/etc/crontabs/root"
 mkdir -p "/etc/crontabs"
-touch "\$CRON_FILE"
-sed -i '/auto-fstrim/d' "\$CRON_FILE" 2>/dev/null || true
-echo "${TRIM_SCHEDULE} /usr/bin/auto-fstrim" >> "\$CRON_FILE"
+touch "$CRON_FILE"
+sed -i '/auto-fstrim/d' "$CRON_FILE" 2>/dev/null || true
+echo "${TRIM_SCHEDULE} /usr/bin/auto-fstrim" >> "$CRON_FILE"
 /etc/init.d/cron restart
 exit 0
 EOF
