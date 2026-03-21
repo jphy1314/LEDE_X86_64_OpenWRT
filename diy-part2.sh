@@ -64,8 +64,10 @@ if command -v uci >/dev/null 2>&1; then
     uci set fstab.@global[-1].delay_root='5'
     uci set fstab.@global[-1].check_fs='0'
 
+    # 纯 POSIX 方案安全移除旧的 relatime
     for sec in \$(uci -q show fstab | grep '=mount' | sed -n 's/^fstab\.\([^=]*\)=.*/\1/p'); do
         target=\$(uci -q get fstab."\$sec".target || echo "")
+        # 【护盾】：绝对不碰系统引导盘和内部虚拟分区，保持系统纯净
         case "\$target" in / | /rom | /overlay | /boot | /mnt/loop*) continue ;; esac
 
         opts=\$(uci -q get fstab."\$sec".options || echo "defaults")
@@ -97,6 +99,7 @@ sanitize_fstab() {
         local changed=0
         for sec in $(uci -q show fstab | grep "=mount" | sed -n "s/^fstab\.\([^=]*\)=.*/\1/p"); do
             local target=$(uci -q get fstab."$sec".target || echo "")
+            # 【护盾】：不碰系统盘
             case "$target" in / | /rom | /overlay | /boot | /mnt/loop*) continue ;; esac
 
             local opts=$(uci -q get fstab."$sec".options || echo "defaults")
@@ -300,9 +303,9 @@ cat << EOF > "${FILES_DIR}/etc/uci-defaults/99-system-cron"
 #!/bin/sh
 CRON_FILE="/etc/crontabs/root"
 mkdir -p "/etc/crontabs"
-touch "$CRON_FILE"
-sed -i '/auto-fstrim/d' "$CRON_FILE" 2>/dev/null || true
-echo "${TRIM_SCHEDULE} /usr/bin/auto-fstrim" >> "$CRON_FILE"
+touch "\$CRON_FILE"
+sed -i '/auto-fstrim/d' "\$CRON_FILE" 2>/dev/null || true
+echo "${TRIM_SCHEDULE} /usr/bin/auto-fstrim" >> "\$CRON_FILE"
 /etc/init.d/cron restart
 exit 0
 EOF
