@@ -67,14 +67,14 @@ if command -v uci >/dev/null 2>&1; then
     # 纯 POSIX 方案安全移除旧的 relatime
     for sec in \$(uci -q show fstab | grep '=mount' | sed -n 's/^fstab\.\([^=]*\)=.*/\1/p'); do
         target=\$(uci -q get fstab."\$sec".target || echo "")
-        # 【护盾】：绝对不碰系统引导盘和内部虚拟分区，保持系统纯净
-        case "\$target" in / | /rom | /overlay | /boot | /mnt/loop*) continue ;; esac
+        # 【护盾修复】：彻底删除竖线旁的空格，防止 BusyBox 解析崩溃，完美保护系统盘！
+        case "\$target" in /|/rom|/overlay|/boot|/mnt/loop*) continue ;; esac
 
         opts=\$(uci -q get fstab."\$sec".options || echo "defaults")
         if ! echo "\$opts" | grep -q "noatime"; then
-            new_opts=\$(echo ",\$opts," | sed 's/,relatime,/,/g; s/,strictatime,/,/g; s/,defaults,/,/g')
+            new_opts=\$(echo ",\$opts," | sed 's/,relatime,/,/g; s/,strictatime,/,/g; s/,nodiratime,/,/g; s/,defaults,/,/g')
             new_opts=\$(echo "\$new_opts" | sed 's/,,*/,/g; s/^,//; s/,$//')
-            uci set fstab."\$sec".options="noatime,nodiratime\${new_opts:+,}\${new_opts}"
+            uci set fstab."\$sec".options="noatime\${new_opts:+,}\${new_opts}"
         fi
     done
     uci commit fstab
@@ -99,13 +99,13 @@ sanitize_fstab() {
         local changed=0
         for sec in $(uci -q show fstab | grep "=mount" | sed -n "s/^fstab\.\([^=]*\)=.*/\1/p"); do
             local target=$(uci -q get fstab."$sec".target || echo "")
-            # 【护盾】：不碰系统盘
-            case "$target" in / | /rom | /overlay | /boot | /mnt/loop*) continue ;; esac
+            # 【护盾修复】：彻底删除空格
+            case "$target" in /|/rom|/overlay|/boot|/mnt/loop*) continue ;; esac
 
             local opts=$(uci -q get fstab."$sec".options || echo "defaults")
             if ! echo "$opts" | grep -q "noatime"; then
-                local new_opts=$(echo ",$opts," | sed "s/,relatime,/,/g; s/,strictatime,/,/g; s/,defaults,/,/g" | sed "s/,,*/,/g; s/^,//; s/,$//")
-                uci set fstab."$sec".options="noatime,nodiratime${new_opts:+,}${new_opts}"
+                local new_opts=$(echo ",$opts," | sed "s/,relatime,/,/g; s/,strictatime,/,/g; s/,nodiratime,/,/g; s/,defaults,/,/g" | sed "s/,,*/,/g; s/^,//; s/,$//")
+                uci set fstab."$sec".options="noatime${new_opts:+,}${new_opts}"
                 changed=1
             fi
         done
@@ -227,16 +227,21 @@ case "$FSTYPE" in
             fi
         fi
 
-        # 3. 挂载选项动态优化 (【真正彻底移除】所有会导致 remount 失败的文件系统专属参数)
+        # 3. 挂载选项动态优化 (【终极修复】: 移除导致失败的 nodiratime，仅使用 noatime)
         current_opts=$(awk -v mp="$MOUNTPOINT" '$2==mp {print $4}' /proc/mounts)
         clean_opts=$(echo ",$current_opts," | sed 's/,noatime,/,/g; s/,nodiratime,/,/g; s/,relatime,/,/g; s/,strictatime,/,/g; s/,lazyatime,/,/g; s/,sync,/,/g')
         clean_opts=$(echo "$clean_opts" | sed 's/,,*/,/g; s/^,//; s/,$//')
         
-        base_opts="noatime,nodiratime"
+        base_opts="noatime"
         
-        # 仅针对支持的固态硬盘追加 discard (TRIM)，绝不碰 data=ordered 和 commit=30
-        if [ "$rotational" = "0" ] && [ "$ENABLE_DISCARD" = "1" ]; then
-            if [ "$FSTYPE" = "ext4" ] || [ "$FSTYPE" = "btrfs" ] || [ "$FSTYPE" = "xfs" ] || [ "$FSTYPE" = "f2fs" ]; then
+        if [ "$FSTYPE" = "ext4" ]; then
+            if [ "$rotational" = "0" ]; then
+                [ "$ENABLE_DISCARD" = "1" ] && ! echo ",$clean_opts," | grep -q ",discard," && base_opts="${base_opts},discard"
+            else
+                base_opts="${base_opts},commit=30"
+            fi
+        elif [ "$rotational" = "0" ] && [ "$ENABLE_DISCARD" = "1" ]; then
+            if [ "$FSTYPE" = "btrfs" ] || [ "$FSTYPE" = "xfs" ] || [ "$FSTYPE" = "f2fs" ]; then
                 ! echo ",$clean_opts," | grep -q ",discard," && base_opts="${base_opts},discard"
             fi
         fi
@@ -244,10 +249,11 @@ case "$FSTYPE" in
         final_opts="${base_opts}${clean_opts:+,}${clean_opts}"
         
         if mountpoint -q "$MOUNTPOINT" && [ -w "$MOUNTPOINT" ]; then
-            if /bin/mount -o remount,"$final_opts" "$MOUNTPOINT" 2>/dev/null; then
+            # 捕获真实的报错原因输出到日志
+            if out=$(/bin/mount -o remount,"$final_opts" "$MOUNTPOINT" 2>&1); then
                 log_opt "已底层优化 $MOUNTPOINT 挂载选项: $final_opts ($FSTYPE)"
             else
-                log_opt "⚠ 无法修改 $MOUNTPOINT 挂载选项: $final_opts"
+                log_opt "⚠ 修改 $MOUNTPOINT 挂载选项失败: $out"
             fi
         fi
 
@@ -260,14 +266,15 @@ case "$FSTYPE" in
 
             if [ -n "$SEC" ]; then
                 TARGET=$(uci -q get fstab."$SEC".target || echo "")
+                # 【护盾修复】：移除空格
                 case "$TARGET" in
                     /|/rom|/overlay|/boot|/mnt/loop*) ;;
                     *)
                         OPTS=$(uci -q get fstab."$SEC".options || echo "")
                         if ! echo "$OPTS" | grep -q "noatime"; then
-                            NEW_OPTS=$(echo ",$OPTS," | sed 's/,relatime,/,/g; s/,strictatime,/,/g; s/,sync,/,/g; s/,defaults,/,/g')
+                            NEW_OPTS=$(echo ",$OPTS," | sed 's/,relatime,/,/g; s/,strictatime,/,/g; s/,nodiratime,/,/g; s/,sync,/,/g; s/,defaults,/,/g')
                             NEW_OPTS=$(echo "$NEW_OPTS" | sed 's/,,*/,/g; s/^,//; s/,$//')
-                            FINAL_UCI_OPTS="noatime,nodiratime${NEW_OPTS:+,}${NEW_OPTS}"
+                            FINAL_UCI_OPTS="noatime${NEW_OPTS:+,}${NEW_OPTS}"
                             uci set fstab."$SEC".options="$FINAL_UCI_OPTS"
                             uci commit fstab
                             log_opt "已暴改 LuCI 生成的挂载参数: -> $FINAL_UCI_OPTS"
@@ -283,7 +290,7 @@ chmod 0755 "${FILES_DIR}/etc/hotplug.d/mount/99-optimize-disk"
 log "✅ 物理磁盘硬件级热插拔优化注入完成"
 
 # ==============================================================================
-# 阶段 5: SSD 定时 TRIM (利用 uci-defaults 开机注入，完美绕过编译期抹除)
+# 阶段 5: SSD 定时 TRIM (反杀 Lean 的流氓洗白)
 # ==============================================================================
 cat << 'EOF' > "${FILES_DIR}/usr/bin/auto-fstrim"
 #!/bin/sh
@@ -296,17 +303,27 @@ done
 EOF
 chmod 0755 "${FILES_DIR}/usr/bin/auto-fstrim"
 
-cat << EOF > "${FILES_DIR}/etc/uci-defaults/99-system-cron"
+# 【终极反杀】：将 Cron 任务直接注入进 Lean 的 default-settings 源码内部！
+# 这样当它执行洗白操作后，会立刻将我们的任务重新写进去，实现彻底反制。
+LEAN_SETTINGS="package/lean/default-settings/files/zzz-default-settings"
+if [ -f "$LEAN_SETTINGS" ]; then
+    echo "sed -i '/auto-fstrim/d' /etc/crontabs/root 2>/dev/null || true" >> "$LEAN_SETTINGS"
+    echo "echo '${TRIM_SCHEDULE} /usr/bin/auto-fstrim' >> /etc/crontabs/root" >> "$LEAN_SETTINGS"
+    echo "/etc/init.d/cron restart" >> "$LEAN_SETTINGS"
+    log "✅ 已将 Cron 任务深度注入 Lean 核心，彻底反杀洗白！"
+else
+    # 兜底方案
+    cat << EOF > "${FILES_DIR}/etc/uci-defaults/99-zz-diy-cron"
 #!/bin/sh
-CRON_FILE="/etc/crontabs/root"
-mkdir -p "/etc/crontabs"
-touch "\$CRON_FILE"
-sed -i '/auto-fstrim/d' "\$CRON_FILE" 2>/dev/null || true
-echo "${TRIM_SCHEDULE} /usr/bin/auto-fstrim" >> "\$CRON_FILE"
+mkdir -p /etc/crontabs
+touch /etc/crontabs/root
+sed -i '/auto-fstrim/d' /etc/crontabs/root 2>/dev/null || true
+echo "${TRIM_SCHEDULE} /usr/bin/auto-fstrim" >> /etc/crontabs/root
 /etc/init.d/cron restart
 exit 0
 EOF
-chmod 0755 "${FILES_DIR}/etc/uci-defaults/99-system-cron"
-log "✅ 独立 auto-fstrim 引擎及动态 Cron 任务注入完成"
+    chmod 0755 "${FILES_DIR}/etc/uci-defaults/99-zz-diy-cron"
+    log "✅ 独立 auto-fstrim 引擎及动态 Cron 任务注入完成 (兜底方案)"
+fi
 
-log "🎉 DIY Part 2 脚本（满血100分排错版）执行完成"
+log "🎉 DIY Part 2 脚本（满血100分护盾修复版）执行完成"
