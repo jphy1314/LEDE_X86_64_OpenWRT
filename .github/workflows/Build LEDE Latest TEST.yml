@@ -102,6 +102,17 @@ jobs:
             ccache-lede-${{ env.REPO_BRANCH }}-${{ hashFiles('.github/workflows/*.yml', 'diy-part1.sh', 'diy-part2.sh', 'openwrt/feeds.conf.default') }}-
             ccache-lede-${{ env.REPO_BRANCH }}-
 
+      # ==============================================================================
+      # 【新增优化】：缓存下载好的源码包与 Go/Rust 依赖，极大节省网络 I/O 与解压时间
+      # ==============================================================================
+      - name: Cache Downloaded Sources (DL)
+        uses: actions/cache@v5
+        with:
+          path: ${{ github.workspace }}/openwrt/dl
+          key: dl-lede-${{ env.REPO_BRANCH }}-${{ hashFiles('openwrt/feeds.conf.default') }}
+          restore-keys: |
+            dl-lede-${{ env.REPO_BRANCH }}-
+
       - name: Load Custom Feeds (DIY Part 1)
         working-directory: ${{ github.workspace }}/openwrt
         run: |
