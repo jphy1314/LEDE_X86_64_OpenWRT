@@ -32,6 +32,18 @@ mkdir -p "${FILES_DIR}/etc/"{uci-defaults,init.d,hotplug.d/mount,config}
 mkdir -p "${FILES_DIR}/usr/bin"
 
 # ==============================================================================
+# 补充：确保固件包含 util-linux (提供 mountpoint 命令)
+# ==============================================================================
+if [ -f .config ]; then
+    if ! grep -q "CONFIG_PACKAGE_util-linux=y" .config; then
+        echo "CONFIG_PACKAGE_util-linux=y" >> .config
+        log "✅ 已在 .config 中添加 util-linux 包"
+    fi
+else
+    log "⚠️ .config 不存在，请确保在配置阶段添加 CONFIG_PACKAGE_util-linux=y"
+fi
+
+# ==============================================================================
 # 阶段 1: 系统初始化修复 (Samba4 补齐与全局 Fstab 清理)
 # ==============================================================================
 cat << EOF > "${FILES_DIR}/etc/uci-defaults/99-system-init"
@@ -64,17 +76,22 @@ if command -v uci >/dev/null 2>&1; then
     uci set fstab.@global[-1].delay_root='5'
     uci set fstab.@global[-1].check_fs='0'
 
-    # 纯 POSIX 方案安全移除旧的 relatime
     for sec in \$(uci -q show fstab | grep '=mount' | sed -n 's/^fstab\.\([^=]*\)=.*/\1/p'); do
         target=\$(uci -q get fstab."\$sec".target || echo "")
-        # 【护盾修复】：彻底删除竖线旁的空格，防止 BusyBox 解析崩溃，完美保护系统盘！
+        # 保护系统盘
         case "\$target" in /|/rom|/overlay|/boot|/mnt/loop*) continue ;; esac
 
         opts=\$(uci -q get fstab."\$sec".options || echo "defaults")
         if ! echo "\$opts" | grep -q "noatime"; then
+            # 纯 POSIX 清洗，移除 relatime 等
             new_opts=\$(echo ",\$opts," | sed 's/,relatime,/,/g; s/,strictatime,/,/g; s/,nodiratime,/,/g; s/,defaults,/,/g')
             new_opts=\$(echo "\$new_opts" | sed 's/,,*/,/g; s/^,//; s/,$//')
-            uci set fstab."\$sec".options="noatime\${new_opts:+,}\${new_opts}"
+            # 构建最终选项（避免使用 bash 特有语法）
+            if [ -n "\$new_opts" ]; then
+                uci set fstab."\$sec".options="noatime,\$new_opts"
+            else
+                uci set fstab."\$sec".options="noatime"
+            fi
         fi
     done
     uci commit fstab
@@ -86,7 +103,7 @@ chmod 0755 "${FILES_DIR}/etc/uci-defaults/99-system-init"
 log "✅ 系统初始化基础修复注入完成"
 
 # ==============================================================================
-# 阶段 2: 注入 fstab 同步拦截器 (保护系统盘，精准劫持)
+# 阶段 2: 注入 fstab 同步拦截器 (修改 fstools 的 init 脚本)
 # ==============================================================================
 FSTAB_INIT="package/system/fstools/files/fstab.init"
 if [ -f "$FSTAB_INIT" ]; then
@@ -99,13 +116,15 @@ sanitize_fstab() {
         local changed=0
         for sec in $(uci -q show fstab | grep "=mount" | sed -n "s/^fstab\.\([^=]*\)=.*/\1/p"); do
             local target=$(uci -q get fstab."$sec".target || echo "")
-            # 【护盾修复】：彻底删除空格
             case "$target" in /|/rom|/overlay|/boot|/mnt/loop*) continue ;; esac
-
             local opts=$(uci -q get fstab."$sec".options || echo "defaults")
             if ! echo "$opts" | grep -q "noatime"; then
                 local new_opts=$(echo ",$opts," | sed "s/,relatime,/,/g; s/,strictatime,/,/g; s/,nodiratime,/,/g; s/,defaults,/,/g" | sed "s/,,*/,/g; s/^,//; s/,$//")
-                uci set fstab."$sec".options="noatime${new_opts:+,}${new_opts}"
+                if [ -n "$new_opts" ]; then
+                    uci set fstab."$sec".options="noatime,$new_opts"
+                else
+                    uci set fstab."$sec".options="noatime"
+                fi
                 changed=1
             fi
         done
@@ -114,10 +133,14 @@ sanitize_fstab() {
 }
 FUNC_EOF
 
+    # 在 START=99 行后插入函数定义
     sed -i "/^START=/r $TMP_SANITIZE" "$FSTAB_INIT"
     rm -f "$TMP_SANITIZE"
-    sed -i 's|/sbin/block mount|sanitize_fstab; /sbin/block mount|g' "$FSTAB_INIT"
+    # 将 block mount 命令替换为先调用 sanitize_fstab 再挂载
+    sed -i 's|^/sbin/block mount|sanitize_fstab\n/sbin/block mount|' "$FSTAB_INIT"
     log "✅ fstab 同步拦截器注入完成"
+else
+    log "⚠️ 未找到 $FSTAB_INIT，跳过 fstab 拦截器注入"
 fi
 
 # ==============================================================================
@@ -162,7 +185,7 @@ chmod 0755 "${FILES_DIR}/etc/init.d/network-accel"
 log "✅ Procd 网卡硬件加速服务注入完成"
 
 # ==============================================================================
-# 阶段 4: 物理磁盘硬件级运行时优化
+# 阶段 4: 物理磁盘硬件级运行时优化 (无 mountpoint 依赖版本)
 # ==============================================================================
 cat << EOF > "${FILES_DIR}/etc/hotplug.d/mount/99-optimize-disk"
 #!/bin/sh
@@ -183,6 +206,11 @@ log_opt() {
     local msg="$1"
     logger -t "Disk-Opt" "$msg"
     [ -w "$OPT_LOG_FILE" ] && echo "[$(date +'%Y-%m-%d %H:%M:%S')] $msg" >> "$OPT_LOG_FILE"
+}
+
+# 检查挂载点是否存在的函数（不依赖 mountpoint 命令）
+is_mounted() {
+    grep -q "^[^ ]* $1 " /proc/mounts 2>/dev/null
 }
 
 FSTYPE=$(awk -v mp="$MOUNTPOINT" '$2==mp {print $3}' /proc/mounts)
@@ -227,7 +255,7 @@ case "$FSTYPE" in
             fi
         fi
 
-        # 3. 挂载选项动态优化 (【终极修复】: 移除导致失败的 nodiratime，仅使用 noatime)
+        # 3. 挂载选项动态优化
         current_opts=$(awk -v mp="$MOUNTPOINT" '$2==mp {print $4}' /proc/mounts)
         clean_opts=$(echo ",$current_opts," | sed 's/,noatime,/,/g; s/,nodiratime,/,/g; s/,relatime,/,/g; s/,strictatime,/,/g; s/,lazyatime,/,/g; s/,sync,/,/g')
         clean_opts=$(echo "$clean_opts" | sed 's/,,*/,/g; s/^,//; s/,$//')
@@ -248,8 +276,7 @@ case "$FSTYPE" in
         
         final_opts="${base_opts}${clean_opts:+,}${clean_opts}"
         
-        if mountpoint -q "$MOUNTPOINT" && [ -w "$MOUNTPOINT" ]; then
-            # 捕获真实的报错原因输出到日志
+        if is_mounted "$MOUNTPOINT" && [ -w "$MOUNTPOINT" ]; then
             if out=$(/bin/mount -o remount,"$final_opts" "$MOUNTPOINT" 2>&1); then
                 log_opt "已底层优化 $MOUNTPOINT 挂载选项: $final_opts ($FSTYPE)"
             else
@@ -266,7 +293,6 @@ case "$FSTYPE" in
 
             if [ -n "$SEC" ]; then
                 TARGET=$(uci -q get fstab."$SEC".target || echo "")
-                # 【护盾修复】：移除空格
                 case "$TARGET" in
                     /|/rom|/overlay|/boot|/mnt/loop*) ;;
                     *)
@@ -274,7 +300,11 @@ case "$FSTYPE" in
                         if ! echo "$OPTS" | grep -q "noatime"; then
                             NEW_OPTS=$(echo ",$OPTS," | sed 's/,relatime,/,/g; s/,strictatime,/,/g; s/,nodiratime,/,/g; s/,sync,/,/g; s/,defaults,/,/g')
                             NEW_OPTS=$(echo "$NEW_OPTS" | sed 's/,,*/,/g; s/^,//; s/,$//')
-                            FINAL_UCI_OPTS="noatime${NEW_OPTS:+,}${NEW_OPTS}"
+                            if [ -n "$NEW_OPTS" ]; then
+                                FINAL_UCI_OPTS="noatime,$NEW_OPTS"
+                            else
+                                FINAL_UCI_OPTS="noatime"
+                            fi
                             uci set fstab."$SEC".options="$FINAL_UCI_OPTS"
                             uci commit fstab
                             log_opt "已暴改 LuCI 生成的挂载参数: -> $FINAL_UCI_OPTS"
@@ -290,7 +320,7 @@ chmod 0755 "${FILES_DIR}/etc/hotplug.d/mount/99-optimize-disk"
 log "✅ 物理磁盘硬件级热插拔优化注入完成"
 
 # ==============================================================================
-# 阶段 5: SSD 定时 TRIM (反杀 Lean 的流氓洗白)
+# 阶段 5: SSD 定时 TRIM (使用 uci-defaults 兜底，确保在 zzz-default-settings 之后)
 # ==============================================================================
 cat << 'EOF' > "${FILES_DIR}/usr/bin/auto-fstrim"
 #!/bin/sh
@@ -303,17 +333,8 @@ done
 EOF
 chmod 0755 "${FILES_DIR}/usr/bin/auto-fstrim"
 
-# 【终极反杀】：将 Cron 任务直接注入进 Lean 的 default-settings 源码内部！
-# 这样当它执行洗白操作后，会立刻将我们的任务重新写进去，实现彻底反制。
-LEAN_SETTINGS="package/lean/default-settings/files/zzz-default-settings"
-if [ -f "$LEAN_SETTINGS" ]; then
-    echo "sed -i '/auto-fstrim/d' /etc/crontabs/root 2>/dev/null || true" >> "$LEAN_SETTINGS"
-    echo "echo '${TRIM_SCHEDULE} /usr/bin/auto-fstrim' >> /etc/crontabs/root" >> "$LEAN_SETTINGS"
-    echo "/etc/init.d/cron restart" >> "$LEAN_SETTINGS"
-    log "✅ 已将 Cron 任务深度注入 Lean 核心，彻底反杀洗白！"
-else
-    # 兜底方案
-    cat << EOF > "${FILES_DIR}/etc/uci-defaults/99-zz-diy-cron"
+# 使用文件名 99-zzz-diy-cron 确保在 zzz-default-settings 之后执行（数字越大越晚）
+cat << EOF > "${FILES_DIR}/etc/uci-defaults/99-zzz-diy-cron"
 #!/bin/sh
 mkdir -p /etc/crontabs
 touch /etc/crontabs/root
@@ -322,8 +343,7 @@ echo "${TRIM_SCHEDULE} /usr/bin/auto-fstrim" >> /etc/crontabs/root
 /etc/init.d/cron restart
 exit 0
 EOF
-    chmod 0755 "${FILES_DIR}/etc/uci-defaults/99-zz-diy-cron"
-    log "✅ 独立 auto-fstrim 引擎及动态 Cron 任务注入完成 (兜底方案)"
-fi
+chmod 0755 "${FILES_DIR}/etc/uci-defaults/99-zzz-diy-cron"
+log "✅ 独立 auto-fstrim 引擎及动态 Cron 任务注入完成"
 
 log "🎉 DIY Part 2 脚本（满血100分护盾修复版）执行完成"
