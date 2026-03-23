@@ -11,7 +11,7 @@ readonly TARGET_IP="192.168.5.1"
 readonly TARGET_HOSTNAME="LEDE"
 readonly FILES_DIR="files"
 
-: "${TRIM_SCHEDULE:="0 4 * * *"}"
+: "${TRIM_SCHEDULE:="0 3 * * *"}"
 : "${SSD_READ_AHEAD_KB:="2048"}"
 : "${HDD_READ_AHEAD_KB:="128"}"
 : "${ENABLE_DISCARD:="0"}"
