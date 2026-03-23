@@ -386,6 +386,9 @@ jobs:
           CONFIG_PACKAGE_libblkid=y
           CONFIG_PACKAGE_libuuid=y
           CONFIG_PACKAGE_uci=y
+
+          # 【新增】：补齐完整的 Linux 底层磁盘管理工具箱
+          CONFIG_PACKAGE_util-linux=y
           
           # 显式锁定硬盘休眠底层引擎与驱动工具，防止 UI 被静默剔除
           CONFIG_PACKAGE_luci-app-hd-idle=y
