@@ -103,12 +103,15 @@ jobs:
             ccache-lede-${{ env.REPO_BRANCH }}-
 
       # ==============================================================================
-      # 【新增优化】：缓存下载好的源码包与 Go/Rust 依赖，极大节省网络 I/O 与解压时间
+      # 【企业级优化】：缓存下载好的源码包，但利用 ! 语法精准剔除 Go 语言的剧毒缓存库
       # ==============================================================================
       - name: Cache Downloaded Sources (DL)
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
-          path: ${{ github.workspace }}/openwrt/dl
+          # 使用多行语法，第一行包含全部，第二行用 ! 剔除掉容易中毒的目录
+          path: |
+            ${{ github.workspace }}/openwrt/dl
+            !${{ github.workspace }}/openwrt/dl/go-mod-cache
           key: dl-lede-${{ env.REPO_BRANCH }}-${{ hashFiles('openwrt/feeds.conf.default') }}
           restore-keys: |
             dl-lede-${{ env.REPO_BRANCH }}-
