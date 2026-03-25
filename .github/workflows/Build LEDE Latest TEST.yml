@@ -337,7 +337,7 @@ jobs:
           
           ccache -z
           # 根据 GitHub Runner 磁盘配额，最大化缓存池，预防老旧缓存被频繁剔除
-          ccache --set-config=max_size=50G
+          ccache --set-config=max_size=10G
           
           echo "🚀 Starting Main Build with $(nproc) threads..."
           # 并行构建时显式传入 CCACHE_DIR 变量，防止部分 Makefile 内部重写路径
