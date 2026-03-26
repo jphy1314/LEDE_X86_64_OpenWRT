@@ -250,17 +250,17 @@ jobs:
           fix_rust
 
           # ----------------------------
-          # 5. 【核心提权】强制安装 Passwall 专属源，覆盖旧版
+          # 5. 常规安装 feeds，建立基础依赖链
+          # ----------------------------
+          log_i "5. 安装 feeds..."
+          retry ./scripts/feeds install -a
+
+          # ----------------------------
+          # 6. 【核心提权】强制安装 Passwall 专属源，覆盖旧版
           # ----------------------------
           log_i "6. 🚀 强制提权并覆写依赖..."
           ./scripts/feeds install -f -p passwall_packages -a
           ./scripts/feeds install -f -p passwall_luci -a
-
-          # ----------------------------
-          # 6. 常规安装 feeds，建立基础依赖链
-          # ----------------------------
-          log_i "5. 安装 feeds..."
-          retry ./scripts/feeds install -a
 
           # ----------------------------
           # 完整性检查
