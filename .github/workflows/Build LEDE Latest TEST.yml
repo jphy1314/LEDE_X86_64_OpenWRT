@@ -53,8 +53,6 @@ jobs:
         run: |
           set -euo pipefail
           
-          # 仅清理占用极大的 .NET、Android SDK、Haskell 和 CodeQL 环境，释放超 20GB 空间
-          
           # 正常更新软件源
           sudo apt-get update
           
