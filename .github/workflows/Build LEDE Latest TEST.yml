@@ -291,30 +291,57 @@ jobs:
       - name: Download Package Dependencies
         working-directory: ${{ github.workspace }}/openwrt
         run: |
-          set -e
-          mkdir -p dl
-          
-          # ==============================================================================
-          # 【终极暴杀】：物理抹除 Go 语言的模块缓存！防止依赖断链
-          # ==============================================================================
+          set -euo pipefail
+
+          # 1. 定义增强型日志与重试函数
+          log_i() { echo -e "\e[32m[INFO] $1\e[0m"; }
           log_w() { echo -e "\e[33m[WARN] $1\e[0m"; }
-          if [ -d "dl/go-mod-cache" ]; then
-              log_w "🗑️ 检测到旧版 Go 模块缓存，正在物理销毁以防依赖断链..."
-              rm -rf dl/go-mod-cache || true
+          log_e() { echo -e "\e[31m[ERROR] $1\e[0m"; exit 1; }
+
+          retry() {
+            local n=3
+            for i in $(seq 1 $n); do
+              if "$@"; then return 0; fi
+              log_w "命令失败，重试 $i/$n: $*"
+              sleep 5
+            done
+            log_e "命令失败已达最大重试次数: $*"
+          }
+
+          mkdir -p dl
+
+          # 2. 物理抹除 Go 模块缓存 (使用 -type f 确保检测到实际文件而非空目录)
+          if [ -d "dl/go-mod-cache" ] && [ -n "$(find dl/go-mod-cache -mindepth 1 -type f -print -quit 2>/dev/null)" ]; then
+            log_w "检测到非空的旧版 Go 模块缓存，正在强制清理以确保依赖纯净..."
+            rm -rf dl/go-mod-cache || true
           fi
+
+          # 3. 预清理残留文件 (加上 -print0 配合 xargs -0 可完美处理空格，虽然源码包极少含空格)
+          log_i "清理下载残留临时文件..."
+          find dl \( -name "*.tmp*" -o -name "*.partial*" -o -name "*.hash*" \) -print0 2>/dev/null | xargs -0 rm -f || true
+
+          # 4. 第一轮：并行下载 (8线程)
+          log_i "🚀 开始第一轮并行下载 (8线程)..."
+          make download -j8 CONFIG_CCACHE= || log_w "部分源码包并行下载失败，准备进入精细化处理阶段"
+
+          # 5. 第二轮：精准识别并清理损坏的小文件 (处理文件名空格的安全方案)
+          log_i "正在扫描并清理损坏的微型压缩包 (小于1KB)..."
+          # 先获取数量，再执行删除，确保日志准确
+          broken_count=$(find dl -type f -size -1024c \( -name "*.tar.*" -o -name "*.tgz" -o -name "*.zip" -o -name "*.bz2" \) | wc -l)
           
-          # 附加 CONFIG_CCACHE= 覆盖 .config，禁止 ccache 在下载阶段越权报错
-          # 并发下载，允许个别失败
-          make download -j8 CONFIG_CCACHE= || true
-          
-          # ==============================================================================
-          # 【架构师级修复】：精准清理因 404/502 错误产生的损坏下载包
-          # 严格限定后缀为压缩包类型，完美避开 .hash, .version 等合法的微型文件！
-          # ==============================================================================
-          find dl -type f -size -1024c \( -name "*.tar.*" -o -name "*.tgz" -o -name "*.zip" -o -name "*.bz2" \) -exec rm -f {} \;
-          
-          # 单线程强力查漏补缺，打印详细信息
-          make download -j1 V=s CONFIG_CCACHE=
+          if [ "$broken_count" -gt 0 ]; then
+            log_w "清理了 $broken_count 个异常文件 (可能是 404/502 错误页面)，准备重试..."
+            # 使用 -delete 替代 xargs 管道，这是处理含空格文件最安全、最高效的方式
+            find dl -type f -size -1024c \( -name "*.tar.*" -o -name "*.tgz" -o -name "*.zip" -o -name "*.bz2" \) -delete
+          else
+            log_i "未发现损坏的压缩包，环境健康。"
+          fi
+
+          # 6. 第三轮：单线程补漏下载 (带重试)
+          log_i "🛠️ 开始最终单线程补漏下载 (带重试)..."
+          retry make download -j1 V=s CONFIG_CCACHE=
+
+          log_i "✅ 所有依赖准备就绪，即将进入编译阶段"
 
       - name: Compile the Firmware
         id: compile
