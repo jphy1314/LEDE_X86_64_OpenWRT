@@ -142,51 +142,29 @@ jobs:
           }
 
           # --------------------------------------------------------------------------
-          # 【核心架构修正】：分类精确打击，拯救原汁原味的底层组件！
+          # 1. 冲突包列表：这批包我们只信任 Passwall 官方库的最新版！
           # --------------------------------------------------------------------------
-          
-          # [类 1]: 底层依赖包 (绝对不能从 feeds/ 里删，必须留着官方源兜底！)
-          DEP_PKGS=(
+          CONFLICT_PKGS=(
               xray-core v2ray-geodata sing-box chinadns-ng dns2socks hysteria
               ipt2socks microsocks naiveproxy shadowsocks-libev shadowsocks-rust
               shadowsocksr-libev simple-obfs tcping trojan-plus tuic-client
               v2ray-plugin xray-plugin geoview shadow-tls
+              luci-app-passwall passwall luci-app-passwall2
               smartdns luci-app-smartdns
               luci-theme-argon luci-app-argon-config
           )
-          
-          # [类 2]: UI 主程序 (必须同时从 package/ 和 feeds/ 里删光)
-          UI_PKGS=(
-              luci-app-passwall passwall luci-app-passwall2
-          )
 
-          log_i "1. 更新 feeds (拉取全局基础数据)"
+          log_i "1. 拉取所有 feeds 源码..."
           retry ./scripts/feeds update -a
 
           # --------------------------------------------------------------------------
-          # 2. 扫荡底层依赖包 (仅扫荡本地 package/ 目录，绝不碰 feeds/ 兜底)
+          # 2. 扫荡旧包：干掉官方源里的陈旧版本，为 Passwall 原汁原味版让路
           # --------------------------------------------------------------------------
-          log_i "2. 扫荡本地硬编码老旧依赖包..."
-          for pkg in "${DEP_PKGS[@]}"; do
-              safe_pkg=$(printf '%s\n' "$pkg" | sed 's/[][\\.*^$()+?{}\|]/\\&/g')
-              
-              # 引擎 A: 只删 package/，绝不碰 feeds/
-              while IFS= read -r -d '' dir; do rm -rf "$dir"; done < <(find package/ -type d -name "$pkg" -print0 2>/dev/null || true)
-              while IFS= read -r -d '' makefile; do
-                  if grep -q -E "^[[:space:]]*PKG_NAME[[:space:]]*:?=[[:space:]]*${safe_pkg}[[:space:]]*$" "$makefile" 2>/dev/null; then
-                      rm -rf "$(dirname "$makefile")"
-                  fi
-              done < <(find package/ -type f -name "Makefile" -print0 2>/dev/null || true)
-          done
-
-          # --------------------------------------------------------------------------
-          # 3. 彻底绞杀旧版 UI 主程序 (同时扫荡 package/ 和 feeds/)
-          # --------------------------------------------------------------------------
-          log_i "3. 彻底绞杀旧版 Passwall UI..."
-          for pkg in "${UI_PKGS[@]}"; do
+          log_i "2. 执行双引擎焦土清理，彻底切断旧版依赖..."
+          for pkg in "${CONFLICT_PKGS[@]}"; do
               safe_pkg=$(printf '%s\n' "$pkg" | sed 's/[][\\.*^$()+?{}\|]/\\&/g')
 
-              # 扫荡 package/
+              # 扫荡 package/ (本地硬编码)
               while IFS= read -r -d '' dir; do rm -rf "$dir"; done < <(find package/ -type d -name "$pkg" -print0 2>/dev/null || true)
               while IFS= read -r -d '' makefile; do
                   if grep -q -E "^[[:space:]]*PKG_NAME[[:space:]]*:?=[[:space:]]*${safe_pkg}[[:space:]]*$" "$makefile" 2>/dev/null; then
@@ -194,7 +172,7 @@ jobs:
                   fi
               done < <(find package/ -type f -name "Makefile" -print0 2>/dev/null || true)
 
-              # 扫荡 feeds/ (严格避开我们的专属新源)
+              # 扫荡 feeds/ (绝对避开我们的 Passwall 专属源！)
               while IFS= read -r -d '' dir; do
                   if [[ "$dir" == *passwall_packages* ]] || [[ "$dir" == *passwall_luci* ]]; then continue; fi
                   rm -rf "$dir"
@@ -208,9 +186,9 @@ jobs:
           done
 
           # --------------------------------------------------------------------------
-          # 4. 克隆最新社区插件 & 解决 Rust 依赖
+          # 3. 克隆外部社区插件 (SmartDNS / Argon)
           # --------------------------------------------------------------------------
-          log_i "4. 克隆社区专属插件..."
+          log_i "3. 注入高级社区插件..."
           mkdir -p package/community
           retry git clone --depth 1 https://github.com/pymumu/openwrt-smartdns.git package/smartdns
           retry git clone --depth 1 https://github.com/pymumu/luci-app-smartdns.git package/luci-app-smartdns
@@ -225,18 +203,15 @@ jobs:
               mkdir -p "$rust_dir"
 
               for f in "${files[@]}"; do
-                  log_i "下载 Rust 支持文件: $f"
                   if curl -fL --retry 3 --connect-timeout 10 "$raw_url/$f" -o "$rust_dir/$f" && [ -s "$rust_dir/$f" ]; then
-                      log_i "✅ 下载成功: $f"
+                      log_i "✅ Rust 依赖下载成功: $f"
                   else
-                      log_w "⚠️ 下载失败或文件为空: $f"
-                      need_patch=1
-                      break
+                      need_patch=1; break
                   fi
               done
 
               if [ $need_patch -eq 1 ]; then
-                  log_w "执行 Makefile 变量防断链注入..."
+                  log_w "Rust 依赖缺失，执行兜底注入防报错..."
                   rm -rf "$rust_dir"
                   cp package/smartdns/Makefile package/smartdns/Makefile.bak
                   sed -i 's|^include \.\./\.\./lang/rust/rust-package\.mk|# include ../../lang/rust/rust-package.mk|' package/smartdns/Makefile
@@ -250,22 +225,24 @@ jobs:
           fix_rust
 
           # --------------------------------------------------------------------------
-          # 5. 常规安装 feeds (让底层核心自然对齐官方最新版)
+          # 4. 【决胜时刻】：强制刷新账本索引，接管全盘依赖！
           # --------------------------------------------------------------------------
-          log_i "5. 安装 feeds..."
+          log_i "4. 🔄 物理环境变动，强制重建 feeds 依赖账本 (update -i)..."
+          retry ./scripts/feeds update -i
+
+          # --------------------------------------------------------------------------
+          # 5. 安装与提权
+          # --------------------------------------------------------------------------
+          log_i "5. 常规铺底安装..."
           retry ./scripts/feeds install -a
 
-          # --------------------------------------------------------------------------
-          # 6. 【核心提权】：仅强行覆盖 Passwall UI！
-          # --------------------------------------------------------------------------
-          log_i "6. 🚀 强制提权并覆写依赖..."
-          # 【关键】：让系统自动拥抱官方最新核心，只强制接管前端 UI 和包库
-          ./scripts/feeds install -f -p passwall_packages -a
-          ./scripts/feeds install -f -p passwall_luci -a
+          log_i "6. 🚀 强制挂载 Passwall 专属全套阵列！"
+          retry ./scripts/feeds install -f -p passwall_packages -a
+          retry ./scripts/feeds install -f -p passwall_luci -a
+
           [ -d feeds ] || log_e "feeds 目录不存在"
           [ -d package ] || log_e "package 目录不存在"
-
-          log_i "✅ Feeds 处理完成，官方底层源码被完美保住！"
+          log_i "✅ 依赖树重建完成，Passwall 专属环境绝对纯净！"
 
       - name: Generate Configuration (配置解耦与探针注入)
         working-directory: ${{ github.workspace }}/openwrt
