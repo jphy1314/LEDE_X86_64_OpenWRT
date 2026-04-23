@@ -141,79 +141,82 @@ jobs:
               log_e "命令失败已达最大重试次数: $*"
           }
 
-          # ----------------------------
-          # 【核心架构】：将所有冲突包（主程序+底层组件）合并，实施全量降维打击
-          # ----------------------------
-          CONFLICT_PKGS=(
+          # --------------------------------------------------------------------------
+          # 【核心架构修正】：分类精确打击，拯救原汁原味的底层组件！
+          # --------------------------------------------------------------------------
+          
+          # [类 1]: 底层依赖包 (绝对不能从 feeds/ 里删，必须留着官方源兜底！)
+          DEP_PKGS=(
               xray-core v2ray-geodata sing-box chinadns-ng dns2socks hysteria
               ipt2socks microsocks naiveproxy shadowsocks-libev shadowsocks-rust
               shadowsocksr-libev simple-obfs tcping trojan-plus tuic-client
               v2ray-plugin xray-plugin geoview shadow-tls
               smartdns luci-app-smartdns
               luci-theme-argon luci-app-argon-config
+          )
+          
+          # [类 2]: UI 主程序 (必须同时从 package/ 和 feeds/ 里删光)
+          UI_PKGS=(
               luci-app-passwall passwall luci-app-passwall2
           )
 
-          # 1. 更新 feeds
           log_i "1. 更新 feeds (拉取全局基础数据)"
           retry ./scripts/feeds update -a
 
-          # ----------------------------
-          # 2. 彻底扫荡冲突包（无视深度、双引擎解剖、严格护盾）
-          # ----------------------------
-          log_i "2. 扫荡老旧冲突包 (强制切断官方依赖链，确立新源的绝对唯一性)..."
-          for pkg in "${CONFLICT_PKGS[@]}"; do
-              # 【防注入装甲】
+          # --------------------------------------------------------------------------
+          # 2. 扫荡底层依赖包 (仅扫荡本地 package/ 目录，绝不碰 feeds/ 兜底)
+          # --------------------------------------------------------------------------
+          log_i "2. 扫荡本地硬编码老旧依赖包..."
+          for pkg in "${DEP_PKGS[@]}"; do
+              safe_pkg=$(printf '%s\n' "$pkg" | sed 's/[][\\.*^$()+?{}\|]/\\&/g')
+              
+              # 引擎 A: 只删 package/，绝不碰 feeds/
+              while IFS= read -r -d '' dir; do rm -rf "$dir"; done < <(find package/ -type d -name "$pkg" -print0 2>/dev/null || true)
+              while IFS= read -r -d '' makefile; do
+                  if grep -q -E "^[[:space:]]*PKG_NAME[[:space:]]*:?=[[:space:]]*${safe_pkg}[[:space:]]*$" "$makefile" 2>/dev/null; then
+                      rm -rf "$(dirname "$makefile")"
+                  fi
+              done < <(find package/ -type f -name "Makefile" -print0 2>/dev/null || true)
+          done
+
+          # --------------------------------------------------------------------------
+          # 3. 彻底绞杀旧版 UI 主程序 (同时扫荡 package/ 和 feeds/)
+          # --------------------------------------------------------------------------
+          log_i "3. 彻底绞杀旧版 Passwall UI..."
+          for pkg in "${UI_PKGS[@]}"; do
               safe_pkg=$(printf '%s\n' "$pkg" | sed 's/[][\\.*^$()+?{}\|]/\\&/g')
 
-              # ==========================================
-              # 范围 A: 扫荡 package/ (清理 Lean 本地硬编码)
-              # ==========================================
-              while IFS= read -r -d '' dir; do
-                  rm -rf "$dir"
-              done < <(find package/ -type d -name "$pkg" -print0 2>/dev/null || true)
-              
+              # 扫荡 package/
+              while IFS= read -r -d '' dir; do rm -rf "$dir"; done < <(find package/ -type d -name "$pkg" -print0 2>/dev/null || true)
               while IFS= read -r -d '' makefile; do
                   if grep -q -E "^[[:space:]]*PKG_NAME[[:space:]]*:?=[[:space:]]*${safe_pkg}[[:space:]]*$" "$makefile" 2>/dev/null; then
                       rm -rf "$(dirname "$makefile")"
                   fi
               done < <(find package/ -type f -name "Makefile" -print0 2>/dev/null || true)
 
-              # ==========================================
-              # 范围 B: 扫荡 feeds/ (清理官方源旧包)
-              # ==========================================
+              # 扫荡 feeds/ (严格避开我们的专属新源)
               while IFS= read -r -d '' dir; do
-                  # 🛡️ 绝对护盾：严格避开我们拉取的 Passwall 新源目录
-                  if [[ "$dir" == *passwall_packages* ]] || [[ "$dir" == *passwall_luci* ]]; then 
-                      continue
-                  fi
+                  if [[ "$dir" == *passwall_packages* ]] || [[ "$dir" == *passwall_luci* ]]; then continue; fi
                   rm -rf "$dir"
               done < <(find feeds/ -type d -name "$pkg" -print0 2>/dev/null || true)
-
               while IFS= read -r -d '' makefile; do
-                  # 🛡️ 绝对护盾：严格避开我们拉取的 Passwall 新源 Makefile
-                  if [[ "$makefile" == *passwall_packages* ]] || [[ "$makefile" == *passwall_luci* ]]; then 
-                      continue
-                  fi
+                  if [[ "$makefile" == *passwall_packages* ]] || [[ "$makefile" == *passwall_luci* ]]; then continue; fi
                   if grep -q -E "^[[:space:]]*PKG_NAME[[:space:]]*:?=[[:space:]]*${safe_pkg}[[:space:]]*$" "$makefile" 2>/dev/null; then
                       rm -rf "$(dirname "$makefile")"
                   fi
               done < <(find feeds/ -type f -name "Makefile" -print0 2>/dev/null || true)
           done
 
-          # ----------------------------
-          # 3. 克隆最新社区插件
-          # ----------------------------
-          log_i "3. 克隆社区专属插件..."
+          # --------------------------------------------------------------------------
+          # 4. 克隆最新社区插件 & 解决 Rust 依赖
+          # --------------------------------------------------------------------------
+          log_i "4. 克隆社区专属插件..."
           mkdir -p package/community
           retry git clone --depth 1 https://github.com/pymumu/openwrt-smartdns.git package/smartdns
           retry git clone --depth 1 https://github.com/pymumu/luci-app-smartdns.git package/luci-app-smartdns
           retry git clone --depth 1 https://github.com/jerrykuku/luci-theme-argon.git package/community/luci-theme-argon
           retry git clone --depth 1 https://github.com/jerrykuku/luci-app-argon-config.git package/community/luci-app-argon-config
 
-          # ----------------------------
-          # 4. 解决 SmartDNS Rust 依赖问题
-          # ----------------------------
           fix_rust() {
               local rust_dir="lang/rust"
               local raw_url="https://raw.githubusercontent.com/openwrt/packages/master/lang/rust"
@@ -246,26 +249,23 @@ jobs:
           }
           fix_rust
 
-          # ----------------------------
-          # 5. 常规安装 feeds，建立基础依赖链
-          # ----------------------------
+          # --------------------------------------------------------------------------
+          # 5. 常规安装 feeds (让底层核心自然对齐官方最新版)
+          # --------------------------------------------------------------------------
           log_i "5. 安装 feeds..."
           retry ./scripts/feeds install -a
 
-          # ----------------------------
-          # 6. 【核心提权】强制安装 Passwall 专属源，覆盖旧版
-          # ----------------------------
+          # --------------------------------------------------------------------------
+          # 6. 【核心提权】：仅强行覆盖 Passwall UI！
+          # --------------------------------------------------------------------------
           log_i "6. 🚀 强制提权并覆写依赖..."
+          # 【关键】：让系统自动拥抱官方最新核心，只强制接管前端 UI 和包库
           ./scripts/feeds install -f -p passwall_packages -a
           ./scripts/feeds install -f -p passwall_luci -a
-
-          # ----------------------------
-          # 完整性检查
-          # ----------------------------
           [ -d feeds ] || log_e "feeds 目录不存在"
           [ -d package ] || log_e "package 目录不存在"
 
-          log_i "✅ Feeds 处理完成，依赖树完整，旧版软链接已被彻底切断！"
+          log_i "✅ Feeds 处理完成，官方底层源码被完美保住！"
 
       - name: Generate Configuration (配置解耦与探针注入)
         working-directory: ${{ github.workspace }}/openwrt
