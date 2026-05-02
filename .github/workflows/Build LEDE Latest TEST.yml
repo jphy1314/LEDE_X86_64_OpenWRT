@@ -185,15 +185,25 @@ jobs:
               done < <(find feeds/ -type f -name "Makefile" -print0 2>/dev/null || true)
           done
 
-          # --------------------------------------------------------------------------
-          # 3. 克隆外部社区插件 (SmartDNS / Argon)
-          # --------------------------------------------------------------------------
-          log_i "3. 注入高级社区插件..."
+          # ----------------------------
+          # 3. 克隆最新社区插件
+          # ----------------------------
+          log_i "3. 克隆社区专属插件..."
           mkdir -p package/community
           retry git clone --depth 1 https://github.com/pymumu/openwrt-smartdns.git package/smartdns
           retry git clone --depth 1 https://github.com/pymumu/luci-app-smartdns.git package/luci-app-smartdns
           retry git clone --depth 1 https://github.com/jerrykuku/luci-theme-argon.git package/community/luci-theme-argon
           retry git clone --depth 1 https://github.com/jerrykuku/luci-app-argon-config.git package/community/luci-app-argon-config
+
+          # =========================================================
+          # 【架构师补丁：补齐你漏掉的自动更新插件源码！】
+          # =========================================================
+          log_i "克隆 autoupdate 自动更新插件源码..."
+          retry git clone --depth 1 https://github.com/Hyy2001X/AutoBuild-Packages.git package/AutoBuild-Packages
+          # 提取出 UI 界面和底层核心包，其余垃圾包统统销毁防污染
+          mv package/AutoBuild-Packages/luci-app-autoupdate package/community/ 2>/dev/null || true
+          mv package/AutoBuild-Packages/autoupdate package/community/ 2>/dev/null || true
+          rm -rf package/AutoBuild-Packages
 
           fix_rust() {
               local rust_dir="lang/rust"
