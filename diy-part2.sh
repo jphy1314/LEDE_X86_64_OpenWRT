@@ -93,7 +93,7 @@ stop() {
 EOF
 chmod 0755 "${FILES_DIR}/etc/init.d/ipsec"
 
-log "✅ IPSec 空壳注入完成，出厂即免冲突状态"
+log_i "✅ IPSec 空壳注入完成，出厂即免冲突状态"
 
 # ==============================================================================
 # 阶段 3: 网卡硬件加速服务 (ethtool 策略)
@@ -303,4 +303,4 @@ sed -i 's/\r$//' "$INFO_FILE" 2>/dev/null || true
 log_i "✅ AutoUpdate 环境身份证 (openwrt_info) 注入完成"
 log_i "📍 路径: $INFO_FILE"
 
-log "🎉 Part 2 编译脚本完整版构建已就绪！"
+log_i "🎉 Part 2 编译脚本完整版构建已就绪！"
