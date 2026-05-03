@@ -259,28 +259,45 @@ jobs:
         run: |
           set -euo pipefail
 
-          # 1. 定义临时 log 函数，确保步骤独立运行不报错
+          # 1. 定义临时 log 函数
           log_i() { echo -e "\e[32m[INFO] $1\e[0m"; }
           
-          # 2. 导入独立的基础配置清单
+          # 2. 导入基础配置
           cat ${{ github.workspace }}/x86_64.config > .config
           
-          # 3. 运行 DIY Part 2 探针，根据环境变量进行动态覆盖和系统拦截注入
+          # 3. 运行 DIY Part 2 脚本
           SCRIPT="${{ github.workspace }}/diy-part2.sh"
-          [[ -f "$SCRIPT" ]] && bash "$SCRIPT" || true
+          if [ -f "$SCRIPT" ]; then
+              log_i "运行 DIY Part 2 脚本..."
+              bash "$SCRIPT"
+          fi
           
-          # 4. 生成默认依赖配置
+          # 4. 补全依赖配置
           make defconfig
 
           # ==============================================================================
-          # 5. 【核心修复】：物理注入 AutoUpdate 环境身份证 (解决图片中的乱码与缺失)
+          # 5. 【架构师级适配】：Hyy2001X AutoUpdate 环境注入
           # ==============================================================================
-          log_i "🔥 正在全量注入 AutoUpdate 环境指纹..."
+          log_i "🔥 正在全量注入 Hyy2001X 环境变量..."
           
-          # 创建 files 目录（OpenWrt 编译系统会自动将此目录内容打包进 /etc）
-          mkdir -p files/etc
+          # 确保目录干净且存在
+          mkdir -p files/etc/AutoBuild
           
-          # 写入全量字段，匹配 AutoUpdate 插件的所有搜索目标
+          # 注入 Github_Variable (插件生命线)
+          cat << EOF > "files/etc/AutoBuild/Github_Variable"
+          github_user="jphy1314"
+          github_repository="LEDE_X86_64_OpenWRT"
+          github_branch="master"
+          github_token="null"
+          EOF
+
+          # 注入 Firmware_Infomation (后缀定位)
+          cat << EOF > "files/etc/AutoBuild/Firmware_Infomation"
+          Firmware_Type="img.gz"
+          Firmware_Device="generic"
+          EOF
+
+          # 注入 openwrt_info (UI 显示)
           cat << EOF > "files/etc/openwrt_info"
           Author="jphy1314"
           Github="https://github.com/jphy1314/LEDE_X86_64_OpenWRT"
@@ -295,7 +312,7 @@ jobs:
           OP_FLAG="x86_64"
           EOF
 
-          # 写入二次校验文件，彻底消除 UI 界面乱码
+          # 注入 openwrt_release (版本对齐)
           cat << EOF > "files/etc/openwrt_release"
           DISTRIB_ID='OpenWrt'
           DISTRIB_RELEASE='R$(date +%y.%m.%d)'
@@ -305,19 +322,17 @@ jobs:
           DISTRIB_DESCRIPTION='OpenWrt by jphy1314'
           EOF
 
-          # 权限与换行符修正 (CI 环境必备)
-          chmod 0644 files/etc/openwrt_info files/etc/openwrt_release
-          sed -i 's/\r$//' files/etc/openwrt_info files/etc/openwrt_release 2>/dev/null || true
+          # 强制修正权限与换行符 (针对所有注入文件)
+          find files/etc -type f -exec chmod 644 {} +
+          find files/etc -type f -exec sed -i 's/\r$//' {} + 2>/dev/null || true
           
-          log_i "✅ 环境指纹注入完成：files/etc/openwrt_info"
+          log_i "✅ Hyy2001X 环境适配完成"
           # ==============================================================================
           
-          # 6. 最后防线：确保 CCACHE 绝对开启
+          # 6. 开启 CCACHE 优化
           if ! grep -q "CONFIG_CCACHE=y" .config; then
-              echo "CONFIG_DEVEL=y" >> .config
-              echo "CONFIG_CCACHE=y" >> .config
+              echo -e "\nCONFIG_DEVEL=y\nCONFIG_CCACHE=y" >> .config
           fi
-
       - name: Download Package Dependencies
         working-directory: ${{ github.workspace }}/openwrt
         run: |
