@@ -258,18 +258,61 @@ jobs:
         working-directory: ${{ github.workspace }}/openwrt
         run: |
           set -euo pipefail
+
+          # 1. 定义临时 log 函数，确保步骤独立运行不报错
+          log_i() { echo -e "\e[32m[INFO] $1\e[0m"; }
           
-          # 1. 导入独立的基础配置清单
+          # 2. 导入独立的基础配置清单
           cat ${{ github.workspace }}/x86_64.config > .config
           
-          # 2. 运行 DIY Part 2 探针，根据环境变量进行动态覆盖和系统拦截注入
+          # 3. 运行 DIY Part 2 探针，根据环境变量进行动态覆盖和系统拦截注入
           SCRIPT="${{ github.workspace }}/diy-part2.sh"
           [[ -f "$SCRIPT" ]] && bash "$SCRIPT" || true
           
-          # 3. 依赖闭环补全
+          # 4. 生成默认依赖配置
           make defconfig
+
+          # ==============================================================================
+          # 5. 【核心修复】：物理注入 AutoUpdate 环境身份证 (解决图片中的乱码与缺失)
+          # ==============================================================================
+          log_i "🔥 正在全量注入 AutoUpdate 环境指纹..."
           
-          # 4. 最后防线：确保 CCACHE 绝对开启
+          # 创建 files 目录（OpenWrt 编译系统会自动将此目录内容打包进 /etc）
+          mkdir -p files/etc
+          
+          # 写入全量字段，匹配 AutoUpdate 插件的所有搜索目标
+          cat << EOF > "files/etc/openwrt_info"
+          Author="jphy1314"
+          Github="https://github.com/jphy1314/LEDE_X86_64_OpenWRT"
+          TARGET_PROFILE="x86_64"
+          TARGET_BOARD="x86"
+          TARGET_SUBTARGET="64"
+          Firmware_Type="img.gz"
+          OP_AUTHOR="jphy1314"
+          OP_VERSION="R$(date +%y.%m.%d)"
+          OP_BRANCH="master"
+          OP_REPO="https://github.com/jphy1314/LEDE_X86_64_OpenWRT"
+          OP_FLAG="x86_64"
+          EOF
+
+          # 写入二次校验文件，彻底消除 UI 界面乱码
+          cat << EOF > "files/etc/openwrt_release"
+          DISTRIB_ID='OpenWrt'
+          DISTRIB_RELEASE='R$(date +%y.%m.%d)'
+          DISTRIB_REVISION='$(date +%Y%m%d)'
+          DISTRIB_TARGET='x86/64'
+          DISTRIB_ARCH='x86_64'
+          DISTRIB_DESCRIPTION='OpenWrt by jphy1314'
+          EOF
+
+          # 权限与换行符修正 (CI 环境必备)
+          chmod 0644 files/etc/openwrt_info files/etc/openwrt_release
+          sed -i 's/\r$//' files/etc/openwrt_info files/etc/openwrt_release 2>/dev/null || true
+          
+          log_i "✅ 环境指纹注入完成：files/etc/openwrt_info"
+          # ==============================================================================
+          
+          # 6. 最后防线：确保 CCACHE 绝对开启
           if ! grep -q "CONFIG_CCACHE=y" .config; then
               echo "CONFIG_DEVEL=y" >> .config
               echo "CONFIG_CCACHE=y" >> .config
