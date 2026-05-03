@@ -93,7 +93,7 @@ stop() {
 EOF
 chmod 0755 "${FILES_DIR}/etc/init.d/ipsec"
 
-log_i "✅ IPSec 空壳注入完成，出厂即免冲突状态"
+log_i "✅ 阶段 2: IPSec 空壳注入完成，出厂即免冲突状态"
 
 # ==============================================================================
 # 阶段 3: 网卡硬件加速服务 (ethtool 策略)
@@ -122,7 +122,7 @@ start() {
 }
 EOF
 chmod 0755 "${FILES_DIR}/etc/init.d/network-accel"
-log_i "✅ 阶段 2: 网卡硬件加速注入完成"
+log_i "✅ 阶段 3: 网卡硬件加速注入完成"
 
 # ==============================================================================
 # 阶段 4: Block IO 物理层优化 (NVMe/SSD/HDD 自动适配)
@@ -154,7 +154,7 @@ EOF
 sed -i "s/SSD_RA=.*/SSD_RA=${SSD_READ_AHEAD_KB}/" "${FILES_DIR}/etc/hotplug.d/block/93-optimize-io"
 sed -i "s/HDD_RA=.*/HDD_RA=${HDD_READ_AHEAD_KB}/" "${FILES_DIR}/etc/hotplug.d/block/93-optimize-io"
 chmod 0755 "${FILES_DIR}/etc/hotplug.d/block/93-optimize-io"
-log_i "✅ 阶段 3: Block IO 优化注入完成"
+log_i "✅ 阶段 4: Block IO 优化注入完成"
 
 # ==============================================================================
 # 阶段 5: TRIM 引擎及静态 Cron 注入 (首次开机立即生效)
@@ -183,7 +183,7 @@ echo "${TRIM_SCHEDULE} /usr/bin/auto-fstrim" >> /etc/crontabs/root
 exit 0
 EOF
 chmod 0755 "${FILES_DIR}/etc/uci-defaults/99-zz-cron-trim"
-log_i "✅ 阶段 4: TRIM Cron 注入完成并立即生效"
+log_i "✅ 阶段 5: TRIM Cron 注入完成并立即生效"
 
 # ==============================================================================
 # 阶段 6: 挂载策略引擎 (处理空格路径 + 保留用户自定义选项)
@@ -251,7 +251,7 @@ uci commit fstab
 exit 0
 EOF
 chmod 0755 "${FILES_DIR}/etc/uci-defaults/96-fstab-clean"
-log_i "✅ 阶段 5: 挂载策略引擎及 fstab 清洗注入完成"
+log_i "✅ 阶段 6: 挂载策略引擎及 fstab 清洗注入完成"
 
 # ==============================================================================
 # 阶段 7: Hotplug 挂载策略钩子 (动态同步)
@@ -265,42 +265,6 @@ cat <<'EOF' > "${FILES_DIR}/etc/hotplug.d/mount/95-policy-hotplug"
 /etc/init.d/mount-policy-engine start
 EOF
 chmod 0755 "${FILES_DIR}/etc/hotplug.d/mount/95-policy-hotplug"
-log_i "✅ 阶段 6: Hotplug 挂载钩子注入完成"
-
-# ==============================================================================
-# 阶段 8: 伪造 AutoUpdate 底层环境身份证 (彻底治愈乱码与未检测到环境)
-# ==============================================================================
-log_i "🔥 正在注入 AutoUpdate 最新底层环境配置文件..."
-
-# 确保目标目录存在，避免变量为空导致的路径风险
-# 如果 FILES_DIR 未定义，默认为当前目录下的 files 文件夹
-TARGET_ETC_DIR="${FILES_DIR:-files}/etc"
-mkdir -p "$TARGET_ETC_DIR"
-
-# 定义目标文件路径
-INFO_FILE="$TARGET_ETC_DIR/openwrt_info"
-
-# 【核心修正】：使用覆盖写入模式，确保身份证信息的纯净与唯一
-# 增加 DISTRIB 变量以提高与各种 AutoUpdate 变体的兼容性
-cat << EOF > "$INFO_FILE"
-Github="https://github.com/jphy1314/LEDE_X86_64_OpenWRT"
-TARGET_PROFILE="x86_64"
-TARGET_BOARD="x86"
-TARGET_SUBTARGET="64"
-Firmware_Type="img.gz"
-DISTRIB_ID="LEDE"
-DISTRIB_REVISION="R$(date +%y.%m.%d)"
-DISTRIB_DESCRIPTION="OpenWrt compiled by jphy1314"
-EOF
-
-# 赋予正确的只读权限 (0644: 所有者读写，组/其他只读)
-chmod 0644 "$INFO_FILE"
-
-# 额外的一步：为了防止乱码，确保文件是以 UTF-8 编码且无 BOM 格式保存 (Linux 标准)
-# 在某些环境下，手动清理一下行尾符防止回车符干扰脚本读取
-sed -i 's/\r$//' "$INFO_FILE" 2>/dev/null || true
-
-log_i "✅ AutoUpdate 环境身份证 (openwrt_info) 注入完成"
-log_i "📍 路径: $INFO_FILE"
+log_i "✅ 阶段 7: Hotplug 挂载钩子注入完成"
 
 log_i "🎉 Part 2 编译脚本完整版构建已就绪！"
