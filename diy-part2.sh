@@ -267,4 +267,23 @@ EOF
 chmod 0755 "${FILES_DIR}/etc/hotplug.d/mount/95-policy-hotplug"
 log "✅ 阶段 6: Hotplug 挂载钩子注入完成"
 
-log "🎉 Part 2 编译脚本 v4.7 完整版构建已就绪！"
+# ==============================================================================
+# 阶段 8: 伪造 AutoUpdate 底层环境身份证 (彻底治愈乱码与未检测到环境)
+# ==============================================================================
+log "🔥 正在注入 AutoUpdate 底层环境配置文件..."
+
+mkdir -p "${FILES_DIR}/etc/autobuild"
+cat << EOF > "${FILES_DIR}/etc/autobuild/default"
+# AutoBuild-Actions Environment 伪造补丁
+Github="https://github.com/jphy1314/LEDE_X86_64_OpenWRT"
+TARGET_PROFILE="x86_64"
+TARGET_BOARD="x86"
+TARGET_SUBTARGET="64"
+# 告诉脚本下载什么格式的固件
+Firmware_Format="img.gz"
+EOF
+
+chmod 0755 "${FILES_DIR}/etc/autobuild/default"
+log "✅ AutoUpdate 环境身份证注入完成"
+
+log "🎉 Part 2 编译脚本完整版构建已就绪！"
