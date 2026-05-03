@@ -28,7 +28,7 @@ readonly FILES_DIR="files"
 # CI 错误捕捉：在构建日志中精确定位报错行号
 trap 'echo "::error file=${BASH_SOURCE[0]},line=${LINENO}::❌ 构建失败，请检查脚本逻辑"; exit 1' ERR
 
-log() { echo -e "\033[36m[INFO]\033[0m $1"; }
+log_i() { echo -e "\033[36m[INFO]\033[0m $1"; }
 
 # 预检：必须在 OpenWrt 源码根目录执行
 [[ -f scripts/feeds ]] || { echo "❌ 错误: 必须在 OpenWrt 源码根目录执行此脚本"; exit 1; }
@@ -67,12 +67,12 @@ fi
 exit 0
 EOF
 chmod 0755 "${FILES_DIR}/etc/uci-defaults/90-system-init"
-log "✅ 阶段 1: 系统初始化注入完成"
+log_i "✅ 阶段 1: 系统初始化注入完成"
 
 # ==============================================================================
 # 阶段 2: IPSec VPN 双将夺权终极物理隔离 (Build-time Override)
 # ==============================================================================
-log "🔥 正在注入 IPSec 物理空壳，彻底拦截原生服务抢权..."
+log_i "🔥 正在注入 IPSec 物理空壳，彻底拦截原生服务抢权..."
 
 # 在编译期直接伪造一个空壳启动脚本，强行覆盖掉 StrongSwan 原生的 /etc/init.d/ipsec
 cat << 'EOF' > "${FILES_DIR}/etc/init.d/ipsec"
@@ -122,7 +122,7 @@ start() {
 }
 EOF
 chmod 0755 "${FILES_DIR}/etc/init.d/network-accel"
-log "✅ 阶段 2: 网卡硬件加速注入完成"
+log_i "✅ 阶段 2: 网卡硬件加速注入完成"
 
 # ==============================================================================
 # 阶段 4: Block IO 物理层优化 (NVMe/SSD/HDD 自动适配)
@@ -154,7 +154,7 @@ EOF
 sed -i "s/SSD_RA=.*/SSD_RA=${SSD_READ_AHEAD_KB}/" "${FILES_DIR}/etc/hotplug.d/block/93-optimize-io"
 sed -i "s/HDD_RA=.*/HDD_RA=${HDD_READ_AHEAD_KB}/" "${FILES_DIR}/etc/hotplug.d/block/93-optimize-io"
 chmod 0755 "${FILES_DIR}/etc/hotplug.d/block/93-optimize-io"
-log "✅ 阶段 3: Block IO 优化注入完成"
+log_i "✅ 阶段 3: Block IO 优化注入完成"
 
 # ==============================================================================
 # 阶段 5: TRIM 引擎及静态 Cron 注入 (首次开机立即生效)
@@ -183,7 +183,7 @@ echo "${TRIM_SCHEDULE} /usr/bin/auto-fstrim" >> /etc/crontabs/root
 exit 0
 EOF
 chmod 0755 "${FILES_DIR}/etc/uci-defaults/99-zz-cron-trim"
-log "✅ 阶段 4: TRIM Cron 注入完成并立即生效"
+log_i "✅ 阶段 4: TRIM Cron 注入完成并立即生效"
 
 # ==============================================================================
 # 阶段 6: 挂载策略引擎 (处理空格路径 + 保留用户自定义选项)
@@ -251,7 +251,7 @@ uci commit fstab
 exit 0
 EOF
 chmod 0755 "${FILES_DIR}/etc/uci-defaults/96-fstab-clean"
-log "✅ 阶段 5: 挂载策略引擎及 fstab 清洗注入完成"
+log_i "✅ 阶段 5: 挂载策略引擎及 fstab 清洗注入完成"
 
 # ==============================================================================
 # 阶段 7: Hotplug 挂载策略钩子 (动态同步)
@@ -265,7 +265,7 @@ cat <<'EOF' > "${FILES_DIR}/etc/hotplug.d/mount/95-policy-hotplug"
 /etc/init.d/mount-policy-engine start
 EOF
 chmod 0755 "${FILES_DIR}/etc/hotplug.d/mount/95-policy-hotplug"
-log "✅ 阶段 6: Hotplug 挂载钩子注入完成"
+log_i "✅ 阶段 6: Hotplug 挂载钩子注入完成"
 
 # ==============================================================================
 # 阶段 8: 伪造 AutoUpdate 底层环境身份证 (彻底治愈乱码与未检测到环境)
