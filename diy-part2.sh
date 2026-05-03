@@ -270,20 +270,37 @@ log "✅ 阶段 6: Hotplug 挂载钩子注入完成"
 # ==============================================================================
 # 阶段 8: 伪造 AutoUpdate 底层环境身份证 (彻底治愈乱码与未检测到环境)
 # ==============================================================================
-log "🔥 正在注入 AutoUpdate 底层环境配置文件..."
+log_i "🔥 正在注入 AutoUpdate 最新底层环境配置文件..."
 
-mkdir -p "${FILES_DIR}/etc/autobuild"
-cat << EOF > "${FILES_DIR}/etc/autobuild/default"
-# AutoBuild-Actions Environment 伪造补丁
+# 确保目标目录存在，避免变量为空导致的路径风险
+# 如果 FILES_DIR 未定义，默认为当前目录下的 files 文件夹
+TARGET_ETC_DIR="${FILES_DIR:-files}/etc"
+mkdir -p "$TARGET_ETC_DIR"
+
+# 定义目标文件路径
+INFO_FILE="$TARGET_ETC_DIR/openwrt_info"
+
+# 【核心修正】：使用覆盖写入模式，确保身份证信息的纯净与唯一
+# 增加 DISTRIB 变量以提高与各种 AutoUpdate 变体的兼容性
+cat << EOF > "$INFO_FILE"
 Github="https://github.com/jphy1314/LEDE_X86_64_OpenWRT"
 TARGET_PROFILE="x86_64"
 TARGET_BOARD="x86"
 TARGET_SUBTARGET="64"
-# 告诉脚本下载什么格式的固件
-Firmware_Format="img.gz"
+Firmware_Type="img.gz"
+DISTRIB_ID="LEDE"
+DISTRIB_REVISION="R$(date +%y.%m.%d)"
+DISTRIB_DESCRIPTION="OpenWrt compiled by jphy1314"
 EOF
 
-chmod 0755 "${FILES_DIR}/etc/autobuild/default"
-log "✅ AutoUpdate 环境身份证注入完成"
+# 赋予正确的只读权限 (0644: 所有者读写，组/其他只读)
+chmod 0644 "$INFO_FILE"
+
+# 额外的一步：为了防止乱码，确保文件是以 UTF-8 编码且无 BOM 格式保存 (Linux 标准)
+# 在某些环境下，手动清理一下行尾符防止回车符干扰脚本读取
+sed -i 's/\r$//' "$INFO_FILE" 2>/dev/null || true
+
+log_i "✅ AutoUpdate 环境身份证 (openwrt_info) 注入完成"
+log_i "📍 路径: $INFO_FILE"
 
 log "🎉 Part 2 编译脚本完整版构建已就绪！"
