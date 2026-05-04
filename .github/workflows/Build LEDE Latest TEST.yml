@@ -80,12 +80,17 @@ jobs:
           # 仅拉取单分支、最新一次 commit，极大减少 git clone 时间
           git clone -b $REPO_BRANCH --single-branch --depth 1 $REPO_URL openwrt
 
-      - name: Generate Cache Key Variables
+      - name: Generate Cache Key Variables & Set Version
         id: cache-vars
         run: |
           set -euo pipefail
-          # 生成按天计算的时间戳，保证每天至少有一次全量/增量 Cache 刷新
           echo "date=$(date +'%Y%m%d')" >> $GITHUB_OUTPUT
+          
+          # 【补齐你的神级脚本需要的版本号变量】：例如 R26.05.04
+          VERSION_TAG="R$(date +%y.%m.%d)"
+          echo "TAG_VERSION=${VERSION_TAG}" >> $GITHUB_ENV
+          echo "CURRENT_DATE=$(date +%Y%m%d)" >> $GITHUB_ENV
+          echo "🚀 锁定的版本号为: ${VERSION_TAG}"
 
       # 【企业级缓存策略】
       # 缓存键由 分支名 + 核心配置文件的 Hash + 日期 组成。
@@ -276,49 +281,59 @@ jobs:
           make defconfig
 
           # ==============================================================================
-          # 5. 【架构师级适配】：Hyy2001X AutoUpdate 环境注入 (R标准版)
+          # 5. 【工业级流水线优化】：Hyy2001X 环境注入
           # ==============================================================================
-          log_i "🔥 正在注入 R 匹配模式环境变量..."
-          
-          mkdir -p files/etc/AutoBuild
-          mkdir -p files/etc/autoupdate
-          
-          # 核心变量：生成 R26.05.04 格式 (yy.mm.dd)
-          # 注意：这里的日期取两位年份，如 2026 -> 26
-          FIRMWARE_VERSION="R$(date +%y.%m.%d)"
-          
-          cat << EOF > "files/etc/autoupdate/default"
+          echo "🚀 启动 CI 级环境适配..."
+
+          # 定义临时路径变量，确保路径可追踪
+          ROOT_FILES="${{ github.workspace }}/openwrt/files"
+          mkdir -p "$ROOT_FILES/etc/AutoBuild"
+          mkdir -p "$ROOT_FILES/etc/autoupdate"
+          mkdir -p "$ROOT_FILES/usr/bin"
+
+          # 校验全局变量 (防止空值注入)
+          if [ -z "${{ env.TAG_VERSION }}" ]; then
+              echo "❌ 错误: TAG_VERSION 环境变量为空！请检查前置步骤。"
+              exit 1
+          fi
+
+          # 写入核心配置文件 (注意：EOF 内部代码不再额外缩进，防止空格污染变量)
+          cat <<EOF > "$ROOT_FILES/etc/autoupdate/default"
           Author="jphy1314"
-          Github="https://github.com/jphy1314/LEDE_X86_64_OpenWRT"
-          TARGET_PROFILE="x86_64"
+          Github="${{ env.REPO_URL }}"
+          TARGET_PROFILE="${{ env.REG_DEVICE }}"
+          TARGET_BOARD="x86"
+          TARGET_SUBTARGET="64"
+          Firmware_Type="combined-efi.img.gz"
           TARGET_FLAG="x86_64"
-          OP_VERSION="${FIRMWARE_VERSION}"
+          OP_VERSION="${{ env.TAG_VERSION }}"
           OP_AUTHOR="jphy1314"
           OP_BRANCH="master"
-          OP_REPO="https://github.com/jphy1314/LEDE_X86_64_OpenWRT"
+          OP_REPO="${{ env.REPO_URL }}"
           EOF
 
-          # 同步配置文件以确保全版本兼容
-          cp files/etc/autoupdate/default files/etc/autoupdate/custom
-          cp files/etc/autoupdate/default files/etc/AutoBuild/Github_Variable
+          # 同步分发配置文件
+          cp "$ROOT_FILES/etc/autoupdate/default" "$ROOT_FILES/etc/autoupdate/custom"
+          cp "$ROOT_FILES/etc/autoupdate/default" "$ROOT_FILES/etc/AutoBuild/Github_Variable"
+          cp "$ROOT_FILES/etc/autoupdate/default" "$ROOT_FILES/etc/openwrt_info"
 
-          # 注入 openwrt_info (用于 UI 页面显示)
-          cat << EOF > "files/etc/openwrt_info"
-          Author="jphy1314"
-          Github="https://github.com/jphy1314/LEDE_X86_64_OpenWRT"
-          TARGET_PROFILE="x86_64"
-          OP_VERSION="${FIRMWARE_VERSION}"
-          OP_AUTHOR="jphy1314"
-          OP_REPO="https://github.com/jphy1314/LEDE_X86_64_OpenWRT"
+          # 生成系统 Release 信息
+          cat <<EOF > "$ROOT_FILES/etc/openwrt_release"
+          DISTRIB_ID='OpenWrt'
+          DISTRIB_RELEASE='${{ env.TAG_VERSION }}'
+          DISTRIB_REVISION='${{ env.CURRENT_DATE }}'
+          DISTRIB_TARGET='x86/64'
+          DISTRIB_ARCH='x86_64'
+          DISTRIB_DESCRIPTION='OpenWrt by jphy1314'
           EOF
 
-          # 软链接修复与权限校准
-          mkdir -p files/usr/bin
-          ln -sf /bin/autoupdate files/usr/bin/autoupdate
-          find files/etc -type f -exec chmod 644 {} +
-          find files/etc -type f -exec sed -i 's/\r$//' {} + 2>/dev/null || true
-          
-          log_i "✅ R模式环境适配完成"          
+          # 软链接与文件完整性清洗
+          ln -sf /bin/autoupdate "$ROOT_FILES/usr/bin/autoupdate"
+          find "$ROOT_FILES" -type f -exec sed -i 's/\r$//' {} + 2>/dev/null || true
+          find "$ROOT_FILES" -type f -exec chmod 644 {} +
+
+          echo "✅ 环境适配完成: 版本号 ${{ env.TAG_VERSION }} 已注入。"
+          # ==============================================================================
           
           # 6. 开启 CCACHE 优化
           if ! grep -q "CONFIG_CCACHE=y" .config; then
@@ -500,24 +515,33 @@ jobs:
           echo "📦 固件发布版本: ${TAG_NAME}" >> release.txt
           echo "status=success" >> $GITHUB_OUTPUT
 
-     # [纯原生重构] 替代软瘫的 softprops/action-gh-release，极速创建发布并上传固件
+      # [纯原生重构] 替代软瘫的 softprops/action-gh-release，极速创建发布并上传固件
       - name: Upload Firmware to Release
-        if: steps.tag.outputs.status == 'success' && env.UPLOAD_RELEASE == 'true'
+        # 修正：判断条件也改为检查 env.TAG_VERSION 是否存在，确保逻辑闭环
+        if: env.TAG_VERSION != '' && env.UPLOAD_RELEASE == 'true' && !cancelled()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          TAG="${{ steps.tag.outputs.release_tag }}"
+          
+          # 直接引用全局锁定的版本号，确保与模块 5 注入的内容完全一致
+          TAG="${{ env.TAG_VERSION }}"
+          
           echo "🚀 开始使用 GitHub CLI 创建 Release [ ${TAG} ] 并上传固件..."
           
-          # 使用 gh 创建 Release，Tag 名现在是 Rxx.xx.xx 格式
+          # 检查是否有文件可上传，防止 CLI 报错
+          if [ -z "$(ls -A ${{ env.FIRMWARE }} 2>/dev/null)" ]; then
+            echo "❌ 错误: 未发现待上传的固件文件！"
+            exit 1
+          fi
+
+          # 使用 gh 创建 Release
           gh release create "${TAG}" \
             --title "${TAG}" \
             --notes-file release.txt \
             ${{ env.FIRMWARE }}/*
             
-          echo "✅ Release 创建及固件上传成功！"
-
+          echo "✅ Release [ ${TAG} ] 创建及固件上传成功！"
       # [纯原生重构] 替代弃更的 Mattraks/delete-workflow-runs，自动清理历史运行记录
       - name: Delete Old Workflow Runs
         env:
