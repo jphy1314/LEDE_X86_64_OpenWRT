@@ -276,58 +276,49 @@ jobs:
           make defconfig
 
           # ==============================================================================
-          # 5. 【架构师级适配】：Hyy2001X AutoUpdate 环境注入
+          # 5. 【架构师级适配】：Hyy2001X AutoUpdate 环境注入 (R标准版)
           # ==============================================================================
-          log_i "🔥 正在全量注入 Hyy2001X 环境变量..."
+          log_i "🔥 正在注入 R 匹配模式环境变量..."
           
-          # 确保目录干净且存在
           mkdir -p files/etc/AutoBuild
+          mkdir -p files/etc/autoupdate
           
-          # 注入 Github_Variable (插件生命线)
-          cat << EOF > "files/etc/AutoBuild/Github_Variable"
-          github_user="jphy1314"
-          github_repository="LEDE_X86_64_OpenWRT"
-          github_branch="master"
-          github_token="null"
+          # 核心变量：生成 R26.05.04 格式 (yy.mm.dd)
+          # 注意：这里的日期取两位年份，如 2026 -> 26
+          FIRMWARE_VERSION="R$(date +%y.%m.%d)"
+          
+          cat << EOF > "files/etc/autoupdate/default"
+          Author="jphy1314"
+          Github="https://github.com/jphy1314/LEDE_X86_64_OpenWRT"
+          TARGET_PROFILE="x86_64"
+          TARGET_FLAG="x86_64"
+          OP_VERSION="${FIRMWARE_VERSION}"
+          OP_AUTHOR="jphy1314"
+          OP_BRANCH="master"
+          OP_REPO="https://github.com/jphy1314/LEDE_X86_64_OpenWRT"
           EOF
 
-          # 注入 Firmware_Infomation (后缀定位)
-          cat << EOF > "files/etc/AutoBuild/Firmware_Infomation"
-          Firmware_Type="img.gz"
-          Firmware_Device="generic"
-          EOF
+          # 同步配置文件以确保全版本兼容
+          cp files/etc/autoupdate/default files/etc/autoupdate/custom
+          cp files/etc/autoupdate/default files/etc/AutoBuild/Github_Variable
 
-          # 注入 openwrt_info (UI 显示)
+          # 注入 openwrt_info (用于 UI 页面显示)
           cat << EOF > "files/etc/openwrt_info"
           Author="jphy1314"
           Github="https://github.com/jphy1314/LEDE_X86_64_OpenWRT"
           TARGET_PROFILE="x86_64"
-          TARGET_BOARD="x86"
-          TARGET_SUBTARGET="64"
-          Firmware_Type="img.gz"
+          OP_VERSION="${FIRMWARE_VERSION}"
           OP_AUTHOR="jphy1314"
-          OP_VERSION="R$(date +%y.%m.%d)"
-          OP_BRANCH="master"
           OP_REPO="https://github.com/jphy1314/LEDE_X86_64_OpenWRT"
-          OP_FLAG="x86_64"
           EOF
 
-          # 注入 openwrt_release (版本对齐)
-          cat << EOF > "files/etc/openwrt_release"
-          DISTRIB_ID='OpenWrt'
-          DISTRIB_RELEASE='R$(date +%y.%m.%d)'
-          DISTRIB_REVISION='$(date +%Y%m%d)'
-          DISTRIB_TARGET='x86/64'
-          DISTRIB_ARCH='x86_64'
-          DISTRIB_DESCRIPTION='OpenWrt by jphy1314'
-          EOF
-
-          # 强制修正权限与换行符 (针对所有注入文件)
+          # 软链接修复与权限校准
+          mkdir -p files/usr/bin
+          ln -sf /bin/autoupdate files/usr/bin/autoupdate
           find files/etc -type f -exec chmod 644 {} +
           find files/etc -type f -exec sed -i 's/\r$//' {} + 2>/dev/null || true
           
-          log_i "✅ Hyy2001X 环境适配完成"
-          # ==============================================================================
+          log_i "✅ R模式环境适配完成"          
           
           # 6. 开启 CCACHE 优化
           if ! grep -q "CONFIG_CCACHE=y" .config; then
@@ -500,23 +491,31 @@ jobs:
         id: tag
         if: steps.compile.outputs.status == 'success' && env.UPLOAD_RELEASE == 'true'
         run: |
-          # 增加业务前缀 'LEDE_' 并携带 DEVICE_NAME，彻底杜绝不同平台编译在同一时间产生的 Tag 相互覆盖
-          echo "release_tag=LEDE_$(date +"%Y.%m.%d-%H%M")${{ env.DEVICE_NAME }}" >> $GITHUB_OUTPUT
+          # 核心修改：生成与固件内部变量完全一致的 Rxx.xx.xx 标签
+          # 后面可以加上设备名后缀，例如 R26.05.04-x86_64
+          TAG_NAME="R$(date +%y.%m.%d)${{ env.DEVICE_NAME }}"
+          echo "release_tag=${TAG_NAME}" >> $GITHUB_OUTPUT
+          
           touch release.txt
+          echo "📦 固件发布版本: ${TAG_NAME}" >> release.txt
           echo "status=success" >> $GITHUB_OUTPUT
 
-      # [纯原生重构] 替代软瘫的 softprops/action-gh-release，极速创建发布并上传固件
+     # [纯原生重构] 替代软瘫的 softprops/action-gh-release，极速创建发布并上传固件
       - name: Upload Firmware to Release
         if: steps.tag.outputs.status == 'success' && env.UPLOAD_RELEASE == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          echo "🚀 开始使用 GitHub CLI 创建 Release 并上传固件..."
-          gh release create "${{ steps.tag.outputs.release_tag }}" \
-            --title "${{ steps.tag.outputs.release_tag }}" \
+          TAG="${{ steps.tag.outputs.release_tag }}"
+          echo "🚀 开始使用 GitHub CLI 创建 Release [ ${TAG} ] 并上传固件..."
+          
+          # 使用 gh 创建 Release，Tag 名现在是 Rxx.xx.xx 格式
+          gh release create "${TAG}" \
+            --title "${TAG}" \
             --notes-file release.txt \
             ${{ env.FIRMWARE }}/*
+            
           echo "✅ Release 创建及固件上传成功！"
 
       # [纯原生重构] 替代弃更的 Mattraks/delete-workflow-runs，自动清理历史运行记录
