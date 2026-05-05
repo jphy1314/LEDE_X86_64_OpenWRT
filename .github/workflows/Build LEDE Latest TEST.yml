@@ -306,19 +306,23 @@ jobs:
           mkdir -p "$ROOT_FILES/usr/bin"
 
           # 校验全局变量 (防止空值注入)
-          if [ -z "${{ env.TAG_VERSION }}" ]; then
+          if[ -z "${{ env.TAG_VERSION }}" ]; then
               echo "❌ 错误: TAG_VERSION 环境变量为空！请检查前置步骤。"
               exit 1
           fi
 
           # 2. 写入核心配置文件 (取消内部缩进，防止空格污染变量)
+          # 【架构师终极修正】：彻底切分“UI 标签”与“底层匹配指纹”
           cat <<EOF > "$ROOT_FILES/etc/autoupdate/default"
           Author="jphy1314"
           Github="https://github.com/${{ github.repository }}"
-          TARGET_PROFILE="x86"
+          # [底层指纹]：必须精准匹配 openwrt-x86-64... 否则底层 wget 会报“解析内容为空”
+          TARGET_PROFILE="x86-64"
           TARGET_BOARD="x86"
           TARGET_SUBTARGET="64"
+          # [防变砖]：精确锁定 efi 完整引导包
           Firmware_Type="combined-efi.img.gz"
+          # [UI 标签]：必须是纯字母，绝对不能有下划线，否则网页端保存时会报“错误的参数”
           TARGET_FLAG="x86"
           OP_VERSION="${{ env.TAG_VERSION }}"
           OP_AUTHOR="jphy1314"
@@ -347,12 +351,12 @@ jobs:
           find "$ROOT_FILES" -type f -exec chmod 644 {} +
 
           echo "✅ 环境适配完成: 版本号 ${{ env.TAG_VERSION }} 已注入。"
-          # ==============================================================================
+          # ==============================================================================          # 6. 开启 CCACHE 优化
           
-          # 6. 开启 CCACHE 优化
           if ! grep -q "CONFIG_CCACHE=y" .config; then
               echo -e "\nCONFIG_DEVEL=y\nCONFIG_CCACHE=y" >> .config
           fi
+              
       - name: Download Package Dependencies
         working-directory: ${{ github.workspace }}/openwrt
         run: |
