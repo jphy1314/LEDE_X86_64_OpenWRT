@@ -315,7 +315,7 @@ jobs:
           cat <<EOF > "$ROOT_FILES/etc/autoupdate/default"
           Author="jphy1314"
           Github="https://github.com/${{ github.repository }}"
-          TARGET_PROFILE="x86-64"
+          TARGET_PROFILE="x86"
           TARGET_BOARD="x86"
           TARGET_SUBTARGET="64"
           Firmware_Type="combined-efi.img.gz"
