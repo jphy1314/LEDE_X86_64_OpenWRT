@@ -531,31 +531,49 @@ jobs:
 
       # [纯原生重构] 替代软瘫的 softprops/action-gh-release，极速创建发布并上传固件
       - name: Upload Firmware to Release
-        # 修正：判断条件也改为检查 env.TAG_VERSION 是否存在，确保逻辑闭环
         if: env.TAG_VERSION != '' && env.UPLOAD_RELEASE == 'true' && !cancelled()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           
-          # 直接引用全局锁定的版本号，确保与模块 5 注入的内容完全一致
+          # 机器识别的纯净标签 (如 R26.05.05)
           TAG="${{ env.TAG_VERSION }}"
+          # 人类阅读的动态标题 (加入精准到分钟的编译时间)
+          BUILD_TIME=$(date +'%H:%M')
+          RELEASE_TITLE="${TAG} (编译时间: ${BUILD_TIME})"
           
-          echo "🚀 开始使用 GitHub CLI 创建 Release [ ${TAG} ] 并上传固件..."
+          echo "🚀 开始上传固件到 Release [ ${TAG} ] ..."
           
-          # 检查是否有文件可上传，防止 CLI 报错
-          if [ -z "$(ls -A ${{ env.FIRMWARE }} 2>/dev/null)" ]; then
+          # 检查是否有文件可上传 (注意 [ 后的空格)
+          if [ -z "$(ls -A "${{ env.FIRMWARE }}" 2>/dev/null)" ]; then
             echo "❌ 错误: 未发现待上传的固件文件！"
             exit 1
           fi
 
-          # 使用 gh 创建 Release
-          gh release create "${TAG}" \
-            --title "${TAG}" \
-            --notes-file release.txt \
-            ${{ env.FIRMWARE }}/*
+          # 检查是否已经存在同名 Release 标签
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "⚠️ 发现同名 Release [$TAG] 已存在，执行资产覆盖更新..."
             
-          echo "✅ Release [ ${TAG} ] 创建及固件上传成功！"
+            # 1. 覆盖上传最新编译的固件实体 (--clobber 确保替换同名文件)
+            gh release upload "$TAG" "${{ env.FIRMWARE }}"/* --clobber
+            
+            # 2. 调用 edit 命令，将旧 Release 的标题强行刷新为刚刚编译的时间
+            gh release edit "$TAG" --title "$RELEASE_TITLE"
+            
+            echo "✅ 资产追加/覆盖成功！Release 标题已刷新为: $RELEASE_TITLE"
+          else
+            echo "🆕 发现全新版本，正在创建新的 Release [$TAG] ..."
+            
+            # 创建全新 Release，赋予带时间戳的 Title
+            gh release create "$TAG" \
+              --title "$RELEASE_TITLE" \
+              --notes-file release.txt \
+              "${{ env.FIRMWARE }}"/*
+              
+            echo "✅ 全新 Release 创建及固件上传成功！"
+          fi
+          
       # [纯原生重构] 替代弃更的 Mattraks/delete-workflow-runs，自动清理历史运行记录
       - name: Delete Old Workflow Runs
         env:
