@@ -209,6 +209,20 @@ jobs:
           mv package/AutoBuild-Packages/luci-app-autoupdate package/community/ 2>/dev/null || true
           mv package/AutoBuild-Packages/autoupdate package/community/ 2>/dev/null || true
           rm -rf package/AutoBuild-Packages
+          
+          # 【架构师终极绝杀】：修复作者源码里的死链与极限短超时 Bug！
+          log_i "🔧 正在对 autoupdate 脚本进行底层 Bug 修复..."
+          AUTO_SCRIPT="package/community/autoupdate/files/bin/autoupdate"
+          if [ -f "$AUTO_SCRIPT" ]; then
+              # 1. 延长网络超时时间从 5秒 提升到 30秒，给 Passwall 留足 TLS 握手时间！
+              sed -i 's/--timeout 5/--timeout 30/g' "$AUTO_SCRIPT"
+              sed -i 's/--timeout 10/--timeout 30/g' "$AUTO_SCRIPT"
+              
+              # 2. 铲除已经倒闭的 ghgo.xyz 镜像代理死链，让 Passwall 直接原生代理下载！
+              sed -i 's|https://ghgo.xyz/||g' "$AUTO_SCRIPT"
+              log_i "✅ autoupdate 源码手术修复成功！"
+          fi
+          # =========================================================
 
           fix_rust() {
               local rust_dir="lang/rust"
