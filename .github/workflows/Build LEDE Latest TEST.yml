@@ -311,31 +311,31 @@ jobs:
               exit 1
           fi
 
-          # 写入核心配置文件 (注意：EOF 内部代码不再额外缩进，防止空格污染变量)
+          # 2. 写入核心配置文件 (取消内部缩进，防止空格污染变量)
           cat <<EOF > "$ROOT_FILES/etc/autoupdate/default"
           Author="jphy1314"
-          Github="${{ env.REPO_URL }}"
-          TARGET_PROFILE="${{ env.REG_DEVICE }}"
+          Github="https://github.com/${{ github.repository }}"
+          TARGET_PROFILE="x86-64"
           TARGET_BOARD="x86"
           TARGET_SUBTARGET="64"
           Firmware_Type="combined-efi.img.gz"
-          TARGET_FLAG="x86_64"
+          TARGET_FLAG="x86"
           OP_VERSION="${{ env.TAG_VERSION }}"
           OP_AUTHOR="jphy1314"
           OP_BRANCH="master"
-          OP_REPO="${{ env.REPO_URL }}"
+          OP_REPO="https://github.com/${{ github.repository }}"
           EOF
 
-          # 同步分发配置文件
-          cp "$ROOT_FILES/etc/autoupdate/default" "$ROOT_FILES/etc/autoupdate/custom"
-          cp "$ROOT_FILES/etc/autoupdate/default" "$ROOT_FILES/etc/AutoBuild/Github_Variable"
-          cp "$ROOT_FILES/etc/autoupdate/default" "$ROOT_FILES/etc/openwrt_info"
+          # 3. 配置文件多路分发 (原子化同步)
+          for target in "custom" "AutoBuild/Github_Variable" "openwrt_info"; do
+              cp "$ROOT_FILES/etc/autoupdate/default" "$ROOT_FILES/etc/$target"
+          done
 
-          # 生成系统 Release 信息
+          # 4. 生成系统 Release 信息 (移除不可见字符隐患)
           cat <<EOF > "$ROOT_FILES/etc/openwrt_release"
           DISTRIB_ID='OpenWrt'
           DISTRIB_RELEASE='${{ env.TAG_VERSION }}'
-          DISTRIB_REVISION='${{ env.CURRENT_DATE }}'
+          DISTRIB_REVISION='$(date +%Y%m%d)'
           DISTRIB_TARGET='x86/64'
           DISTRIB_ARCH='x86_64'
           DISTRIB_DESCRIPTION='OpenWrt by jphy1314'
