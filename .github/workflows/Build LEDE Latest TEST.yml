@@ -349,9 +349,13 @@ jobs:
           ln -sf /bin/autoupdate "$ROOT_FILES/usr/bin/autoupdate"
           find "$ROOT_FILES" -type f -exec sed -i 's/\r$//' {} + 2>/dev/null || true
           find "$ROOT_FILES" -type f -exec chmod 644 {} +
+          # 补丁：确保 bin 目录有执行权限
+          [ -d "$ROOT_FILES/usr/bin" ] && chmod 755 "$ROOT_FILES/usr/bin/autoupdate" || true
 
           echo "✅ 环境适配完成: 版本号 ${{ env.TAG_VERSION }} 已注入。"
-          # ==============================================================================          # 6. 开启 CCACHE 优化
+          # ==============================================================================          
+          
+          # 6. 开启 CCACHE 优化
           
           if ! grep -q "CONFIG_CCACHE=y" .config; then
               echo -e "\nCONFIG_DEVEL=y\nCONFIG_CCACHE=y" >> .config
