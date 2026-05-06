@@ -508,7 +508,7 @@ jobs:
             TARGET_DIR=$(find bin/targets -mindepth 2 -maxdepth 2 -type d | head -n 1 || true)
           fi
           
-          if [ -n "$TARGET_DIR" ] &&[ -d "$TARGET_DIR" ]; then
+          if [ -n "$TARGET_DIR" ] && [ -d "$TARGET_DIR" ]; then
             cd "$TARGET_DIR"
             # 清理占空间的 packages 包夹，以及多余的内核信息文件
             rm -rf packages || true
