@@ -492,6 +492,7 @@ jobs:
 
       - name: Organize Files (Dynamic Path)
         id: organize
+        working-directory: ${{ github.workspace }}/openwrt   # 【核心修复】：明确指定进入 openwrt 厨房找菜！
         if: steps.compile.outputs.status == 'success' && env.UPLOAD_FIRMWARE == 'true'
         run: |
           set -euo pipefail
@@ -499,15 +500,15 @@ jobs:
           # 提取纯净设备名称 (如 x86_64) 用于通配符搜索
           RAW_DEVICE="${DEVICE_NAME#_}"
           
-          # 增加更鲁棒的查找逻辑：直接找包含 combined-efi 的目录
-          TARGET_DIR=$(find bin/targets -type f -name "*combined-efi*" -print -quit | xargs dirname 2>/dev/null || true)
+          # 健壮的固件发现策略：直接在当前 openwrt 目录下的 bin/targets 里找
+          TARGET_DIR=$(find bin/targets -mindepth 2 -maxdepth 2 -type d -name "*${RAW_DEVICE}*" | head -n 1 || true)
           
+          # 如果设备名匹配失败（可能是 generic 这种无特征词汇），退化为抓取第一个有效目录
           if [ -z "$TARGET_DIR" ]; then
-            # 备选：按层级查找
             TARGET_DIR=$(find bin/targets -mindepth 2 -maxdepth 2 -type d | head -n 1 || true)
           fi
           
-          if [ -n "$TARGET_DIR" ] && [ -d "$TARGET_DIR" ]; then
+          if [ -n "$TARGET_DIR" ] &&[ -d "$TARGET_DIR" ]; then
             cd "$TARGET_DIR"
             # 清理占空间的 packages 包夹，以及多余的内核信息文件
             rm -rf packages || true
