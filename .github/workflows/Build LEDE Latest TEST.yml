@@ -347,16 +347,21 @@ jobs:
 
           # 软链接与文件完整性清洗
           ln -sf /bin/autoupdate "$ROOT_FILES/usr/bin/autoupdate"
+          
+          # 【架构师终极防御】：严格使用 find 限制类型，绝对避开软链接穿透陷阱！
+          # 1. 仅对真实文件 (-type f) 执行回车符清洗
           find "$ROOT_FILES" -type f -exec sed -i 's/\r$//' {} + 2>/dev/null || true
+          
+          # 2. 仅对真实文件 (-type f) 赋予 644 权限
           find "$ROOT_FILES" -type f -exec chmod 644 {} +
-          # 补丁：确保 bin 目录有执行权限
-          [ -d "$ROOT_FILES/usr/bin" ] && chmod 755 "$ROOT_FILES/usr/bin/autoupdate" || true
-
+          
+          # 3. 仅对文件夹 (-type d) 赋予 755 权限
+          find "$ROOT_FILES" -type d -exec chmod 755 {} +
+          
           echo "✅ 环境适配完成: 版本号 ${{ env.TAG_VERSION }} 已注入。"
           # ==============================================================================          
           
           # 6. 开启 CCACHE 优化
-          
           if ! grep -q "CONFIG_CCACHE=y" .config; then
               echo -e "\nCONFIG_DEVEL=y\nCONFIG_CCACHE=y" >> .config
           fi
