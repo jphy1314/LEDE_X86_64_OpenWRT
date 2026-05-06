@@ -295,70 +295,70 @@ jobs:
           make defconfig
 
           # ==============================================================================
-          # 5. 【工业级流水线优化】：Hyy2001X 环境注入
+          # 5. 【工业级原版适配】：Hyy2001X 环境注入 (零侵入 + 完美防错版)
           # ==============================================================================
           echo "🚀 启动 CI 级环境适配..."
 
-          # 定义临时路径变量，确保路径可追踪
           ROOT_FILES="${{ github.workspace }}/openwrt/files"
-          mkdir -p "$ROOT_FILES/etc/AutoBuild"
           mkdir -p "$ROOT_FILES/etc/autoupdate"
-          mkdir -p "$ROOT_FILES/usr/bin"
+          mkdir -p "$ROOT_FILES/etc/uci-defaults"
 
-          # 校验全局变量 (防止空值注入)
           if [ -z "${{ env.TAG_VERSION }}" ]; then
-              echo "❌ 错误: TAG_VERSION 环境变量为空！请检查前置步骤。"
+              echo "❌ 错误: TAG_VERSION 环境变量为空！"
               exit 1
           fi
 
-          # 2. 写入核心配置文件 (取消内部缩进，防止空格污染变量)
-          # 【架构师终极修正】：彻底切分“UI 标签”与“底层匹配指纹”
-          cat <<EOF > "$ROOT_FILES/etc/autoupdate/default"
+          # --------------------------------------------------------------------------
+          # 1. 生成 100% 迎合原版脚本的标准 openwrt_info 身份证
+          # --------------------------------------------------------------------------
+          cat <<EOF > "$ROOT_FILES/etc/openwrt_info"
           Author="jphy1314"
           Github="https://github.com/${{ github.repository }}"
-          # [底层指纹]：必须精准匹配 openwrt-x86-64... 否则底层 wget 会报“解析内容为空”
+          # 【实战修正 1】：必须用减号！完美匹配 combined-efi.img.gz 固件名，防 API 报空！
           TARGET_PROFILE="x86-64"
           TARGET_BOARD="x86"
           TARGET_SUBTARGET="64"
-          # [防变砖]：精确锁定 efi 完整引导包
           Firmware_Type="combined-efi.img.gz"
-          # [UI 标签]：必须是纯字母，绝对不能有下划线，否则网页端保存时会报“错误的参数”
-          TARGET_FLAG="x86"
           OP_VERSION="${{ env.TAG_VERSION }}"
           OP_AUTHOR="jphy1314"
           OP_BRANCH="master"
           OP_REPO="https://github.com/${{ github.repository }}"
           EOF
 
-          # 3. 配置文件多路分发 (原子化同步)
-          for target in "custom" "AutoBuild/Github_Variable" "openwrt_info"; do
-              cp "$ROOT_FILES/etc/autoupdate/default" "$ROOT_FILES/etc/$target"
-          done
+          # 同步给旧版变量读取路径
+          cp "$ROOT_FILES/etc/openwrt_info" "$ROOT_FILES/etc/autoupdate/default"
 
-          # 4. 生成系统 Release 信息 (移除不可见字符隐患)
+          # --------------------------------------------------------------------------
+          # 2. 生成系统 Release 面板信息
+          # --------------------------------------------------------------------------
           cat <<EOF > "$ROOT_FILES/etc/openwrt_release"
           DISTRIB_ID='OpenWrt'
           DISTRIB_RELEASE='${{ env.TAG_VERSION }}'
-          DISTRIB_REVISION='$(date +%Y%m%d)'
+          DISTRIB_REVISION='${{ env.CURRENT_DATE }}'
           DISTRIB_TARGET='x86/64'
           DISTRIB_ARCH='x86_64'
           DISTRIB_DESCRIPTION='OpenWrt by jphy1314'
           EOF
 
-          # 软链接与文件完整性清洗
-          ln -sf /bin/autoupdate "$ROOT_FILES/usr/bin/autoupdate"
+          # --------------------------------------------------------------------------
+          # 3. 【终极绕过 UI 校验】：在开机时直接将正确参数注入底层 UCI 数据库
+          # --------------------------------------------------------------------------
+          cat <<EOF > "$ROOT_FILES/etc/uci-defaults/99-autoupdate-config"
+          #!/bin/sh
+          uci -q batch << EOI
+          set autoupdate.@autoupdate[0].github='https://github.com/${{ github.repository }}'
+          # 【实战修正 2】：必须是纯字母！彻底规避 LuCI 前端恶心的 [a-zA-Z0-9] 正则报警！
+          set autoupdate.@autoupdate[0].fw_flag='x86'
+          commit autoupdate
+          EOI
+          exit 0
+          EOF
+          chmod 0755 "$ROOT_FILES/etc/uci-defaults/99-autoupdate-config"
+
+          # 清洗换行符，防止 Windows CRLF 导致变量后多出隐藏 \r 字符
+          find "$ROOT_FILES/etc" -type f -exec sed -i 's/\r$//' {} + 2>/dev/null || true
           
-          # 【架构师终极防御】：严格使用 find 限制类型，绝对避开软链接穿透陷阱！
-          # 1. 仅对真实文件 (-type f) 执行回车符清洗
-          find "$ROOT_FILES" -type f -exec sed -i 's/\r$//' {} + 2>/dev/null || true
-          
-          # 2. 仅对真实文件 (-type f) 赋予 644 权限
-          find "$ROOT_FILES" -type f -exec chmod 644 {} +
-          
-          # 3. 仅对文件夹 (-type d) 赋予 755 权限
-          find "$ROOT_FILES" -type d -exec chmod 755 {} +
-          
-          echo "✅ 环境适配完成: 版本号 ${{ env.TAG_VERSION }} 已注入。"
+          echo "✅ 原生环境适配完成: 底层指纹与 UI 绕过参数已完美就绪。"
           # ==============================================================================          
           
           # 6. 开启 CCACHE 优化
