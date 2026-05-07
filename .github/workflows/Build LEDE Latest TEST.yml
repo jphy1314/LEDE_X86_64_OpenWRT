@@ -216,21 +216,25 @@ jobs:
           log_i "🔧 正在对 autoupdate 脚本进行底层逻辑修补..."
           AUTO_SCRIPT="package/community/autoupdate/files/bin/autoupdate"
           if [ -f "$AUTO_SCRIPT" ]; then
-              # 1. 修复原作者的正则僵化症：强制兼容官方标准的 x86-64 格式
-              sed -i 's/x86_64/x86-64/g' "$AUTO_SCRIPT"
-              
-              # 2. 延长超时时间，给 Passwall HTTPS 握手留足余量 (5秒 -> 30秒)
+              # 1. 延长超时时间，给 Passwall HTTPS 握手留足余量 (5秒 -> 30秒)
               sed -i 's/--timeout 5/--timeout 30/g' "$AUTO_SCRIPT"
               sed -i 's/--timeout 10/--timeout 30/g' "$AUTO_SCRIPT"
               
-              # 3. 铲除倒闭的 ghgo.xyz 死链
+              # 2. 铲除倒闭的 ghgo.xyz 死链
               sed -i 's|https://ghgo.xyz/||g' "$AUTO_SCRIPT"
               
-              # 4. 【致命防御】：打断“云端套娃自残”机制！
-              # 禁止它去网上下载未修补的残缺原版脚本覆盖自己，强制使用本地修补后的完美版本！
+              # 3. 【致命防御】：打断“云端套娃自残”机制！
               sed -i 's/DOWNLOADER --path ${Tmp_Path} --file-name autoupdate.*/cp -f \/bin\/autoupdate ${Tmp_Path}\/autoupdate/g' "$AUTO_SCRIPT"
               
-              log_i "✅ autoupdate 源码修补成功，已打造成完美契合官方底层的极客版本！"
+              # 4. 【终极劫持】：无视作者的破正则！在他报错报空前，强制精准提取 efi 固件地址！
+              sed -i '/Github API 解析内容为空/i \
+              URL_Final=$(jq -r ".assets[].browser_download_url" ${API_Cache} 2>/dev/null | grep "combined-efi.img.gz" | head -n 1)\
+              if[ -n "$URL_Final" ]; then\
+                  echo "$URL_Final" > ${API_File}\
+                  return 0\
+              fi' "$AUTO_SCRIPT"
+              
+              log_i "✅ autoupdate 源码修补成功，已植入强制解析劫持后门！"
           fi
           # =========================================================
 
