@@ -316,6 +316,7 @@ jobs:
           Github="https://github.com/${{ github.repository }}"
           # 【实战修正 1】：必须用减号！完美匹配 combined-efi.img.gz 固件名，防 API 报空！
           TARGET_PROFILE="x86-64"
+          TARGET_FLAG="x86"
           TARGET_BOARD="x86"
           TARGET_SUBTARGET="64"
           Firmware_Type="combined-efi.img.gz"
