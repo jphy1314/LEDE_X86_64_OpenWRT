@@ -229,7 +229,7 @@ jobs:
               # 4. 【终极劫持】：无视作者的破正则！在他报错报空前，强制精准提取 efi 固件地址！
               sed -i '/Github API 解析内容为空/i \
               URL_Final=$(jq -r ".assets[].browser_download_url" ${API_Cache} 2>/dev/null | grep "combined-efi.img.gz" | head -n 1)\
-              if[ -n "$URL_Final" ]; then\
+              if [ -n "$URL_Final" ]; then\
                   echo "$URL_Final" > ${API_File}\
                   return 0\
               fi' "$AUTO_SCRIPT"
