@@ -328,7 +328,7 @@ jobs:
           OP_VERSION="${{ env.TAG_VERSION }}"
           OP_AUTHOR="jphy1314"
           OP_BRANCH="master"
-          OP_REPO="https://github.com/${{ github.repository }}"
+          OP_REPO="${{ github.event.repository.name }}"
           EOF
 
           cp "$ROOT_FILES/etc/autoupdate/default" "$ROOT_FILES/etc/autoupdate/custom"
