@@ -302,7 +302,7 @@ jobs:
           mkdir -p "$ROOT_FILES/etc/autoupdate"
           mkdir -p "$ROOT_FILES/usr/bin"
 
-          if[ -z "${{ env.TAG_VERSION }}" ]; then
+          if [ -z "${{ env.TAG_VERSION }}" ]; then
               echo "❌ 错误: TAG_VERSION 环境变量为空！请检查前置步骤。"
               exit 1
           fi
