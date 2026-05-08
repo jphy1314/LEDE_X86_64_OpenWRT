@@ -216,17 +216,25 @@ jobs:
           log_i "🔧 正在对 autoupdate 脚本进行底层逻辑修补..."
           AUTO_SCRIPT="package/community/autoupdate/files/bin/autoupdate"
           if [ -f "$AUTO_SCRIPT" ]; then
-              # 1. 延长网络超时时间从 5秒 提升到 30秒
+              # 1. 延长网络超时时间从 5秒 提升到 30秒，给 Passwall 留足时间
               sed -i 's/--timeout 5/--timeout 30/g' "$AUTO_SCRIPT"
               sed -i 's/--timeout 10/--timeout 30/g' "$AUTO_SCRIPT"
               
-              # 2. 铲除倒闭的 ghgo.xyz 死链
-              sed -i 's|https://ghgo.xyz/||g' "$AUTO_SCRIPT"
+              # 2. 铲除各种已经倒闭的代理死链
+              sed -i 's|https://ghgo.xyz/||g; s|https://ghps.cc/||g; s|https://ghproxy.cn/||g' "$AUTO_SCRIPT"
               
-              # 3. 【致命防御】：打断“云端套娃自残”机制！
-              sed -i 's/DOWNLOADER --path ${Tmp_Path} --file-name autoupdate.*/cp -f \/bin\/autoupdate ${Tmp_Path}\/autoupdate/g' "$AUTO_SCRIPT"
+              # 3. 【致命反杀 1】：切断云端套娃自残机制！
+              sed -i 's|Script_Url=.*|Script_Url="http://127.0.0.1/404"|g' "$AUTO_SCRIPT"
               
-              log_i "✅ autoupdate 源码修补成功，已打造成完美契合的极客版本！"
+              # 4. 【致命反杀 2】：植入最高优先级的绝对提取指令！
+              sed -i '/case ${name} in/i \
+          if echo "${name}" | grep -q "combined-efi.img.gz"; then\
+              URL_Final=$(jq -r ".assets[${i}].browser_download_url" ${API_Cache} 2>/dev/null)\
+              Firmware_Name="${name}"\
+              break 2\
+          fi' "$AUTO_SCRIPT"
+              
+              log_i "✅ autoupdate 源码修补成功，已彻底斩断套娃，植入绝对指令！"
           fi
           # =========================================================
           
