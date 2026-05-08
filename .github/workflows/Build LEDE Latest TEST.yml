@@ -216,7 +216,7 @@ jobs:
           log_i "🔧 正在对 autoupdate 脚本进行底层逻辑修补..."
           AUTO_SCRIPT="package/community/autoupdate/files/bin/autoupdate"
           if [ -f "$AUTO_SCRIPT" ]; then
-              # 1. 延长网络超时时间从 5秒 提升到 30秒，给 Passwall HTTPS 握手留足余量
+              # 1. 延长网络超时时间从 5秒 提升到 30秒
               sed -i 's/--timeout 5/--timeout 30/g' "$AUTO_SCRIPT"
               sed -i 's/--timeout 10/--timeout 30/g' "$AUTO_SCRIPT"
               
@@ -226,13 +226,7 @@ jobs:
               # 3. 【致命防御】：打断“云端套娃自残”机制！
               sed -i 's/DOWNLOADER --path ${Tmp_Path} --file-name autoupdate.*/cp -f \/bin\/autoupdate ${Tmp_Path}\/autoupdate/g' "$AUTO_SCRIPT"
               
-              # 4. 【满血复活补丁：非侵入式正则插队】
-              # 绝对不污染任何全局变量！直接在 case 语句的第一行插入最高优先级匹配逻辑！
-              # 只要文件名包含 combined-efi.img.gz，立刻捕获并跳出，完美走完后续信息提取流程！
-              sed -i '/case ${name} in/a \
-                  *combined-efi.img.gz*) Firmware_Name="${name}" ; break ;;' "$AUTO_SCRIPT"
-              
-              log_i "✅ autoupdate 源码修补成功，已打造成完美契合官方底层的极客版本！"
+              log_i "✅ autoupdate 源码修补成功，已打造成完美契合的极客版本！"
           fi
           # =========================================================
           
@@ -308,31 +302,32 @@ jobs:
           mkdir -p "$ROOT_FILES/etc/autoupdate"
           mkdir -p "$ROOT_FILES/usr/bin"
 
-          if [ -z "${{ env.TAG_VERSION }}" ]; then
+          if[ -z "${{ env.TAG_VERSION }}" ]; then
               echo "❌ 错误: TAG_VERSION 环境变量为空！请检查前置步骤。"
               exit 1
           fi
 
+          # 【架构师终极揭秘】：绝对不能使用双引号！
+          # autoupdate 的原生解析脚本非常弱智，会把双引号当成字符串本身，导致匹配文件名失败！
           cat <<EOF > "$ROOT_FILES/etc/autoupdate/default"
-          Author="jphy1314"
-          Github="https://github.com/${{ github.repository }}"
-          # [底层指纹]：匹配真实文件名 openwrt-x86-64-generic...
-          TARGET_PROFILE="x86-64"
-          TARGET_BOARD="x86"
-          TARGET_SUBTARGET="64"
-          Firmware_Type="combined-efi.img.gz"
-          # [UI 标签]：纯字母，绝对绕过前端严格正则校验
-          TARGET_FLAG="x86"
-          OP_VERSION="${{ env.TAG_VERSION }}"
-          OP_AUTHOR="jphy1314"
-          OP_BRANCH="master"
-          OP_REPO="${{ github.event.repository.name }}"
+          Author=jphy1314
+          Github=https://github.com/${{ github.repository }}
+          TARGET_PROFILE=x86-64
+          TARGET_BOARD=x86
+          TARGET_SUBTARGET=64
+          Firmware_Type=combined-efi.img.gz
+          TARGET_FLAG=x86
+          OP_VERSION=${{ env.TAG_VERSION }}
+          OP_AUTHOR=jphy1314
+          OP_BRANCH=master
+          OP_REPO=https://github.com/${{ github.repository }}
           EOF
 
           cp "$ROOT_FILES/etc/autoupdate/default" "$ROOT_FILES/etc/autoupdate/custom"
           cp "$ROOT_FILES/etc/autoupdate/default" "$ROOT_FILES/etc/AutoBuild/Github_Variable"
           cp "$ROOT_FILES/etc/autoupdate/default" "$ROOT_FILES/etc/openwrt_info"
 
+          # openwrt_release 是标准的 Linux 系统文件，遵循严格 POSIX 规范，这里必须保留引号！
           cat <<EOF > "$ROOT_FILES/etc/openwrt_release"
           DISTRIB_ID='OpenWrt'
           DISTRIB_RELEASE='${{ env.TAG_VERSION }}'
@@ -346,7 +341,7 @@ jobs:
           find "$ROOT_FILES" -type f -exec sed -i 's/\r$//' {} + 2>/dev/null || true
           find "$ROOT_FILES" -type f -exec chmod 644 {} +
 
-          echo "✅ 环境适配完成: 版本号 ${{ env.TAG_VERSION }} 已注入。"
+          echo "✅ 环境适配完成: 变量已去除致命双引号注入。"
           # ==============================================================================
           
           # 5. 开启 CCACHE 优化
