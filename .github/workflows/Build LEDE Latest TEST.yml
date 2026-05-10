@@ -26,7 +26,7 @@ env:
 jobs:
   build:
     runs-on: ubuntu-24.04
-    #[优化]: 全局超时熔断，防止编译死锁耗尽 GitHub 免费额度 (5小时)
+    # [优化]: 全局超时熔断，防止编译死锁耗尽 GitHub 免费额度 (5小时)
     timeout-minutes: 300 
     
     steps:
@@ -94,6 +94,7 @@ jobs:
 
       # 【企业级缓存策略】
       # 缓存键由 分支名 + 核心配置文件的 Hash + 日期 组成。
+      # 任何本地工作流文件或 feeds 列表的改动都会生成全新 Key，避免读取失效缓存导致玄学报错。
       - name: Cache Ccache
         uses: actions/cache@v5
         with:
@@ -103,10 +104,13 @@ jobs:
             ccache-lede-${{ env.REPO_BRANCH }}-${{ hashFiles('.github/workflows/*.yml', 'diy-part1.sh', 'diy-part2.sh', 'openwrt/feeds.conf.default') }}-
             ccache-lede-${{ env.REPO_BRANCH }}-
 
+      # ==============================================================================
       # 【企业级优化】：缓存下载好的源码包，但利用 ! 语法精准剔除 Go 语言的剧毒缓存库
+      # ==============================================================================
       - name: Cache Downloaded Sources (DL)
         uses: actions/cache@v5
         with:
+          # 使用多行语法，第一行包含全部，第二行用 ! 剔除掉容易中毒的目录
           path: |
             ${{ github.workspace }}/openwrt/dl
             !${{ github.workspace }}/openwrt/dl/go-mod-cache
@@ -119,6 +123,7 @@ jobs:
         run: |
           set -euo pipefail
           SCRIPT="${{ github.workspace }}/diy-part1.sh"
+          # 统一脚本调用风格。如果脚本不存在，|| true 防止报错中断
           [[ -f "$SCRIPT" ]] && bash "$SCRIPT" || true
 
       - name: Update, Patch & Install Feeds
@@ -154,7 +159,7 @@ jobs:
           )
           
           # --------------------------------------------------------------------------
-          # [类 2]: UI 主程序 (必须从 package/ 和 feeds/ 里双重删光，确立新版 UI 唯一性)
+          #[类 2]: UI 主程序 (必须从 package/ 和 feeds/ 里双重删光，确立新版 UI 唯一性)
           # --------------------------------------------------------------------------
           UI_PKGS=(
               luci-app-passwall passwall luci-app-passwall2
@@ -203,6 +208,10 @@ jobs:
           retry git clone --depth 1 https://github.com/pymumu/luci-app-smartdns.git package/luci-app-smartdns
           retry git clone --depth 1 https://github.com/jerrykuku/luci-theme-argon.git package/community/luci-theme-argon
           retry git clone --depth 1 https://github.com/jerrykuku/luci-app-argon-config.git package/community/luci-app-argon-config
+
+          # 【架构师补丁】：彻底消灭 luci-theme-argon 报 wget-any 不存在的警告
+          log_i "🔧 正在修补 Argon 主题依赖警告..."
+          sed -i 's/wget-any/wget-ssl/g' package/community/luci-theme-argon/Makefile
 
           fix_rust() {
               local rust_dir="lang/rust"
@@ -266,7 +275,7 @@ jobs:
           # 3. 补全依赖配置
           make defconfig
           
-          # 5. 开启 CCACHE 优化
+          # 4. 开启 CCACHE 优化
           if ! grep -q "CONFIG_CCACHE=y" .config; then
               echo -e "\nCONFIG_DEVEL=y\nCONFIG_CCACHE=y" >> .config
           fi
@@ -380,7 +389,7 @@ jobs:
 
       - name: Organize Files (Dynamic Path)
         id: organize
-        working-directory: ${{ github.workspace }}/openwrt   # 【核心修复】：明确指定进入 openwrt 厨房找菜！
+        working-directory: ${{ github.workspace }}/openwrt
         if: steps.compile.outputs.status == 'success' && env.UPLOAD_FIRMWARE == 'true'
         run: |
           set -euo pipefail
