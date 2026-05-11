@@ -147,42 +147,29 @@ jobs:
           }
 
           # --------------------------------------------------------------------------
-          # [类 1]: 底层依赖包 (绝对不碰 feeds/，保留官方大社区最新源兜底)
+          # 【纯血 Passwall 路线】：所有相关组件无差别全量接管！
           # --------------------------------------------------------------------------
-          DEP_PKGS=(
+          CONFLICT_PKGS=(
               xray-core v2ray-geodata sing-box chinadns-ng dns2socks hysteria
               ipt2socks microsocks naiveproxy shadowsocks-libev shadowsocks-rust
               shadowsocksr-libev simple-obfs tcping trojan-plus tuic-client
               v2ray-plugin xray-plugin geoview shadow-tls
               smartdns luci-app-smartdns
               luci-theme-argon luci-app-argon-config
-          )
-          
-          # --------------------------------------------------------------------------
-          #[类 2]: UI 主程序 (必须从 package/ 和 feeds/ 里双重删光，确立新版 UI 唯一性)
-          # --------------------------------------------------------------------------
-          UI_PKGS=(
               luci-app-passwall passwall luci-app-passwall2
           )
 
-          log_i "1. 更新 feeds"
+          log_i "1. 更新 feeds (拉取全局基础数据)"
           retry ./scripts/feeds update -a
 
-          log_i "2. 扫荡本地硬编码老旧依赖包..."
-          for pkg in "${DEP_PKGS[@]}"; do
-              safe_pkg=$(printf '%s\n' "$pkg" | sed 's/[][\\.*^$()+?{}\|]/\\&/g')
-              while IFS= read -r -d '' dir; do rm -rf "$dir"; done < <(find package/ -type d -name "$pkg" -print0 2>/dev/null || true)
-              while IFS= read -r -d '' makefile; do
-                  if grep -q -E "^[[:space:]]*PKG_NAME[[:space:]]*:?=[[:space:]]*${safe_pkg}[[:space:]]*$" "$makefile" 2>/dev/null; then
-                      rm -rf "$(dirname "$makefile")"
-                  fi
-              done < <(find package/ -type f -name "Makefile" -print0 2>/dev/null || true)
-          done
-
-          log_i "3. 彻底绞杀旧版 Passwall UI..."
-          for pkg in "${UI_PKGS[@]}"; do
+          # --------------------------------------------------------------------------
+          # 2. 扫荡旧包：干掉 Lean 和官方源里的所有相关版本，为纯血版让路
+          # --------------------------------------------------------------------------
+          log_i "2. 执行双引擎焦土清理，彻底切断非专属源依赖..."
+          for pkg in "${CONFLICT_PKGS[@]}"; do
               safe_pkg=$(printf '%s\n' "$pkg" | sed 's/[][\\.*^$()+?{}\|]/\\&/g')
 
+              # 范围 A: 扫荡 package/ (清理 Lean 本地硬编码)
               while IFS= read -r -d '' dir; do rm -rf "$dir"; done < <(find package/ -type d -name "$pkg" -print0 2>/dev/null || true)
               while IFS= read -r -d '' makefile; do
                   if grep -q -E "^[[:space:]]*PKG_NAME[[:space:]]*:?=[[:space:]]*${safe_pkg}[[:space:]]*$" "$makefile" 2>/dev/null; then
@@ -190,6 +177,7 @@ jobs:
                   fi
               done < <(find package/ -type f -name "Makefile" -print0 2>/dev/null || true)
 
+              # 范围 B: 扫荡 feeds/ (清理官方源，绝对避开我们的 Passwall 专属源！)
               while IFS= read -r -d '' dir; do
                   if [[ "$dir" == *passwall_packages* ]] || [[ "$dir" == *passwall_luci* ]]; then continue; fi
                   rm -rf "$dir"
@@ -202,16 +190,15 @@ jobs:
               done < <(find feeds/ -type f -name "Makefile" -print0 2>/dev/null || true)
           done
 
-          log_i "4. 克隆社区专属插件..."
+          # --------------------------------------------------------------------------
+          # 3. 克隆外部社区插件 (SmartDNS / Argon)
+          # --------------------------------------------------------------------------
+          log_i "3. 注入高级社区插件..."
           mkdir -p package/community
           retry git clone --depth 1 https://github.com/pymumu/openwrt-smartdns.git package/smartdns
           retry git clone --depth 1 https://github.com/pymumu/luci-app-smartdns.git package/luci-app-smartdns
           retry git clone --depth 1 https://github.com/jerrykuku/luci-theme-argon.git package/community/luci-theme-argon
           retry git clone --depth 1 https://github.com/jerrykuku/luci-app-argon-config.git package/community/luci-app-argon-config
-
-          # 【架构师补丁】：彻底消灭 luci-theme-argon 报 wget-any 不存在的警告
-          log_i "🔧 正在修补 Argon 主题依赖警告..."
-          sed -i 's/wget-any/wget-ssl/g' package/community/luci-theme-argon/Makefile
 
           fix_rust() {
               local rust_dir="lang/rust"
@@ -221,18 +208,15 @@ jobs:
               mkdir -p "$rust_dir"
 
               for f in "${files[@]}"; do
-                  log_i "下载 Rust 支持文件: $f"
                   if curl -fL --retry 3 --connect-timeout 10 "$raw_url/$f" -o "$rust_dir/$f" && [ -s "$rust_dir/$f" ]; then
-                      log_i "✅ 下载成功: $f"
+                      log_i "✅ Rust 依赖下载成功: $f"
                   else
-                      log_w "⚠️ 下载失败或文件为空: $f"
-                      need_patch=1
-                      break
+                      need_patch=1; break
                   fi
               done
 
               if [ $need_patch -eq 1 ]; then
-                  log_w "执行 Makefile 变量防断链注入..."
+                  log_w "Rust 依赖缺失，执行兜底注入防报错..."
                   rm -rf "$rust_dir"
                   cp package/smartdns/Makefile package/smartdns/Makefile.bak
                   sed -i 's|^include \.\./\.\./lang/rust/rust-package\.mk|# include ../../lang/rust/rust-package.mk|' package/smartdns/Makefile
@@ -245,15 +229,26 @@ jobs:
           }
           fix_rust
 
-          log_i "5. 常规安装 feeds..."
+          # --------------------------------------------------------------------------
+          # 4. 【决胜时刻】：强制刷新账本索引，接管全盘依赖！
+          # --------------------------------------------------------------------------
+          # 只有加上这句，系统才会真正遗忘被删掉的官方包，承认 Passwall 仓库是唯一合法来源！
+          log_i "4. 🔄 物理环境变动，强制重建 feeds 依赖账本 (update -i)..."
+          ./scripts/feeds update -i
+
+          # --------------------------------------------------------------------------
+          # 5. 安装与双重提权
+          # --------------------------------------------------------------------------
+          log_i "5. 常规铺底安装..."
           retry ./scripts/feeds install -a
 
-          log_i "6. 🚀 强制提权：仅覆盖 Passwall UI..."
-          ./scripts/feeds install -f -p passwall_luci -a
+          log_i "6. 🚀 强制挂载 Passwall 专属全套阵列 (UI + 底层组件)！"
+          retry ./scripts/feeds install -f -p passwall_packages -a
+          retry ./scripts/feeds install -f -p passwall_luci -a
 
           [ -d feeds ] || log_e "feeds 目录不存在"
           [ -d package ] || log_e "package 目录不存在"
-          log_i "✅ Feeds 处理完成，底层核心已成功解绑！"
+          log_i "✅ 纯血版环境重建完成，底层组件已与 Passwall UI 强行锁定为官方原配组合！"
 
       - name: Generate Configuration (配置解耦与探针注入)
         working-directory: ${{ github.workspace }}/openwrt
