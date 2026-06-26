@@ -27,7 +27,7 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     # [优化]: 全局超时熔断，防止编译死锁耗尽 GitHub 免费额度 (5小时)
-    timeout-minutes: 300 
+    timeout-minutes: 360 
     
     steps:
       - name: Checkout Code
