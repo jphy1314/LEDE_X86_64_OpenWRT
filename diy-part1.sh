@@ -84,4 +84,49 @@ if [[ -n "${DUPLICATES}" ]]; then
     log_err "致命错误：检测到 ${FEEDS_CONF} 中存在重复命名的源 (触发 Exit Code 25 的元凶)：\n${DUPLICATES}"
 fi
 
+# ==============================================================================
+# ---[ 5. 内核级深度优化：注入 Docker Cgroup 完整隔离特性 ] ---
+# ==============================================================================
+log_info "========== 开始注入 Docker Cgroup 内核配置 =========="
+
+# 确保内核配置目录存在
+mkdir -p target/linux/x86
+
+# 动态获取当前源码的 Kernel 版本号 (兼容性更强)
+KERNEL_VER=$(grep -oP 'KERNEL_PATCHVER:=\K[0-9.]+' include/kernel.mk 2>/dev/null || echo "6.6")
+CONFIG_FILE="target/linux/x86/config-${KERNEL_VER}"
+
+log_info "目标内核版本文件: ${CONFIG_FILE}"
+
+# 注入完整的 Cgroups 与 Namespaces 底层支持
+cat >> "$CONFIG_FILE" << "EOF"
+
+# ============================================================
+# Docker Cgroup & Namespace 满血支持 (由 DIY Part 1 注入)
+# 彻底消除 Docker 运行时的 No memory/swap/oom/cpuset limit 警告
+# ============================================================
+CONFIG_CGROUPS=y
+CONFIG_MEMCG=y
+CONFIG_MEMCG_SWAP=y
+CONFIG_CPUSETS=y
+CONFIG_CGROUP_CPUACCT=y
+CONFIG_CGROUP_DEVICE=y
+CONFIG_CGROUP_FREEZER=y
+CONFIG_CGROUP_SCHED=y
+CONFIG_CGROUP_NET_CLASSID=y
+CONFIG_CGROUP_NET_PRIO=y
+CONFIG_NAMESPACES=y
+CONFIG_USER_NS=y
+CONFIG_KEYS=y
+CONFIG_NET_NS=y
+CONFIG_PID_NS=y
+CONFIG_IPC_NS=y
+CONFIG_UTS_NS=y
+CONFIG_TIME_NS=y
+CONFIG_CGROUP_BPF=y
+# ============================================================
+EOF
+
+log_info "✅ Docker Cgroup 内核隔离特性已成功物理注入到 ${CONFIG_FILE}"
+
 log_info "========== DIY Part 1 执行完毕，配置校验通过 ✅ =========="
