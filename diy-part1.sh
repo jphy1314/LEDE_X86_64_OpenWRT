@@ -102,13 +102,17 @@ log_info "目标内核版本文件: ${CONFIG_FILE}"
 cat >> "$CONFIG_FILE" << "EOF"
 
 # ============================================================
-# Docker Cgroup & Namespace 满血支持 (由 DIY Part 1 注入)
+# Docker Cgroup & Namespace 满血支持 (适配 Linux 6.12+ 内核)
 # 彻底消除 Docker 运行时的 No memory/swap/oom/cpuset limit 警告
 # ============================================================
 CONFIG_CGROUPS=y
 CONFIG_MEMCG=y
+# 关键修复：显式启用 cgroup v1 内存控制器 (适配 6.12 内核)
+CONFIG_MEMCG_V1=y
 CONFIG_MEMCG_SWAP=y
 CONFIG_CPUSETS=y
+# 关键修复：显式启用 cgroup v1 cpusets 控制器 (适配 6.12 内核)
+CONFIG_CPUSETS_V1=y
 CONFIG_CGROUP_CPUACCT=y
 CONFIG_CGROUP_DEVICE=y
 CONFIG_CGROUP_FREEZER=y
