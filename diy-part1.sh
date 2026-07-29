@@ -93,7 +93,7 @@ log_info "========== 开始注入 Docker Cgroup 内核配置 =========="
 mkdir -p target/linux/x86
 
 # 动态获取当前源码的 Kernel 版本号 (兼容性更强)
-KERNEL_VER=$(grep -oP 'KERNEL_PATCHVER:=\K[0-9.]+' include/kernel.mk 2>/dev/null || echo "6.6")
+KERNEL_VER=$(grep -oP 'KERNEL_PATCHVER:=\K[0-9.]+' include/kernel.mk 2>/dev/null || echo "6.12")
 CONFIG_FILE="target/linux/x86/config-${KERNEL_VER}"
 
 log_info "目标内核版本文件: ${CONFIG_FILE}"
