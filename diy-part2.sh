@@ -4,11 +4,11 @@
 # ==============================================================================
 # 核心设计目标：
 # 1. 物理级服务隔离 (Service Isolation)：
-#    - 通过编译期静态注入“空壳”脚本，彻底封堵原生 IPSec 与插件间的启动冲突。
+#    - 通过编译期静态注入"空壳"脚本，彻底封堵原生 IPSec 与插件间的启动冲突。
 # 2. 健壮的 UCI 持久化 (Atomic Commit)：
 #    - 修复 Subshell 管道陷阱，改用 Here-document 确保循环内 UCI 指令在当前 Shell 进程执行，保证 commit 100% 写入。
 # 3. 非破坏性挂载策略 (Smart Fstab)：
-#    - 采用“清洗+保留”逻辑，在强制 noatime 加速的同时，智能保留用户定义的 discard、compress 等高级文件系统参数。
+#    - 采用"清洗+保留"逻辑，在强制 noatime 加速的同时，智能保留用户定义的 discard、compress 等高级文件系统参数。
 #    - 修复旧版逻辑缺陷，确保 rw (读写) 挂载权限不被误判为冲突项而清除。
 # 4. 全路径兼容性 (Path Resilience)：
 #    - 完美支持包含空格、特殊字符的挂载点路径，解决工业级多盘挂载环境下的解析失效问题。
@@ -20,7 +20,7 @@
 # 7. 网络硬件加速 (Hardware Offload)：
 #    - 自动化 ethtool 策略注入，静默开启物理网卡 TSO/GSO 加速，提升企业级大流量转发性能。
 # 8. 容器化引擎满血解锁 (Docker Cgroups)：
-#    - 暴力破解内核限制，强制在 GRUB 引导期开启被阉割的内存/Swap 隔离等高级特性。
+#    - 暴力破解内核限制，强制在 GRUB/Extlinux 引导期开启被阉割的内存/Swap 隔离等高级特性。
 # ==============================================================================
 
 set -euo pipefail
@@ -82,43 +82,96 @@ if command -v uci >/dev/null 2>&1; then
 fi
 
 # =========================================================================
-# 【新增】：暴力修改 GRUB/Extlinux 引导参数，强行唤醒被内核封印的 Docker 容器隔离特性！
+# 【架构师修复 v2】：增强版引导参数注入，同时支持 GRUB/Extlinux/Syslinux
 # 彻底消除 Dockerman 里的 No memory/swap/oom limit 等警告！
 # =========================================================================
-# 检测实际使用的引导加载器
+
+# ---[ 1. 检测实际使用的引导加载器 ] ---
+BOOT_CFG=""
+BOOT_TYPE=""
+SEARCH_PATTERN=""
+
+# GRUB 检测
 if [ -f /boot/grub/grub.cfg ]; then
     BOOT_CFG="/boot/grub/grub.cfg"
-    SEARCH_PATTERN="rootwait"
     BOOT_TYPE="grub"
+    SEARCH_PATTERN="rootwait"
+    log_i "检测到 GRUB 引导器: ${BOOT_CFG}"
+# Extlinux 检测 (OpenWrt x86_64 默认)
 elif [ -f /boot/extlinux/extlinux.conf ]; then
     BOOT_CFG="/boot/extlinux/extlinux.conf"
-    SEARCH_PATTERN="rootwait"
     BOOT_TYPE="extlinux"
+    SEARCH_PATTERN="APPEND"
+    log_i "检测到 Extlinux 引导器: ${BOOT_CFG}"
+# Syslinux 检测
 elif [ -f /boot/syslinux/syslinux.cfg ]; then
     BOOT_CFG="/boot/syslinux/syslinux.cfg"
-    SEARCH_PATTERN="rootwait"
     BOOT_TYPE="syslinux"
+    SEARCH_PATTERN="APPEND"
+    log_i "检测到 Syslinux 引导器: ${BOOT_CFG}"
+# 通用搜索：尝试查找任何引导配置文件
 else
-    BOOT_CFG=""
+    # 尝试在 /boot 下查找常见的引导配置文件
+    for cfg in /boot/grub/grub.cfg /boot/extlinux/extlinux.conf /boot/syslinux/syslinux.cfg; do
+        if [ -f "$cfg" ]; then
+            BOOT_CFG="$cfg"
+            case "$cfg" in
+                *grub*) BOOT_TYPE="grub"; SEARCH_PATTERN="rootwait" ;;
+                *extlinux*) BOOT_TYPE="extlinux"; SEARCH_PATTERN="APPEND" ;;
+                *syslinux*) BOOT_TYPE="syslinux"; SEARCH_PATTERN="APPEND" ;;
+            esac
+            log_i "自动检测到引导器: ${BOOT_TYPE} -> ${BOOT_CFG}"
+            break
+        fi
+    done
 fi
 
+# ---[ 2. 执行引导参数注入 ] ---
 if [ -n "$BOOT_CFG" ] && [ -f "$BOOT_CFG" ]; then
-    # 防止重复追加
+    # 检查是否已存在 cgroup 参数 (防止重复注入)
     if ! grep -q "cgroup_enable=memory" "$BOOT_CFG"; then
-        # 构建内核参数追加字符串（根据不同的引导器使用不同的分隔符）
         case "$BOOT_TYPE" in
             grub)
                 # GRUB: 在 rootwait 后追加参数
                 sed -i "s/${SEARCH_PATTERN}/${SEARCH_PATTERN} cgroup_enable=memory swapaccount=1 systemd.unified_cgroup_hierarchy=0 cgroup_hierarchy=legacy/g" "$BOOT_CFG"
+                log_i "GRUB 引导参数注入成功"
                 ;;
             extlinux|syslinux)
                 # Extlinux/Syslinux: 在 APPEND 行追加参数
-                sed -i "s/\(APPEND .*\)/\1 cgroup_enable=memory swapaccount=1 systemd.unified_cgroup_hierarchy=0 cgroup_hierarchy=legacy/g" "$BOOT_CFG"
+                # 支持 APPEND 行后已有参数或为空的情况
+                sed -i "s/\(${SEARCH_PATTERN} *\)/\1 cgroup_enable=memory swapaccount=1 systemd.unified_cgroup_hierarchy=0 cgroup_hierarchy=legacy /g" "$BOOT_CFG"
+                log_i "${BOOT_TYPE} 引导参数注入成功"
+                ;;
+            *)
+                # 通用替换：尝试在首次出现 rootwait 或 APPEND 后添加
+                if grep -q "rootwait" "$BOOT_CFG"; then
+                    sed -i "0,/rootwait/s//rootwait cgroup_enable=memory swapaccount=1 systemd.unified_cgroup_hierarchy=0 cgroup_hierarchy=legacy/" "$BOOT_CFG"
+                    log_i "通用引导参数注入成功 (rootwait)"
+                elif grep -q "APPEND" "$BOOT_CFG"; then
+                    sed -i "0,/APPEND/s//APPEND cgroup_enable=memory swapaccount=1 systemd.unified_cgroup_hierarchy=0 cgroup_hierarchy=legacy/" "$BOOT_CFG"
+                    log_i "通用引导参数注入成功 (APPEND)"
+                else
+                    log_warn "⚠️ 未找到 rootwait 或 APPEND 关键字，跳过引导参数注入"
+                fi
                 ;;
         esac
-        # 增加 || true 防止极早期阶段 syslogd 未启动导致 uci-defaults 崩溃退出
-        logger -t "System-Opt" "✅ 引导参数修改成功 ($BOOT_TYPE)，Docker 完整环境已解锁！" 2>/dev/null || true
+        
+        # 记录修改日志 (增加 || true 防止极早期阶段 syslogd 未启动导致崩溃)
+        logger -t "System-Opt" "✅ 引导参数修改成功 (${BOOT_TYPE})，Docker 完整环境已解锁！" 2>/dev/null || true
+        
+        # 验证注入是否成功
+        if grep -q "cgroup_enable=memory" "$BOOT_CFG"; then
+            log_i "✅ 引导参数注入验证成功"
+        else
+            log_warn "⚠️ 引导参数注入后验证失败，请手动检查 ${BOOT_CFG}"
+        fi
+    else
+        log_i "⏩ 引导参数已存在，跳过重复注入"
     fi
+else
+    # 如果找不到引导配置文件，记录警告并尝试替代方案
+    log_warn "⚠️ 未找到任何引导配置文件 (GRUB/Extlinux/Syslinux)"
+    log_warn "Docker cgroup 参数将无法通过引导注入，请手动修改引导配置"
 fi
 
 exit 0
