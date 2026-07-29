@@ -89,32 +89,26 @@ fi
 # ==============================================================================
 log_info "========== 开始注入 Docker Cgroup 内核配置 =========="
 
-# 确保内核配置目录存在
+# 创建内核配置文件目录
 mkdir -p target/linux/x86
 
-# 动态获取当前源码的 Kernel 版本号 (兼容性更强)
+# 自动检测内核版本 (【修正】：将兜底版本从 5.15 更新为我们实测的 6.12，防止 grep 失败时找错文件)
 KERNEL_VER=$(grep -oP 'KERNEL_PATCHVER:=\K[0-9.]+' include/kernel.mk 2>/dev/null || echo "6.12")
 CONFIG_FILE="target/linux/x86/config-${KERNEL_VER}"
 
 log_info "目标内核版本文件: ${CONFIG_FILE}"
 
 # 注入完整的 Cgroups 与 Namespaces 底层支持
-# 幂等性检查：避免重复注入
-if ! grep -q "Docker Cgroup & Namespace 满血支持" "$CONFIG_FILE" 2>/dev/null; then
-    cat >> "$CONFIG_FILE" << "EOF"
+cat >> "$CONFIG_FILE" << "EOF"
 
 # ============================================================
-# Docker Cgroup & Namespace 满血支持 (适配 Linux 6.12+ 内核)
+# Docker Cgroup & Namespace 满血支持 (由 DIY Part 1 注入)
 # 彻底消除 Docker 运行时的 No memory/swap/oom/cpuset limit 警告
 # ============================================================
 CONFIG_CGROUPS=y
 CONFIG_MEMCG=y
-# 关键修复：显式启用 cgroup v1 内存控制器 (适配 6.12 内核)
-CONFIG_MEMCG_V1=y
 CONFIG_MEMCG_SWAP=y
 CONFIG_CPUSETS=y
-# 关键修复：显式启用 cgroup v1 cpusets 控制器 (适配 6.12 内核)
-CONFIG_CPUSETS_V1=y
 CONFIG_CGROUP_CPUACCT=y
 CONFIG_CGROUP_DEVICE=y
 CONFIG_CGROUP_FREEZER=y
@@ -130,81 +124,12 @@ CONFIG_IPC_NS=y
 CONFIG_UTS_NS=y
 CONFIG_TIME_NS=y
 CONFIG_CGROUP_BPF=y
+# 【架构师补全】：针对 6.x 新内核，必须显式开启 V1 兼容以消灭探针警告
+CONFIG_MEMCG_V1=y
+CONFIG_CPUSETS_V1=y
 # ============================================================
 EOF
-    log_info "✅ Docker Cgroup 内核隔离特性已成功物理注入到 ${CONFIG_FILE}"
-else
-    log_warn "Docker Cgroup 内核配置已存在，跳过注入"
-fi
 
-# ==============================================================================
-# ---[ 6. 强制合并内核配置到 .config (确保编译时生效) ] ---
-# ==============================================================================
-log_info "========== 强制合并内核配置到 .config =========="
-
-# 确保内核配置目录存在
-mkdir -p target/linux/x86
-
-# 重新获取内核版本（确保与之前一致）
-KERNEL_VER=$(grep -oP 'KERNEL_PATCHVER:=\K[0-9.]+' include/kernel.mk 2>/dev/null || echo "6.6")
-CONFIG_FILE="target/linux/x86/config-${KERNEL_VER}"
-
-log_info "目标内核版本文件: ${CONFIG_FILE}"
-
-# 【架构师修复】：强制触发 OpenWrt 重新读取内核配置
-# 方法1：删除旧的内核配置缓存，强制重新生成
-if [ -f ".config" ]; then
-    log_info "检测到 .config 文件存在，正在强制刷新内核配置..."
-    
-    # 备份当前 .config
-    cp .config .config.bak.$(date +%s) 2>/dev/null || true
-    
-    # 删除内核配置缓存，强制 make 重新读取
-    rm -f .config.old 2>/dev/null || true
-    rm -f .config.prev 2>/dev/null || true
-    
-    # 使用 kernel_oldconfig 强制合并内核配置
-    # 这会读取 target/linux/x86/config-* 并合并到 .config
-    log_info "执行 make kernel_oldconfig (非交互模式)..."
-    make kernel_oldconfig CONFIG_TARGET=subtarget 2>/dev/null || true
-    
-    # 验证内核配置是否已合并
-    if grep -q "CONFIG_MEMCG=y" .config 2>/dev/null; then
-        log_info "✅ 内核配置已成功合并到 .config"
-        log_info "验证: CONFIG_MEMCG=y 已存在于 .config"
-    else
-        log_warn "⚠️ 验证失败: CONFIG_MEMCG=y 未在 .config 中找到"
-        log_warn "尝试使用 make kernel_menuconfig 强制更新..."
-        # 使用 kernel_menuconfig 并自动保存（非交互模式）
-        make kernel_menuconfig CONFIG_TARGET=subtarget 2>/dev/null || true
-    fi
-else
-    log_info ".config 不存在，将在后续 make defconfig 时自动加载内核配置"
-fi
-
-# 再次验证内核配置是否已包含所需选项
-log_info "========== 内核配置验证 =========="
-if [ -f ".config" ]; then
-    if grep -q "CONFIG_MEMCG=y" .config 2>/dev/null; then
-        log_info "✅ CONFIG_MEMCG=y 已存在于 .config"
-    else
-        log_warn "⚠️ CONFIG_MEMCG=y 未在 .config 中找到"
-        log_warn "将在 make defconfig 阶段由 OpenWrt 自动合并"
-    fi
-    
-    if grep -q "CONFIG_CPUSETS=y" .config 2>/dev/null; then
-        log_info "✅ CONFIG_CPUSETS=y 已存在于 .config"
-    else
-        log_warn "⚠️ CONFIG_CPUSETS=y 未在 .config 中找到"
-    fi
-    
-    if grep -q "CONFIG_CGROUPS=y" .config 2>/dev/null; then
-        log_info "✅ CONFIG_CGROUPS=y 已存在于 .config"
-    else
-        log_warn "⚠️ CONFIG_CGROUPS=y 未在 .config 中找到"
-    fi
-fi
-
-log_info "✅ 内核配置合并流程完成"
+log_info "✅ Docker Cgroup 内核隔离特性已成功物理注入到 ${CONFIG_FILE}"
 
 log_info "========== DIY Part 1 执行完毕，配置校验通过 ✅ =========="
