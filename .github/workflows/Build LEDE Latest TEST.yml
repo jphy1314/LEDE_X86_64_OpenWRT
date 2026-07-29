@@ -2,7 +2,7 @@ name: Build LEDE Latest TEST
 on:
   workflow_dispatch:
 
-# [优化]: 并发控制，自动取消排队或正在运行的旧任务，节省运算时长
+# [优化]: 并发控制，自动取消排队或正在运行处在运行的旧任务，节省运算时长
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -27,7 +27,7 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     # [优化]: 全局超时熔断，防止编译死锁耗尽 GitHub 免费额度 (5小时)
-    timeout-minutes: 360 
+    timeout-minutes: 300 
     
     steps:
       - name: Checkout Code
@@ -57,6 +57,7 @@ jobs:
           sudo apt-get update
           
           # Ubuntu 24.04 专属包名修正：7zip, libgmp-dev, python3-setuptools
+          # 【架构师防线】：补全 jq，为后续原生 gh API JSON 解析提供绝对保障！
           sudo apt-get install -y --no-install-recommends \
             build-essential clang cmake device-tree-compiler \
             flex gawk gcc-multilib g++-multilib gettext git gperf \
@@ -67,7 +68,7 @@ jobs:
             qemu-utils rsync scons squashfs-tools subversion swig texinfo \
             uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev \
             ack antlr3 asciidoc autoconf automake autopoint binutils bison \
-            bzip2 curl genisoimage haveged ccache libc6-dev-i386
+            bzip2 curl genisoimage haveged ccache libc6-dev-i386 jq
             
           sudo apt-get autoremove --purge -y
           sudo apt-get clean
@@ -147,29 +148,42 @@ jobs:
           }
 
           # --------------------------------------------------------------------------
-          # 【纯血 Passwall 路线】：所有相关组件无差别全量接管！
+          # [类 1]: 底层依赖包 (绝对不碰 feeds/，保留官方大社区最新源兜底)
           # --------------------------------------------------------------------------
-          CONFLICT_PKGS=(
+          DEP_PKGS=(
               xray-core v2ray-geodata sing-box chinadns-ng dns2socks hysteria
               ipt2socks microsocks naiveproxy shadowsocks-libev shadowsocks-rust
               shadowsocksr-libev simple-obfs tcping trojan-plus tuic-client
               v2ray-plugin xray-plugin geoview shadow-tls
               smartdns luci-app-smartdns
               luci-theme-argon luci-app-argon-config
+          )
+          
+          # --------------------------------------------------------------------------
+          # [类 2]: UI 主程序 (必须从 package/ 和 feeds/ 里双重删光，确立新版 UI 唯一性)
+          # --------------------------------------------------------------------------
+          UI_PKGS=(
               luci-app-passwall passwall luci-app-passwall2
           )
 
-          log_i "1. 更新 feeds (拉取全局基础数据)"
+          log_i "1. 更新 feeds"
           retry ./scripts/feeds update -a
 
-          # --------------------------------------------------------------------------
-          # 2. 扫荡旧包：干掉 Lean 和官方源里的所有相关版本，为纯血版让路
-          # --------------------------------------------------------------------------
-          log_i "2. 执行双引擎焦土清理，彻底切断非专属源依赖..."
-          for pkg in "${CONFLICT_PKGS[@]}"; do
+          log_i "2. 扫荡本地硬编码老旧依赖包..."
+          for pkg in "${DEP_PKGS[@]}"; do
+              safe_pkg=$(printf '%s\n' "$pkg" | sed 's/[][\\.*^$()+?{}\|]/\\&/g')
+              while IFS= read -r -d '' dir; do rm -rf "$dir"; done < <(find package/ -type d -name "$pkg" -print0 2>/dev/null || true)
+              while IFS= read -r -d '' makefile; do
+                  if grep -q -E "^[[:space:]]*PKG_NAME[[:space:]]*:?=[[:space:]]*${safe_pkg}[[:space:]]*$" "$makefile" 2>/dev/null; then
+                      rm -rf "$(dirname "$makefile")"
+                  fi
+              done < <(find package/ -type f -name "Makefile" -print0 2>/dev/null || true)
+          done
+
+          log_i "3. 彻底绞杀旧版 Passwall UI..."
+          for pkg in "${UI_PKGS[@]}"; do
               safe_pkg=$(printf '%s\n' "$pkg" | sed 's/[][\\.*^$()+?{}\|]/\\&/g')
 
-              # 范围 A: 扫荡 package/ (清理 Lean 本地硬编码)
               while IFS= read -r -d '' dir; do rm -rf "$dir"; done < <(find package/ -type d -name "$pkg" -print0 2>/dev/null || true)
               while IFS= read -r -d '' makefile; do
                   if grep -q -E "^[[:space:]]*PKG_NAME[[:space:]]*:?=[[:space:]]*${safe_pkg}[[:space:]]*$" "$makefile" 2>/dev/null; then
@@ -177,7 +191,6 @@ jobs:
                   fi
               done < <(find package/ -type f -name "Makefile" -print0 2>/dev/null || true)
 
-              # 范围 B: 扫荡 feeds/ (清理官方源，绝对避开我们的 Passwall 专属源！)
               while IFS= read -r -d '' dir; do
                   if [[ "$dir" == *passwall_packages* ]] || [[ "$dir" == *passwall_luci* ]]; then continue; fi
                   rm -rf "$dir"
@@ -190,15 +203,42 @@ jobs:
               done < <(find feeds/ -type f -name "Makefile" -print0 2>/dev/null || true)
           done
 
-          # --------------------------------------------------------------------------
-          # 3. 克隆外部社区插件 (SmartDNS / Argon)
-          # --------------------------------------------------------------------------
-          log_i "3. 注入高级社区插件..."
+          log_i "4. 克隆社区专属插件..."
           mkdir -p package/community
           retry git clone --depth 1 https://github.com/pymumu/openwrt-smartdns.git package/smartdns
           retry git clone --depth 1 https://github.com/pymumu/luci-app-smartdns.git package/luci-app-smartdns
           retry git clone --depth 1 https://github.com/jerrykuku/luci-theme-argon.git package/community/luci-theme-argon
           retry git clone --depth 1 https://github.com/jerrykuku/luci-app-argon-config.git package/community/luci-app-argon-config
+
+          # =========================================================
+          # 【架构师级外科手术】：克隆 autoupdate 并进行底层逻辑修补
+          # =========================================================
+          log_i "克隆 autoupdate 自动更新插件源码..."
+          retry git clone --depth 1 https://github.com/Hyy2001X/AutoBuild-Packages.git package/AutoBuild-Packages
+          mv package/AutoBuild-Packages/luci-app-autoupdate package/community/ 2>/dev/null || true
+          mv package/AutoBuild-Packages/autoupdate package/community/ 2>/dev/null || true
+          rm -rf package/AutoBuild-Packages
+          
+          log_i "🔧 正在对 autoupdate 脚本进行底层逻辑修补..."
+          AUTO_SCRIPT="package/community/autoupdate/files/bin/autoupdate"
+          if [ -f "$AUTO_SCRIPT" ]; then
+              # 1. 修复原作者的正则僵化症：强制兼容官方标准的 x86-64 格式
+              sed -i 's/x86_64/x86-64/g' "$AUTO_SCRIPT"
+              
+              # 2. 延长超时时间，给 Passwall HTTPS 握手留足余量 (5秒 -> 30秒)
+              sed -i 's/--timeout 5/--timeout 30/g' "$AUTO_SCRIPT"
+              sed -i 's/--timeout 10/--timeout 30/g' "$AUTO_SCRIPT"
+              
+              # 3. 铲除倒闭的 ghgo.xyz 死链
+              sed -i 's|https://ghgo.xyz/||g' "$AUTO_SCRIPT"
+              
+              # 4. 【致命防御】：打断“云端套娃自残”机制！
+              # 禁止它去网上下载未修补的残缺原版脚本覆盖自己，强制使用本地修补后的完美版本！
+              sed -i 's/DOWNLOADER --path ${Tmp_Path} --file-name autoupdate.*/cp -f \/bin\/autoupdate ${Tmp_Path}\/autoupdate/g' "$AUTO_SCRIPT"
+              
+              log_i "✅ autoupdate 源码修补成功，已打造成完美契合官方底层的极客版本！"
+          fi
+          # =========================================================
 
           fix_rust() {
               local rust_dir="lang/rust"
@@ -208,15 +248,18 @@ jobs:
               mkdir -p "$rust_dir"
 
               for f in "${files[@]}"; do
+                  log_i "下载 Rust 支持文件: $f"
                   if curl -fL --retry 3 --connect-timeout 10 "$raw_url/$f" -o "$rust_dir/$f" && [ -s "$rust_dir/$f" ]; then
-                      log_i "✅ Rust 依赖下载成功: $f"
+                      log_i "✅ 下载成功: $f"
                   else
-                      need_patch=1; break
+                      log_w "⚠️ 下载失败或文件为空: $f"
+                      need_patch=1
+                      break
                   fi
               done
 
               if [ $need_patch -eq 1 ]; then
-                  log_w "Rust 依赖缺失，执行兜底注入防报错..."
+                  log_w "执行 Makefile 变量防断链注入..."
                   rm -rf "$rust_dir"
                   cp package/smartdns/Makefile package/smartdns/Makefile.bak
                   sed -i 's|^include \.\./\.\./lang/rust/rust-package\.mk|# include ../../lang/rust/rust-package.mk|' package/smartdns/Makefile
@@ -229,26 +272,15 @@ jobs:
           }
           fix_rust
 
-          # --------------------------------------------------------------------------
-          # 4. 【决胜时刻】：强制刷新账本索引，接管全盘依赖！
-          # --------------------------------------------------------------------------
-          # 只有加上这句，系统才会真正遗忘被删掉的官方包，承认 Passwall 仓库是唯一合法来源！
-          log_i "4. 🔄 物理环境变动，强制重建 feeds 依赖账本 (update -i)..."
-          ./scripts/feeds update -i
-
-          # --------------------------------------------------------------------------
-          # 5. 安装与双重提权
-          # --------------------------------------------------------------------------
-          log_i "5. 常规铺底安装..."
+          log_i "5. 常规安装 feeds..."
           retry ./scripts/feeds install -a
 
-          log_i "6. 🚀 强制挂载 Passwall 专属全套阵列 (UI + 底层组件)！"
-          retry ./scripts/feeds install -f -p passwall_packages -a
-          retry ./scripts/feeds install -f -p passwall_luci -a
+          log_i "6. 🚀 强制提权：仅覆盖 Passwall UI..."
+          ./scripts/feeds install -f -p passwall_luci -a
 
           [ -d feeds ] || log_e "feeds 目录不存在"
           [ -d package ] || log_e "package 目录不存在"
-          log_i "✅ 纯血版环境重建完成，底层组件已与 Passwall UI 强行锁定为官方原配组合！"
+          log_i "✅ Feeds 处理完成，底层核心已成功解绑！"
 
       - name: Generate Configuration (配置解耦与探针注入)
         working-directory: ${{ github.workspace }}/openwrt
@@ -267,10 +299,132 @@ jobs:
               bash "$SCRIPT"
           fi
           
-          # 3. 补全依赖配置
+          # 3. 补全依赖配置 (此步骤可能会覆盖内核配置)
           make defconfig
           
-          # 4. 开启 CCACHE 优化
+          # ============================================
+          # 【架构师修复】：在 make defconfig 之后，强制重新注入内核 cgroup 配置
+          # 因为 make defconfig 可能会覆盖之前注入的内核配置
+          # ============================================
+          log_i "强制重新注入内核 cgroup 配置..."
+          
+          # 检测内核版本
+          KERNEL_VER=$(grep -oP 'KERNEL_PATCHVER:=\K[0-9.]+' include/kernel.mk 2>/dev/null || echo "6.12")
+          CONFIG_FILE="target/linux/x86/config-${KERNEL_VER}"
+          
+          # 确保配置文件目录存在
+          mkdir -p target/linux/x86
+          
+          # 注入 cgroup 配置（如果尚未注入）
+          if ! grep -q "Docker Cgroup & Namespace 满血支持" "$CONFIG_FILE" 2>/dev/null; then
+              cat >> "$CONFIG_FILE" << "EOF"
+
+          # ============================================================
+          # Docker Cgroup & Namespace 满血支持 (适配 Linux 6.12+ 内核)
+          # 彻底消除 Docker 运行时的 No memory/swap/oom/cpuset limit 警告
+          # ============================================================
+          CONFIG_CGROUPS=y
+          CONFIG_MEMCG=y
+          # 关键修复：显式启用 cgroup v1 内存控制器 (适配 6.12 内核)
+          CONFIG_MEMCG_V1=y
+          CONFIG_MEMCG_SWAP=y
+          CONFIG_CPUSETS=y
+          # 关键修复：显式启用 cgroup v1 cpusets 控制器 (适配 6.12 内核)
+          CONFIG_CPUSETS_V1=y
+          CONFIG_CGROUP_CPUACCT=y
+          CONFIG_CGROUP_DEVICE=y
+          CONFIG_CGROUP_FREEZER=y
+          CONFIG_CGROUP_SCHED=y
+          CONFIG_CGROUP_NET_CLASSID=y
+          CONFIG_CGROUP_NET_PRIO=y
+          CONFIG_NAMESPACES=y
+          CONFIG_USER_NS=y
+          CONFIG_KEYS=y
+          CONFIG_NET_NS=y
+          CONFIG_PID_NS=y
+          CONFIG_IPC_NS=y
+          CONFIG_UTS_NS=y
+          CONFIG_TIME_NS=y
+          CONFIG_CGROUP_BPF=y
+          # ============================================================
+          EOF
+              log_i "✅ 内核 cgroup 配置已注入到 ${CONFIG_FILE}"
+          else
+              log_i "⏩ 内核 cgroup 配置已存在，跳过注入"
+          fi
+          
+          # 强制将内核配置合并到 .config
+          log_i "强制合并内核配置到 .config..."
+          make kernel_oldconfig CONFIG_TARGET=subtarget 2>/dev/null || true
+          
+          # 验证关键配置是否已合并到 .config
+          log_i "========== 内核配置验证 =========="
+          if grep -q "CONFIG_MEMCG=y" .config 2>/dev/null; then
+              log_i "✅ CONFIG_MEMCG=y 已存在于 .config"
+          else
+              log_w "⚠️ CONFIG_MEMCG=y 未在 .config 中找到"
+              log_w "尝试使用 make kernel_menuconfig 强制更新..."
+              make kernel_menuconfig CONFIG_TARGET=subtarget 2>/dev/null || true
+          fi
+          
+          if grep -q "CONFIG_CPUSETS=y" .config 2>/dev/null; then
+              log_i "✅ CONFIG_CPUSETS=y 已存在于 .config"
+          else
+              log_w "⚠️ CONFIG_CPUSETS=y 未在 .config 中找到"
+          fi
+
+          # ==============================================================================
+          # 4. 【工业级流水线优化】：Hyy2001X 环境注入 (完美切分 底层指纹 与 UI标签)
+          # ==============================================================================
+          echo "🚀 启动 CI 级环境适配..."
+
+          ROOT_FILES="${{ github.workspace }}/openwrt/files"
+          mkdir -p "$ROOT_FILES/etc/AutoBuild"
+          mkdir -p "$ROOT_FILES/etc/autoupdate"
+          mkdir -p "$ROOT_FILES/usr/bin"
+
+          if [ -z "${{ env.TAG_VERSION }}" ]; then
+              echo "❌ 错误: TAG_VERSION 环境变量为空！请检查前置步骤。"
+              exit 1
+          fi
+
+          cat <<EOF > "$ROOT_FILES/etc/autoupdate/default"
+          Author="jphy1314"
+          Github="https://github.com/${{ github.repository }}"
+          # [底层指纹]：匹配真实文件名 openwrt-x86-64-generic...
+          TARGET_PROFILE="x86-64"
+          TARGET_BOARD="x86"
+          TARGET_SUBTARGET="64"
+          Firmware_Type="combined-efi.img.gz"
+          # [UI 标签]：纯字母，绝对绕过前端严格正则校验
+          TARGET_FLAG="x86"
+          OP_VERSION="${{ env.TAG_VERSION }}"
+          OP_AUTHOR="jphy1314"
+          OP_BRANCH="master"
+          OP_REPO="https://github.com/${{ github.repository }}"
+          EOF
+
+          cp "$ROOT_FILES/etc/autoupdate/default" "$ROOT_FILES/etc/autoupdate/custom"
+          cp "$ROOT_FILES/etc/autoupdate/default" "$ROOT_FILES/etc/AutoBuild/Github_Variable"
+          cp "$ROOT_FILES/etc/autoupdate/default" "$ROOT_FILES/etc/openwrt_info"
+
+          cat <<EOF > "$ROOT_FILES/etc/openwrt_release"
+          DISTRIB_ID='OpenWrt'
+          DISTRIB_RELEASE='${{ env.TAG_VERSION }}'
+          DISTRIB_REVISION='${{ env.CURRENT_DATE }}'
+          DISTRIB_TARGET='x86/64'
+          DISTRIB_ARCH='x86_64'
+          DISTRIB_DESCRIPTION='OpenWrt by jphy1314'
+          EOF
+
+          ln -sf /bin/autoupdate "$ROOT_FILES/usr/bin/autoupdate"
+          find "$ROOT_FILES" -type f -exec sed -i 's/\r$//' {} + 2>/dev/null || true
+          find "$ROOT_FILES" -type f -exec chmod 644 {} +
+
+          echo "✅ 环境适配完成: 版本号 ${{ env.TAG_VERSION }} 已注入。"
+          # ==============================================================================
+          
+          # 5. 开启 CCACHE 优化
           if ! grep -q "CONFIG_CCACHE=y" .config; then
               echo -e "\nCONFIG_DEVEL=y\nCONFIG_CCACHE=y" >> .config
           fi
@@ -326,26 +480,33 @@ jobs:
         id: compile
         working-directory: ${{ github.workspace }}/openwrt
         run: |
-          set -uo pipefail
+          set -uo pipefail # 此处不设置 -e，是为了允许并发 make 失败后自动触发单线程 fallback 编译
           
+          # 安全创建 Ccache 目录，使用 755 权限符合企业安全基线
           mkdir -p ${{ env.CCACHE_DIR }}
           chmod 755 ${{ env.CCACHE_DIR }}
           
+          # [核心 CCACHE 优化]
           export CCACHE_DIR=${{ env.CCACHE_DIR }}
           export CCACHE_COMPILERCHECK=content
+          # [极致命中]: 配合 CCACHE_BASEDIR 忽略绝对路径，跨 Runner 依然可以命中缓存
           export CCACHE_BASEDIR=${{ github.workspace }}
           export CCACHE_NOHASHDIR=true
           
           ccache -z
           ccache --set-config=max_size=10G
+          
+          # [性能微调]: 设置 Go 编译内存水位，防止 Go 编译 Xray 源码时 OOM 拖慢系统
           export GOMEMLIMIT=5GiB
           
           echo "🚀 Starting Main Build with $(nproc) threads..."
+          # 并行构建时显式传入 CCACHE_DIR 变量，防止部分 Makefile 内部重写路径
           make -j$(nproc) CCACHE_DIR=${{ env.CCACHE_DIR }} || make -j1 V=s CCACHE_DIR=${{ env.CCACHE_DIR }}
           
           ccache -s
           echo "ℹ️ Final Cache Directory Size: $(du -sh ${{ env.CCACHE_DIR }} | cut -f1)"
           
+          # 编译成功判定：修复 if 和[ 的间距，抑制 ls 的 stderr 报错
           if [ -d "bin/targets" ] && [ "$(ls -A bin/targets 2>/dev/null)" ]; then
               echo "✅ Compile success!"
               echo "status=success" >> $GITHUB_OUTPUT
@@ -355,6 +516,7 @@ jobs:
               exit 1
           fi
           
+          # 设备名提取：使用 -E 替代 -r 提高兼容性，过滤空格与换行，加 || true 防止 grep 失败引起流水线崩溃
           DEVICE=$(grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -E 's/.*DEVICE_(.*)=y/\1/' | head -n1 | tr -d '[:space:]' || echo "Generic")
           if [ -n "$DEVICE" ]; then
               echo "DEVICE_NAME=_$DEVICE" >> $GITHUB_ENV
@@ -368,7 +530,7 @@ jobs:
       # ==============================================================================
       - name: Upload build logs on failure (崩溃黑匣子)
         uses: actions/upload-artifact@v6
-        if: failure()
+        if: failure()   # 只有在之前的步骤失败时才会触发
         with:
           name: OpenWrt_Compile_Logs_${{ steps.cache-vars.outputs.date }}
           path: openwrt/logs/
@@ -380,24 +542,30 @@ jobs:
         with:
           name: OpenWrt_bin${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
           path: openwrt/bin
+          # [优化]: 限制中间产物保留 3 天，防止 GitHub 免费存储空间爆仓
           retention-days: 3
 
       - name: Organize Files (Dynamic Path)
         id: organize
-        working-directory: ${{ github.workspace }}/openwrt
+        working-directory: ${{ github.workspace }}/openwrt   # 【核心修复】：明确指定进入 openwrt 厨房找菜！
         if: steps.compile.outputs.status == 'success' && env.UPLOAD_FIRMWARE == 'true'
         run: |
           set -euo pipefail
           
+          # 提取纯净设备名称 (如 x86_64) 用于通配符搜索
           RAW_DEVICE="${DEVICE_NAME#_}"
+          
+          # 健壮的固件发现策略：优先精确匹配包含该设备名的目录结构
           TARGET_DIR=$(find bin/targets -mindepth 2 -maxdepth 2 -type d -name "*${RAW_DEVICE}*" | head -n 1 || true)
           
+          # 如果设备名匹配失败（可能是 generic 这种无特征词汇），退化为抓取第一个有效目录
           if [ -z "$TARGET_DIR" ]; then
             TARGET_DIR=$(find bin/targets -mindepth 2 -maxdepth 2 -type d | head -n 1 || true)
           fi
           
           if [ -n "$TARGET_DIR" ] && [ -d "$TARGET_DIR" ]; then
             cd "$TARGET_DIR"
+            # 清理占空间的 packages 包夹，以及多余的内核信息文件
             rm -rf packages || true
             find . -type f -name "*.buildinfo" -delete
             find . -type f -name "*.manifest" -delete
@@ -414,12 +582,15 @@ jobs:
         with:
           name: OpenWrt_firmware${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
           path: ${{ env.FIRMWARE }}
+          # [优化]: 限制中间产物保留 3 天
           retention-days: 3
 
       - name: Generate Release Tag
         id: tag
         if: steps.compile.outputs.status == 'success' && env.UPLOAD_RELEASE == 'true'
         run: |
+          # 核心修改：生成与固件内部变量完全一致的 Rxx.xx.xx 标签
+          # 后面可以加上设备名后缀，例如 R26.05.04-x86_64
           TAG_NAME="${{ env.TAG_VERSION }}"
           echo "release_tag=${TAG_NAME}" >> $GITHUB_OUTPUT
           
@@ -467,6 +638,8 @@ jobs:
         run: |
           set -euo pipefail
           echo "开始清理过旧的 Workflow 运行记录，仅保留最新 2 个..."
+          
+          # 利用 jq JSON 引擎健壮提取 ID，并调用 GitHub 原生 API 进行静默删除
           gh run list --workflow "${{ github.workflow }}" --limit 100 --json databaseId -q '.[].databaseId' | tail -n +3 | while IFS= read -r run_id; do
             if [ -n "$run_id" ]; then
               echo "🗑️ 正在删除冗余运行记录: $run_id"
@@ -483,7 +656,9 @@ jobs:
         run: |
           set -euo pipefail
           echo "开始清理过旧的 Releases，仅保留最新 3 个..."
+          # 使用 JSON 输出获取所有 tag（免疫一切特殊字符的健壮提取法）
           gh release list --repo ${{ github.repository }} --limit 100 --json tagName -q '.[].tagName' | tail -n +4 | while IFS= read -r tag; do
+            # 严格保留空格，防止 Exit code 2 报错
             if [ -n "$tag" ]; then
               echo "🗑️ 正在删除旧版本: $tag"
               gh release delete "$tag" --cleanup-tag -y || true
