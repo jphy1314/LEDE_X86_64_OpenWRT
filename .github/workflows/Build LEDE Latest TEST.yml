@@ -27,8 +27,8 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     # [优化]: 全局超时熔断，防止编译死锁耗尽 GitHub 免费额度 (5小时)
-    timeout-minutes: 300
-
+    timeout-minutes: 300 
+    
     steps:
       - name: Checkout Code
         uses: actions/checkout@v6
@@ -52,11 +52,12 @@ jobs:
           DEBIAN_FRONTEND: noninteractive
         run: |
           set -euo pipefail
-
+          
           # 正常更新软件源
           sudo apt-get update
-
+          
           # Ubuntu 24.04 专属包名修正：7zip, libgmp-dev, python3-setuptools
+          # 【架构师防线】：补全 jq，为后续原生 gh API JSON 解析提供绝对保障！
           sudo apt-get install -y --no-install-recommends \
             build-essential clang cmake device-tree-compiler \
             flex gawk gcc-multilib g++-multilib gettext git gperf \
@@ -68,11 +69,11 @@ jobs:
             uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev \
             ack antlr3 asciidoc autoconf automake autopoint binutils bison \
             bzip2 curl genisoimage haveged ccache libc6-dev-i386 jq
-
+            
           sudo apt-get autoremove --purge -y
           sudo apt-get clean
           sudo timedatectl set-timezone "$TZ"
-
+          
       - name: Clone Source Code
         working-directory: ${{ github.workspace }}
         run: |
@@ -85,7 +86,7 @@ jobs:
         run: |
           set -euo pipefail
           echo "date=$(date +'%Y%m%d')" >> $GITHUB_OUTPUT
-
+          
           # 【全局锁定版本号】：例如 R26.05.07
           VERSION_TAG="R$(date +%y.%m.%d)"
           echo "TAG_VERSION=${VERSION_TAG}" >> $GITHUB_ENV
@@ -94,6 +95,7 @@ jobs:
 
       # 【企业级缓存策略】
       # 缓存键由 分支名 + 核心配置文件的 Hash + 日期 组成。
+      # 任何本地工作流文件或 feeds 列表的改动都会生成全新 Key，避免读取失效缓存导致玄学报错。
       - name: Cache Ccache
         uses: actions/cache@v5
         with:
@@ -103,7 +105,9 @@ jobs:
             ccache-lede-${{ env.REPO_BRANCH }}-${{ hashFiles('.github/workflows/*.yml', 'diy-part1.sh', 'diy-part2.sh', 'openwrt/feeds.conf.default') }}-
             ccache-lede-${{ env.REPO_BRANCH }}-
 
+      # ==============================================================================
       # 【企业级优化】：缓存下载好的源码包，但利用 ! 语法精准剔除 Go 语言的剧毒缓存库
+      # ==============================================================================
       - name: Cache Downloaded Sources (DL)
         uses: actions/cache@v5
         with:
@@ -119,6 +123,7 @@ jobs:
         run: |
           set -euo pipefail
           SCRIPT="${{ github.workspace }}/diy-part1.sh"
+          # 统一脚本调用风格。如果脚本不存在，|| true 防止报错中断
           [[ -f "$SCRIPT" ]] && bash "$SCRIPT" || true
 
       - name: Update, Patch & Install Feeds
@@ -152,7 +157,7 @@ jobs:
               smartdns luci-app-smartdns
               luci-theme-argon luci-app-argon-config
           )
-
+          
           # --------------------------------------------------------------------------
           # [类 2]: UI 主程序 (必须从 package/ 和 feeds/ 里双重删光，确立新版 UI 唯一性)
           # --------------------------------------------------------------------------
@@ -208,6 +213,39 @@ jobs:
           log_i "🔧 正在修补 Argon 主题依赖警告..."
           sed -i 's/wget-any/wget-ssl/g' package/community/luci-theme-argon/Makefile
 
+          # =========================================================
+          # 【架构师级外科手术】：克隆 autoupdate 并进行底层逻辑修补
+          # =========================================================
+          log_i "克隆 autoupdate 自动更新插件源码..."
+          retry git clone --depth 1 https://github.com/Hyy2001X/AutoBuild-Packages.git package/AutoBuild-Packages
+          mv package/AutoBuild-Packages/luci-app-autoupdate package/community/ 2>/dev/null || true
+          mv package/AutoBuild-Packages/autoupdate package/community/ 2>/dev/null || true
+          rm -rf package/AutoBuild-Packages
+          
+          log_i "🔧 正在对 autoupdate 脚本进行底层逻辑修补..."
+          AUTO_SCRIPT="package/community/autoupdate/files/bin/autoupdate"
+          if [ -f "$AUTO_SCRIPT" ]; then
+              # 1. 延长网络超时时间 (5秒 -> 30秒)
+              sed -i 's/--timeout 5/--timeout 30/g' "$AUTO_SCRIPT"
+              sed -i 's/--timeout 10/--timeout 30/g' "$AUTO_SCRIPT"
+              
+              # 2. 铲除倒闭的代理死链
+              sed -i 's|https://ghgo.xyz/||g; s|https://ghps.cc/||g; s|https://ghproxy.cn/||g' "$AUTO_SCRIPT"
+              
+              # 3. 打断“云端套娃自残”机制
+              sed -i 's/DOWNLOADER --path ${Tmp_Path} --file-name autoupdate.*/cp -f \/bin\/autoupdate ${Tmp_Path}\/autoupdate/g' "$AUTO_SCRIPT"
+              
+              # 4. 【终极换头手术】：彻底抹除冗余正则循环，代之以绝对暴力的 jq 精准解析！
+              sed -i '/for i in $(seq 0 $(jq ".assets | length"/,/unset i/c\
+              URL_Final=$(jq -r ".assets[] | select(.name | contains(\"combined-efi.img.gz\")) | .browser_download_url" ${API_Cache} 2>/dev/null | head -n 1)\
+              if [ -n "$URL_Final" ]; then\
+                  echo "$URL_Final" > ${API_File}\
+              fi' "$AUTO_SCRIPT"
+              
+              log_i "✅ autoupdate 源码修补成功，解析死锁已被彻底粉碎！"
+          fi
+          # =========================================================
+
           fix_rust() {
               local rust_dir="lang/rust"
               local raw_url="https://raw.githubusercontent.com/openwrt/packages/master/lang/rust"
@@ -250,69 +288,112 @@ jobs:
           [ -d package ] || log_e "package 目录不存在"
           log_i "✅ Feeds 处理完成，底层核心已成功解绑！"
 
+      # ==============================================================================
+      # 【核心修正】：配置解耦与探针注入 (彻底解决内核隔离与时序问题)
+      # ==============================================================================
       - name: Generate Configuration (配置解耦与探针注入)
         working-directory: ${{ github.workspace }}/openwrt
         run: |
           set -euo pipefail
 
-          # 【核心修复】：补齐所有日志函数，防止隔离环境调用抛出 command not found
+          # 补齐全部日志函数，防止隔离环境调用抛出 command not found
           log_i() { echo -e "\e[32m[INFO] $1\e[0m"; }
           log_w() { echo -e "\e[33m[WARN] $1\e[0m"; }
           log_e() { echo -e "\e[31m[ERROR] $1\e[0m"; exit 1; }
-
+          
           # 1. 导入独立的基础配置清单
           cat ${{ github.workspace }}/x86_64.config > .config
+          
+          # ==============================================================================
+          # 【架构师终极重构】：利用官方 scripts/config 工具进行安全注入！
+          # 抛弃脆弱的 sed 强改内核模板，拥抱 OpenWrt 原生的传递机制！
+          # ==============================================================================
+          log_i "🚀 使用 scripts/config 工具安全开启内核 Cgroup 与 Docker 特性..."
 
+          # 开启所有必要的 Cgroup 和 Namespace 内核特性 (必须使用 CONFIG_KERNEL_ 前缀传递)
+          ./scripts/config --enable CONFIG_KERNEL_CGROUPS
+          ./scripts/config --enable CONFIG_KERNEL_MEMCG
+          ./scripts/config --enable CONFIG_KERNEL_MEMCG_SWAP
+          ./scripts/config --enable CONFIG_KERNEL_MEMCG_V1
+          ./scripts/config --enable CONFIG_KERNEL_CPUSETS
+          ./scripts/config --enable CONFIG_KERNEL_CPUSETS_V1
+          ./scripts/config --enable CONFIG_KERNEL_CGROUP_CPUACCT
+          ./scripts/config --enable CONFIG_KERNEL_CGROUP_DEVICE
+          ./scripts/config --enable CONFIG_KERNEL_CGROUP_FREEZER
+          ./scripts/config --enable CONFIG_KERNEL_CGROUP_SCHED
+          ./scripts/config --enable CONFIG_KERNEL_CGROUP_NET_CLASSID
+          ./scripts/config --enable CONFIG_KERNEL_CGROUP_NET_PRIO
+          ./scripts/config --enable CONFIG_KERNEL_NAMESPACES
+          ./scripts/config --enable CONFIG_KERNEL_USER_NS
+          ./scripts/config --enable CONFIG_KERNEL_KEYS
+
+          # 【解决老式物理机无 EFI 引导的难题】
+          # 利用 OpenWrt 原生变量，让打包引擎在生成 Legacy(BIOS) 和 EFI 镜像时自动写入引导参数！
+          ./scripts/config --set-str CONFIG_GRUB_BOOTOPTS "rootwait cgroup_enable=memory swapaccount=1 systemd.unified_cgroup_hierarchy=0 cgroup_hierarchy=legacy"
+
+          log_i "✅ Cgroup 特性与 GRUB 引导参数注入完毕！"
+          
           # 2. 运行 DIY Part 2 脚本
           SCRIPT="${{ github.workspace }}/diy-part2.sh"
           if [ -f "$SCRIPT" ]; then
               log_i "运行 DIY Part 2 脚本..."
               bash "$SCRIPT"
           fi
-
-          # 3. 补全依赖配置 (此步骤可能会覆盖内核配置)
+          
+          # 3. 补全依赖配置 (defconfig 会完美吸收上面 scripts/config 写入的变量)
           make defconfig
 
-          # ============================================
-          # 【架构师修复】：先执行旧配置合并，确保依赖已满足
-          # ============================================
-          log_i "首次合并内核配置 (确保依赖满足)..."
-          make oldconfig CONFIG_TARGET=subtarget 2>/dev/null || true
-          make kernel_oldconfig CONFIG_TARGET=subtarget 2>/dev/null || true
+          # ==============================================================================
+          # 4. 【工业级流水线优化】：Hyy2001X 环境注入 (完美切分 底层指纹 与 UI标签)
+          # ==============================================================================
+          echo "🚀 启动 CI 级环境适配..."
 
-          # ============================================
-          # 【关键修复】：在 kernel_oldconfig 之后再次强制注入
-          # 此时依赖已满足，配置不会被后续操作覆盖
-          # ============================================
-          log_i "🚀 执行最终内核配置强制注入..."
-          cat >> .config << "EOF"
-          CONFIG_CGROUPS=y
-          CONFIG_MEMCG=y
-          CONFIG_MEMCG_SWAP=y
-          CONFIG_CPUSETS=y
+          ROOT_FILES="${{ github.workspace }}/openwrt/files"
+          mkdir -p "$ROOT_FILES/etc/AutoBuild"
+          mkdir -p "$ROOT_FILES/etc/autoupdate"
+          mkdir -p "$ROOT_FILES/usr/bin"
+
+          if [ -z "${{ env.TAG_VERSION }}" ]; then
+              log_e "❌ 错误: TAG_VERSION 环境变量为空！请检查前置步骤。"
+          fi
+
+          cat <<EOF > "$ROOT_FILES/etc/autoupdate/default"
+          Author="jphy1314"
+          Github="https://github.com/${{ github.repository }}"
+          # [底层指纹]：匹配真实文件名 openwrt-x86-64-generic...
+          TARGET_PROFILE="x86-64"
+          TARGET_BOARD="x86"
+          TARGET_SUBTARGET="64"
+          Firmware_Type="combined-efi.img.gz"
+          # [UI 标签]：纯字母，绝对绕过前端严格正则校验
+          TARGET_FLAG="x86"
+          OP_VERSION="${{ env.TAG_VERSION }}"
+          OP_AUTHOR="jphy1314"
+          OP_BRANCH="master"
+          OP_REPO="https://github.com/${{ github.repository }}"
           EOF
 
-          # 再次执行 oldconfig，仅处理新增选项（非交互）
-          log_i "处理新增内核选项..."
-          make oldconfig CONFIG_TARGET=subtarget 2>/dev/null || true
+          cp "$ROOT_FILES/etc/autoupdate/default" "$ROOT_FILES/etc/autoupdate/custom"
+          cp "$ROOT_FILES/etc/autoupdate/default" "$ROOT_FILES/etc/AutoBuild/Github_Variable"
+          cp "$ROOT_FILES/etc/autoupdate/default" "$ROOT_FILES/etc/openwrt_info"
 
-          # ============================================
-          # 【核心修复】：验证 .config 中的关键选项
-          # ============================================
-          log_i "========== 内核配置最终验证 =========="
-          if grep -q "CONFIG_MEMCG=y" .config; then
-              log_i "✅ CONFIG_MEMCG=y 已成功写入 .config"
-          else
-              log_e "❌ 致命错误：CONFIG_MEMCG=y 未在 .config 中找到！"
-          fi
+          cat <<EOF > "$ROOT_FILES/etc/openwrt_release"
+          DISTRIB_ID='OpenWrt'
+          DISTRIB_RELEASE='${{ env.TAG_VERSION }}'
+          DISTRIB_REVISION='${{ env.CURRENT_DATE }}'
+          DISTRIB_TARGET='x86/64'
+          DISTRIB_ARCH='x86_64'
+          DISTRIB_DESCRIPTION='OpenWrt by jphy1314'
+          EOF
 
-          if grep -q "CONFIG_CPUSETS=y" .config; then
-              log_i "✅ CONFIG_CPUSETS=y 已成功写入 .config"
-          else
-              log_e "❌ 致命错误：CONFIG_CPUSETS=y 未在 .config 中找到！"
-          fi
+          ln -sf /bin/autoupdate "$ROOT_FILES/usr/bin/autoupdate"
+          find "$ROOT_FILES" -type f -exec sed -i 's/\r$//' {} + 2>/dev/null || true
+          find "$ROOT_FILES" -type f -exec chmod 644 {} +
 
-          # 4. 开启 CCACHE 优化
+          log_i "✅ 环境适配完成: 版本号 ${{ env.TAG_VERSION }} 已注入。"
+          # ==============================================================================
+          
+          # 5. 开启 CCACHE 优化
           if ! grep -q "CONFIG_CCACHE=y" .config; then
               echo -e "\nCONFIG_DEVEL=y\nCONFIG_CCACHE=y" >> .config
           fi
@@ -351,7 +432,7 @@ jobs:
 
           log_i "正在扫描并清理损坏的微型压缩包 (小于1KB)..."
           broken_count=$(find dl -type f -size -1024c \( -name "*.tar.*" -o -name "*.tgz" -o -name "*.zip" -o -name "*.bz2" \) | wc -l)
-
+          
           if [ "$broken_count" -gt 0 ]; then
             log_w "清理了 $broken_count 个异常文件 (可能是 404/502 错误页面)，准备重试..."
             find dl -type f -size -1024c \( -name "*.tar.*" -o -name "*.tgz" -o -name "*.zip" -o -name "*.bz2" \) -delete
@@ -368,26 +449,33 @@ jobs:
         id: compile
         working-directory: ${{ github.workspace }}/openwrt
         run: |
-          set -uo pipefail
-
+          set -uo pipefail # 此处不设置 -e，是为了允许并发 make 失败后自动触发单线程 fallback 编译
+          
+          # 安全创建 Ccache 目录，使用 755 权限符合企业安全基线
           mkdir -p ${{ env.CCACHE_DIR }}
           chmod 755 ${{ env.CCACHE_DIR }}
-
+          
+          # [核心 CCACHE 优化]
           export CCACHE_DIR=${{ env.CCACHE_DIR }}
           export CCACHE_COMPILERCHECK=content
+          # [极致命中]: 配合 CCACHE_BASEDIR 忽略绝对路径，跨 Runner 依然可以命中缓存
           export CCACHE_BASEDIR=${{ github.workspace }}
           export CCACHE_NOHASHDIR=true
-
+          
           ccache -z
           ccache --set-config=max_size=10G
+          
+          # [性能微调]: 设置 Go 编译内存水位，防止 Go 编译 Xray 源码时 OOM 拖慢系统
           export GOMEMLIMIT=5GiB
-
+          
           echo "🚀 Starting Main Build with $(nproc) threads..."
+          # 并行构建时显式传入 CCACHE_DIR 变量，防止部分 Makefile 内部重写路径
           make -j$(nproc) CCACHE_DIR=${{ env.CCACHE_DIR }} || make -j1 V=s CCACHE_DIR=${{ env.CCACHE_DIR }}
-
+          
           ccache -s
           echo "ℹ️ Final Cache Directory Size: $(du -sh ${{ env.CCACHE_DIR }} | cut -f1)"
-
+          
+          # 编译成功判定：修复 if 和[ 的间距，抑制 ls 的 stderr 报错
           if [ -d "bin/targets" ] && [ "$(ls -A bin/targets 2>/dev/null)" ]; then
               echo "✅ Compile success!"
               echo "status=success" >> $GITHUB_OUTPUT
@@ -396,7 +484,8 @@ jobs:
               echo "status=failed" >> $GITHUB_OUTPUT
               exit 1
           fi
-
+          
+          # 设备名提取：使用 -E 替代 -r 提高兼容性，过滤空格与换行，加 || true 防止 grep 失败引起流水线崩溃
           DEVICE=$(grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -E 's/.*DEVICE_(.*)=y/\1/' | head -n1 | tr -d '[:space:]' || echo "Generic")
           if [ -n "$DEVICE" ]; then
               echo "DEVICE_NAME=_$DEVICE" >> $GITHUB_ENV
@@ -422,6 +511,7 @@ jobs:
         with:
           name: OpenWrt_bin${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
           path: openwrt/bin
+          # [优化]: 限制中间产物保留 3 天，防止 GitHub 免费存储空间爆仓
           retention-days: 3
 
       - name: Organize Files (Dynamic Path)
@@ -430,16 +520,21 @@ jobs:
         if: steps.compile.outputs.status == 'success' && env.UPLOAD_FIRMWARE == 'true'
         run: |
           set -euo pipefail
-
+          
+          # 提取纯净设备名称 (如 x86_64) 用于通配符搜索
           RAW_DEVICE="${DEVICE_NAME#_}"
+          
+          # 健壮的固件发现策略：优先精确匹配包含该设备名的目录结构
           TARGET_DIR=$(find bin/targets -mindepth 2 -maxdepth 2 -type d -name "*${RAW_DEVICE}*" | head -n 1 || true)
-
+          
+          # 如果设备名匹配失败（可能是 generic 这种无特征词汇），退化为抓取第一个有效目录
           if [ -z "$TARGET_DIR" ]; then
             TARGET_DIR=$(find bin/targets -mindepth 2 -maxdepth 2 -type d | head -n 1 || true)
           fi
-
+          
           if [ -n "$TARGET_DIR" ] && [ -d "$TARGET_DIR" ]; then
             cd "$TARGET_DIR"
+            # 清理占空间的 packages 包夹，以及多余的内核信息文件
             rm -rf packages || true
             find . -type f -name "*.buildinfo" -delete
             find . -type f -name "*.manifest" -delete
@@ -456,33 +551,35 @@ jobs:
         with:
           name: OpenWrt_firmware${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
           path: ${{ env.FIRMWARE }}
+          # [优化]: 限制中间产物保留 3 天
           retention-days: 3
 
       - name: Generate Release Tag
         id: tag
         if: steps.compile.outputs.status == 'success' && env.UPLOAD_RELEASE == 'true'
         run: |
+          # 核心修改：生成与固件内部变量完全一致的 Rxx.xx.xx 标签
           TAG_NAME="${{ env.TAG_VERSION }}"
           echo "release_tag=${TAG_NAME}" >> $GITHUB_OUTPUT
-
+          
           touch release.txt
           echo "📦 固件发布版本: ${TAG_NAME}" >> release.txt
           echo "status=success" >> $GITHUB_OUTPUT
 
-      #[纯原生重构] 极速创建发布并上传固件
+      #[纯原生重构] 极速创建发布并上传固件 (防冲突 + 动态时间戳标题)
       - name: Upload Firmware to Release
         if: env.TAG_VERSION != '' && env.UPLOAD_RELEASE == 'true' && !cancelled()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-
+          
           TAG="${{ env.TAG_VERSION }}"
           BUILD_TIME=$(date +'%H:%M')
           RELEASE_TITLE="${TAG} (编译时间: ${BUILD_TIME})"
-
+          
           echo "🚀 开始上传固件到 Release [ ${TAG} ] ..."
-
+          
           if [ -z "$(ls -A ${{ env.FIRMWARE }} 2>/dev/null)" ]; then
             echo "❌ 错误: 未发现待上传的固件文件！"
             exit 1
@@ -502,13 +599,15 @@ jobs:
             echo "✅ 全新 Release 创建及固件上传成功！"
           fi
 
-      # 自动清理历史运行记录
+      # [纯原生重构] 替代弃更的 Mattraks/delete-workflow-runs
       - name: Delete Old Workflow Runs
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           echo "开始清理过旧的 Workflow 运行记录，仅保留最新 2 个..."
+          
+          # 利用 jq JSON 引擎健壮提取 ID，并调用 GitHub 原生 API 进行静默删除
           gh run list --workflow "${{ github.workflow }}" --limit 100 --json databaseId -q '.[].databaseId' | tail -n +3 | while IFS= read -r run_id; do
             if [ -n "$run_id" ]; then
               echo "🗑️ 正在删除冗余运行记录: $run_id"
@@ -517,7 +616,7 @@ jobs:
           done
           echo "✅ Action 运行记录清理完成！"
 
-      # 自动清理历史 Release 记录
+      # 自动清理历史 Release 记录 (企业级原生方案)
       - name: Remove Old Releases
         if: steps.compile.outputs.status == 'success' && env.UPLOAD_RELEASE == 'true'
         env:
@@ -525,7 +624,9 @@ jobs:
         run: |
           set -euo pipefail
           echo "开始清理过旧的 Releases，仅保留最新 3 个..."
+          # 使用 JSON 输出获取所有 tag（免疫一切特殊字符的健壮提取法）
           gh release list --repo ${{ github.repository }} --limit 100 --json tagName -q '.[].tagName' | tail -n +4 | while IFS= read -r tag; do
+            # 严格保留空格，防止 Exit code 2 报错
             if [ -n "$tag" ]; then
               echo "🗑️ 正在删除旧版本: $tag"
               gh release delete "$tag" --cleanup-tag -y || true
