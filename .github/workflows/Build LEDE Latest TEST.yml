@@ -111,6 +111,7 @@ jobs:
       - name: Cache Downloaded Sources (DL)
         uses: actions/cache@v5
         with:
+          # 使用多行语法，第一行包含全部，第二行用 ! 剔除掉容易中毒的目录
           path: |
             ${{ github.workspace }}/openwrt/dl
             !${{ github.workspace }}/openwrt/dl/go-mod-cache
@@ -288,15 +289,12 @@ jobs:
           [ -d package ] || log_e "package 目录不存在"
           log_i "✅ Feeds 处理完成，底层核心已成功解绑！"
 
-      # ==============================================================================
-      # 【核心修正】：配置解耦与探针注入 (彻底解决内核隔离与时序问题)
-      # ==============================================================================
       - name: Generate Configuration (配置解耦与探针注入)
         working-directory: ${{ github.workspace }}/openwrt
         run: |
           set -euo pipefail
 
-          # 补齐全部日志函数，防止隔离环境调用抛出 command not found
+          # 【核心修复】：补齐全部日志函数，防止隔离环境调用抛出 command not found
           log_i() { echo -e "\e[32m[INFO] $1\e[0m"; }
           log_w() { echo -e "\e[33m[WARN] $1\e[0m"; }
           log_e() { echo -e "\e[31m[ERROR] $1\e[0m"; exit 1; }
@@ -305,33 +303,35 @@ jobs:
           cat ${{ github.workspace }}/x86_64.config > .config
           
           # ==============================================================================
-          # 【架构师终极重构】：利用官方 scripts/config 工具进行安全注入！
-          # 抛弃脆弱的 sed 强改内核模板，拥抱 OpenWrt 原生的传递机制！
+          # 【架构师终极重构】：物理篡改底层内核模板！(放弃执行错误目录)
           # ==============================================================================
-          log_i "🚀 使用 scripts/config 工具安全开启内核 Cgroup 与 Docker 特性..."
+          log_i "🚀 物理注入 Linux 内核模板，强开 Cgroup 与 Docker 隔离特性..."
 
-          # 开启所有必要的 Cgroup 和 Namespace 内核特性 (必须使用 CONFIG_KERNEL_ 前缀传递)
-          ./scripts/config --enable CONFIG_KERNEL_CGROUPS
-          ./scripts/config --enable CONFIG_KERNEL_MEMCG
-          ./scripts/config --enable CONFIG_KERNEL_MEMCG_SWAP
-          ./scripts/config --enable CONFIG_KERNEL_MEMCG_V1
-          ./scripts/config --enable CONFIG_KERNEL_CPUSETS
-          ./scripts/config --enable CONFIG_KERNEL_CPUSETS_V1
-          ./scripts/config --enable CONFIG_KERNEL_CGROUP_CPUACCT
-          ./scripts/config --enable CONFIG_KERNEL_CGROUP_DEVICE
-          ./scripts/config --enable CONFIG_KERNEL_CGROUP_FREEZER
-          ./scripts/config --enable CONFIG_KERNEL_CGROUP_SCHED
-          ./scripts/config --enable CONFIG_KERNEL_CGROUP_NET_CLASSID
-          ./scripts/config --enable CONFIG_KERNEL_CGROUP_NET_PRIO
-          ./scripts/config --enable CONFIG_KERNEL_NAMESPACES
-          ./scripts/config --enable CONFIG_KERNEL_USER_NS
-          ./scripts/config --enable CONFIG_KERNEL_KEYS
+          # 遍历所有 x86 底层内核模板并暴力追加特性
+          for conf in target/linux/x86/config-* target/linux/x86/64/config-default; do
+              if [ -f "$conf" ]; then
+                  echo "CONFIG_CGROUPS=y" >> "$conf"
+                  echo "CONFIG_MEMCG=y" >> "$conf"
+                  echo "CONFIG_MEMCG_SWAP=y" >> "$conf"
+                  echo "CONFIG_MEMCG_V1=y" >> "$conf"
+                  echo "CONFIG_CPUSETS=y" >> "$conf"
+                  echo "CONFIG_CPUSETS_V1=y" >> "$conf"
+                  echo "CONFIG_CGROUP_CPUACCT=y" >> "$conf"
+                  echo "CONFIG_CGROUP_DEVICE=y" >> "$conf"
+                  echo "CONFIG_CGROUP_FREEZER=y" >> "$conf"
+                  echo "CONFIG_CGROUP_SCHED=y" >> "$conf"
+                  echo "CONFIG_CGROUP_NET_CLASSID=y" >> "$conf"
+                  echo "CONFIG_CGROUP_NET_PRIO=y" >> "$conf"
+                  echo "CONFIG_NAMESPACES=y" >> "$conf"
+                  echo "CONFIG_USER_NS=y" >> "$conf"
+                  echo "CONFIG_KEYS=y" >> "$conf"
+              fi
+          done
 
-          # 【解决老式物理机无 EFI 引导的难题】
-          # 利用 OpenWrt 原生变量，让打包引擎在生成 Legacy(BIOS) 和 EFI 镜像时自动写入引导参数！
-          ./scripts/config --set-str CONFIG_GRUB_BOOTOPTS "rootwait cgroup_enable=memory swapaccount=1 systemd.unified_cgroup_hierarchy=0 cgroup_hierarchy=legacy"
+          # 将 GRUB 底层引导参数直接注入顶层 .config，让 ImageBuilder 打包时自动读取
+          echo 'CONFIG_GRUB_BOOTOPTS="rootwait cgroup_enable=memory swapaccount=1 systemd.unified_cgroup_hierarchy=0 cgroup_hierarchy=legacy"' >> .config
 
-          log_i "✅ Cgroup 特性与 GRUB 引导参数注入完毕！"
+          log_i "✅ Cgroup 特性与 GRUB 引导参数底层注入完毕！"
           
           # 2. 运行 DIY Part 2 脚本
           SCRIPT="${{ github.workspace }}/diy-part2.sh"
@@ -340,7 +340,7 @@ jobs:
               bash "$SCRIPT"
           fi
           
-          # 3. 补全依赖配置 (defconfig 会完美吸收上面 scripts/config 写入的变量)
+          # 3. 补全依赖配置 (defconfig 会完美吸收上面修改的所有底层参数)
           make defconfig
 
           # ==============================================================================
@@ -354,7 +354,8 @@ jobs:
           mkdir -p "$ROOT_FILES/usr/bin"
 
           if [ -z "${{ env.TAG_VERSION }}" ]; then
-              log_e "❌ 错误: TAG_VERSION 环境变量为空！请检查前置步骤。"
+              echo "❌ 错误: TAG_VERSION 环境变量为空！请检查前置步骤。"
+              exit 1
           fi
 
           cat <<EOF > "$ROOT_FILES/etc/autoupdate/default"
@@ -390,7 +391,7 @@ jobs:
           find "$ROOT_FILES" -type f -exec sed -i 's/\r$//' {} + 2>/dev/null || true
           find "$ROOT_FILES" -type f -exec chmod 644 {} +
 
-          log_i "✅ 环境适配完成: 版本号 ${{ env.TAG_VERSION }} 已注入。"
+          echo "✅ 环境适配完成: 版本号 ${{ env.TAG_VERSION }} 已注入。"
           # ==============================================================================
           
           # 5. 开启 CCACHE 优化
@@ -499,7 +500,7 @@ jobs:
       # ==============================================================================
       - name: Upload build logs on failure (崩溃黑匣子)
         uses: actions/upload-artifact@v6
-        if: failure()
+        if: failure()   # 只有在之前的步骤失败时才会触发
         with:
           name: OpenWrt_Compile_Logs_${{ steps.cache-vars.outputs.date }}
           path: openwrt/logs/
@@ -516,7 +517,7 @@ jobs:
 
       - name: Organize Files (Dynamic Path)
         id: organize
-        working-directory: ${{ github.workspace }}/openwrt
+        working-directory: ${{ github.workspace }}/openwrt   # 【核心修复】：明确指定进入 openwrt 厨房找菜！
         if: steps.compile.outputs.status == 'success' && env.UPLOAD_FIRMWARE == 'true'
         run: |
           set -euo pipefail
@@ -524,7 +525,7 @@ jobs:
           # 提取纯净设备名称 (如 x86_64) 用于通配符搜索
           RAW_DEVICE="${DEVICE_NAME#_}"
           
-          # 健壮的固件发现策略：优先精确匹配包含该设备名的目录结构
+          # 健壮的固件发现策略：直接在当前 openwrt 目录下的 bin/targets 里找
           TARGET_DIR=$(find bin/targets -mindepth 2 -maxdepth 2 -type d -name "*${RAW_DEVICE}*" | head -n 1 || true)
           
           # 如果设备名匹配失败（可能是 generic 这种无特征词汇），退化为抓取第一个有效目录
@@ -559,6 +560,7 @@ jobs:
         if: steps.compile.outputs.status == 'success' && env.UPLOAD_RELEASE == 'true'
         run: |
           # 核心修改：生成与固件内部变量完全一致的 Rxx.xx.xx 标签
+          # 后面可以加上设备名后缀，例如 R26.05.04-x86_64
           TAG_NAME="${{ env.TAG_VERSION }}"
           echo "release_tag=${TAG_NAME}" >> $GITHUB_OUTPUT
           
@@ -599,7 +601,7 @@ jobs:
             echo "✅ 全新 Release 创建及固件上传成功！"
           fi
 
-      # [纯原生重构] 替代弃更的 Mattraks/delete-workflow-runs
+      # [纯原生重构] 替代弃更的 Mattraks/delete-workflow-runs，自动清理历史运行记录
       - name: Delete Old Workflow Runs
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -616,7 +618,7 @@ jobs:
           done
           echo "✅ Action 运行记录清理完成！"
 
-      # 自动清理历史 Release 记录 (企业级原生方案)
+      # 自动清理历史 Release 记录 (企业级原生方案，彻底剔除已废弃的第三方依赖)
       - name: Remove Old Releases
         if: steps.compile.outputs.status == 'success' && env.UPLOAD_RELEASE == 'true'
         env:
