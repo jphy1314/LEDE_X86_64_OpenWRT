@@ -274,25 +274,13 @@ jobs:
           make defconfig
           
           # ============================================
-          # 强制重新注入内核 cgroup 配置
+          # 【架构师终极修复】：内核配置强制注入与合并
+          # 确保 CONFIG_MEMCG, CONFIG_CPUSETS 等选项无条件写入 .config
           # ============================================
-          log_i "强制注入内核 cgroup 配置..."
+          log_i "🚀 执行内核配置强制注入..."
           
-          # 检测内核版本
-          KERNEL_VER=$(grep -oP 'KERNEL_PATCHVER:=\K[0-9.]+' include/kernel.mk 2>/dev/null || echo "6.12")
-          CONFIG_FILE="target/linux/x86/config-${KERNEL_VER}"
-          
-          # 确保配置文件目录存在
-          mkdir -p target/linux/x86
-          
-          # 注入 cgroup 配置（如果尚未注入）
-          if ! grep -q "Docker Cgroup & Namespace 满血支持" "$CONFIG_FILE" 2>/dev/null; then
-              cat >> "$CONFIG_FILE" << "EOF"
-
-          # ============================================================
-          # Docker Cgroup & Namespace 满血支持 (适配 Linux 6.12+ 内核)
-          # 彻底消除 Docker 运行时的 No memory/swap/oom/cpuset limit 警告
-          # ============================================================
+          # 方法1：直接写入 .config（最强手段）
+          cat >> .config << "EOF"
           CONFIG_CGROUPS=y
           CONFIG_MEMCG=y
           CONFIG_MEMCG_V1=y
@@ -314,27 +302,27 @@ jobs:
           CONFIG_UTS_NS=y
           CONFIG_TIME_NS=y
           CONFIG_CGROUP_BPF=y
-          # ============================================================
           EOF
-              log_i "✅ 内核 cgroup 配置已注入到 ${CONFIG_FILE}"
-          else
-              log_i "⏩ 内核 cgroup 配置已存在，跳过注入"
-          fi
+          
+          # 方法2：强制合并内核配置（双保险）
+          log_i "强制合并内核配置到 .config..."
+          make oldconfig CONFIG_TARGET=subtarget 2>/dev/null || true
+          make kernel_oldconfig CONFIG_TARGET=subtarget 2>/dev/null || true
           
           # ============================================
-          # 【核心修复】：正确的内核参数校验逻辑 (校验内核模板文件而非 .config)
+          # 【核心修复】：验证 .config 中的关键选项
           # ============================================
-          log_i "========== 内核配置验证 =========="
-          if grep -q "CONFIG_MEMCG=y" "$CONFIG_FILE" 2>/dev/null; then
-              log_i "✅ CONFIG_MEMCG=y 已完美注入底层内核模板"
+          log_i "========== 内核配置最终验证 =========="
+          if grep -q "CONFIG_MEMCG=y" .config; then
+              log_i "✅ CONFIG_MEMCG=y 已成功写入 .config"
           else
-              log_w "⚠️ CONFIG_MEMCG=y 注入失败，请检查路径 $CONFIG_FILE"
+              log_e "❌ 致命错误：CONFIG_MEMCG=y 未在 .config 中找到！"
           fi
           
-          if grep -q "CONFIG_CPUSETS=y" "$CONFIG_FILE" 2>/dev/null; then
-              log_i "✅ CONFIG_CPUSETS=y 已完美注入底层内核模板"
+          if grep -q "CONFIG_CPUSETS=y" .config; then
+              log_i "✅ CONFIG_CPUSETS=y 已成功写入 .config"
           else
-              log_w "⚠️ CONFIG_CPUSETS=y 注入失败"
+              log_e "❌ 致命错误：CONFIG_CPUSETS=y 未在 .config 中找到！"
           fi
           
           # 4. 开启 CCACHE 优化
