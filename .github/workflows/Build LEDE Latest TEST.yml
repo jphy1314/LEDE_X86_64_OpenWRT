@@ -27,8 +27,8 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     # [优化]: 全局超时熔断，防止编译死锁耗尽 GitHub 免费额度 (5小时)
-    timeout-minutes: 300 
-    
+    timeout-minutes: 300
+
     steps:
       - name: Checkout Code
         uses: actions/checkout@v6
@@ -52,10 +52,10 @@ jobs:
           DEBIAN_FRONTEND: noninteractive
         run: |
           set -euo pipefail
-          
+
           # 正常更新软件源
           sudo apt-get update
-          
+
           # Ubuntu 24.04 专属包名修正：7zip, libgmp-dev, python3-setuptools
           sudo apt-get install -y --no-install-recommends \
             build-essential clang cmake device-tree-compiler \
@@ -68,11 +68,11 @@ jobs:
             uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev \
             ack antlr3 asciidoc autoconf automake autopoint binutils bison \
             bzip2 curl genisoimage haveged ccache libc6-dev-i386 jq
-            
+
           sudo apt-get autoremove --purge -y
           sudo apt-get clean
           sudo timedatectl set-timezone "$TZ"
-          
+
       - name: Clone Source Code
         working-directory: ${{ github.workspace }}
         run: |
@@ -85,7 +85,7 @@ jobs:
         run: |
           set -euo pipefail
           echo "date=$(date +'%Y%m%d')" >> $GITHUB_OUTPUT
-          
+
           # 【全局锁定版本号】：例如 R26.05.07
           VERSION_TAG="R$(date +%y.%m.%d)"
           echo "TAG_VERSION=${VERSION_TAG}" >> $GITHUB_ENV
@@ -152,7 +152,7 @@ jobs:
               smartdns luci-app-smartdns
               luci-theme-argon luci-app-argon-config
           )
-          
+
           # --------------------------------------------------------------------------
           # [类 2]: UI 主程序 (必须从 package/ 和 feeds/ 里双重删光，确立新版 UI 唯一性)
           # --------------------------------------------------------------------------
@@ -259,56 +259,43 @@ jobs:
           log_i() { echo -e "\e[32m[INFO] $1\e[0m"; }
           log_w() { echo -e "\e[33m[WARN] $1\e[0m"; }
           log_e() { echo -e "\e[31m[ERROR] $1\e[0m"; exit 1; }
-          
+
           # 1. 导入独立的基础配置清单
           cat ${{ github.workspace }}/x86_64.config > .config
-          
+
           # 2. 运行 DIY Part 2 脚本
           SCRIPT="${{ github.workspace }}/diy-part2.sh"
           if [ -f "$SCRIPT" ]; then
               log_i "运行 DIY Part 2 脚本..."
               bash "$SCRIPT"
           fi
-          
+
           # 3. 补全依赖配置 (此步骤可能会覆盖内核配置)
           make defconfig
-          
+
           # ============================================
-          # 【架构师终极修复】：内核配置强制注入与合并
-          # 确保 CONFIG_MEMCG, CONFIG_CPUSETS 等选项无条件写入 .config
+          # 【架构师修复】：先执行旧配置合并，确保依赖已满足
           # ============================================
-          log_i "🚀 执行内核配置强制注入..."
-          
-          # 方法1：直接写入 .config（最强手段）
+          log_i "首次合并内核配置 (确保依赖满足)..."
+          make oldconfig CONFIG_TARGET=subtarget 2>/dev/null || true
+          make kernel_oldconfig CONFIG_TARGET=subtarget 2>/dev/null || true
+
+          # ============================================
+          # 【关键修复】：在 kernel_oldconfig 之后再次强制注入
+          # 此时依赖已满足，配置不会被后续操作覆盖
+          # ============================================
+          log_i "🚀 执行最终内核配置强制注入..."
           cat >> .config << "EOF"
           CONFIG_CGROUPS=y
           CONFIG_MEMCG=y
-          CONFIG_MEMCG_V1=y
           CONFIG_MEMCG_SWAP=y
           CONFIG_CPUSETS=y
-          CONFIG_CPUSETS_V1=y
-          CONFIG_CGROUP_CPUACCT=y
-          CONFIG_CGROUP_DEVICE=y
-          CONFIG_CGROUP_FREEZER=y
-          CONFIG_CGROUP_SCHED=y
-          CONFIG_CGROUP_NET_CLASSID=y
-          CONFIG_CGROUP_NET_PRIO=y
-          CONFIG_NAMESPACES=y
-          CONFIG_USER_NS=y
-          CONFIG_KEYS=y
-          CONFIG_NET_NS=y
-          CONFIG_PID_NS=y
-          CONFIG_IPC_NS=y
-          CONFIG_UTS_NS=y
-          CONFIG_TIME_NS=y
-          CONFIG_CGROUP_BPF=y
           EOF
-          
-          # 方法2：强制合并内核配置（双保险）
-          log_i "强制合并内核配置到 .config..."
+
+          # 再次执行 oldconfig，仅处理新增选项（非交互）
+          log_i "处理新增内核选项..."
           make oldconfig CONFIG_TARGET=subtarget 2>/dev/null || true
-          make kernel_oldconfig CONFIG_TARGET=subtarget 2>/dev/null || true
-          
+
           # ============================================
           # 【核心修复】：验证 .config 中的关键选项
           # ============================================
@@ -318,13 +305,13 @@ jobs:
           else
               log_e "❌ 致命错误：CONFIG_MEMCG=y 未在 .config 中找到！"
           fi
-          
+
           if grep -q "CONFIG_CPUSETS=y" .config; then
               log_i "✅ CONFIG_CPUSETS=y 已成功写入 .config"
           else
               log_e "❌ 致命错误：CONFIG_CPUSETS=y 未在 .config 中找到！"
           fi
-          
+
           # 4. 开启 CCACHE 优化
           if ! grep -q "CONFIG_CCACHE=y" .config; then
               echo -e "\nCONFIG_DEVEL=y\nCONFIG_CCACHE=y" >> .config
@@ -364,7 +351,7 @@ jobs:
 
           log_i "正在扫描并清理损坏的微型压缩包 (小于1KB)..."
           broken_count=$(find dl -type f -size -1024c \( -name "*.tar.*" -o -name "*.tgz" -o -name "*.zip" -o -name "*.bz2" \) | wc -l)
-          
+
           if [ "$broken_count" -gt 0 ]; then
             log_w "清理了 $broken_count 个异常文件 (可能是 404/502 错误页面)，准备重试..."
             find dl -type f -size -1024c \( -name "*.tar.*" -o -name "*.tgz" -o -name "*.zip" -o -name "*.bz2" \) -delete
@@ -382,25 +369,25 @@ jobs:
         working-directory: ${{ github.workspace }}/openwrt
         run: |
           set -uo pipefail
-          
+
           mkdir -p ${{ env.CCACHE_DIR }}
           chmod 755 ${{ env.CCACHE_DIR }}
-          
+
           export CCACHE_DIR=${{ env.CCACHE_DIR }}
           export CCACHE_COMPILERCHECK=content
           export CCACHE_BASEDIR=${{ github.workspace }}
           export CCACHE_NOHASHDIR=true
-          
+
           ccache -z
           ccache --set-config=max_size=10G
           export GOMEMLIMIT=5GiB
-          
+
           echo "🚀 Starting Main Build with $(nproc) threads..."
           make -j$(nproc) CCACHE_DIR=${{ env.CCACHE_DIR }} || make -j1 V=s CCACHE_DIR=${{ env.CCACHE_DIR }}
-          
+
           ccache -s
           echo "ℹ️ Final Cache Directory Size: $(du -sh ${{ env.CCACHE_DIR }} | cut -f1)"
-          
+
           if [ -d "bin/targets" ] && [ "$(ls -A bin/targets 2>/dev/null)" ]; then
               echo "✅ Compile success!"
               echo "status=success" >> $GITHUB_OUTPUT
@@ -409,7 +396,7 @@ jobs:
               echo "status=failed" >> $GITHUB_OUTPUT
               exit 1
           fi
-          
+
           DEVICE=$(grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -E 's/.*DEVICE_(.*)=y/\1/' | head -n1 | tr -d '[:space:]' || echo "Generic")
           if [ -n "$DEVICE" ]; then
               echo "DEVICE_NAME=_$DEVICE" >> $GITHUB_ENV
@@ -443,14 +430,14 @@ jobs:
         if: steps.compile.outputs.status == 'success' && env.UPLOAD_FIRMWARE == 'true'
         run: |
           set -euo pipefail
-          
+
           RAW_DEVICE="${DEVICE_NAME#_}"
           TARGET_DIR=$(find bin/targets -mindepth 2 -maxdepth 2 -type d -name "*${RAW_DEVICE}*" | head -n 1 || true)
-          
+
           if [ -z "$TARGET_DIR" ]; then
             TARGET_DIR=$(find bin/targets -mindepth 2 -maxdepth 2 -type d | head -n 1 || true)
           fi
-          
+
           if [ -n "$TARGET_DIR" ] && [ -d "$TARGET_DIR" ]; then
             cd "$TARGET_DIR"
             rm -rf packages || true
@@ -477,7 +464,7 @@ jobs:
         run: |
           TAG_NAME="${{ env.TAG_VERSION }}"
           echo "release_tag=${TAG_NAME}" >> $GITHUB_OUTPUT
-          
+
           touch release.txt
           echo "📦 固件发布版本: ${TAG_NAME}" >> release.txt
           echo "status=success" >> $GITHUB_OUTPUT
@@ -489,13 +476,13 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          
+
           TAG="${{ env.TAG_VERSION }}"
           BUILD_TIME=$(date +'%H:%M')
           RELEASE_TITLE="${TAG} (编译时间: ${BUILD_TIME})"
-          
+
           echo "🚀 开始上传固件到 Release [ ${TAG} ] ..."
-          
+
           if [ -z "$(ls -A ${{ env.FIRMWARE }} 2>/dev/null)" ]; then
             echo "❌ 错误: 未发现待上传的固件文件！"
             exit 1
