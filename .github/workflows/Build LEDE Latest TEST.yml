@@ -302,41 +302,63 @@ jobs:
           cat ${{ github.workspace }}/x86_64.config > .config
 
           # ==============================================================================
-          # 【架构师终极篡改】：上帝视角，物理重写 Linux 6.12/6.6 底层内核模板！
-          # 直接往靶机 config 里灌入纯血 Cgroup 基因，彻底解决内核残疾问题！
+          # 【架构师终极篡改 1】：手撕“祖宗级”内核模板，强行烙印 Cgroup 基因！
           # ==============================================================================
-          log_i "🔥 正在物理篡改 Linux 内核模板，强开 Memory 与 Cpuset 基因..."
+          log_i "🔥 正在暴力解剖 target/linux 祖宗模板，强开 Cgroup 隔离特性..."
           
-          for conf in target/linux/x86/config-* target/linux/x86/64/config-default; do
+          # 获取真实内核版本
+          KERNEL_VER=$(grep -oP 'KERNEL_PATCHVER:=\K[0-9.]+' include/kernel.mk 2>/dev/null || echo "6.12")
+          
+          # 连锅端：同时篡改 generic(通用) 和 x86(专属) 的底层模板！
+          for conf in target/linux/generic/config-${KERNEL_VER} target/linux/x86/config-${KERNEL_VER} target/linux/x86/64/config-default; do
               if [ -f "$conf" ]; then
-                  # 先清理可能存在的冲突项
+                  # 清洗冲突项
                   sed -i '/CONFIG_CGROUP/d' "$conf" 2>/dev/null || true
                   sed -i '/CONFIG_MEMCG/d' "$conf" 2>/dev/null || true
                   sed -i '/CONFIG_CPUSETS/d' "$conf" 2>/dev/null || true
                   
-                  # 硬核注入内核原生配置
+                  # 强行注入满血基因，并显式开启 V1 兼容以应对 6.12 的弃用机制
                   cat >> "$conf" << 'EOF'
           CONFIG_CGROUPS=y
           CONFIG_MEMCG=y
           CONFIG_MEMCG_SWAP=y
+          CONFIG_MEMCG_V1=y
           CONFIG_CPUSETS=y
+          CONFIG_CPUSETS_V1=y
           CONFIG_CGROUP_CPUACCT=y
           CONFIG_CGROUP_DEVICE=y
           CONFIG_CGROUP_FREEZER=y
           CONFIG_CGROUP_SCHED=y
-          CONFIG_CGROUP_NET_CLASSID=y
-          CONFIG_CGROUP_NET_PRIO=y
-          CONFIG_CGROUP_BPF=y
+          CONFIG_FAIR_GROUP_SCHED=y
+          CONFIG_BLK_CGROUP=y
           CONFIG_NAMESPACES=y
+          CONFIG_USER_NS=y
           EOF
               fi
           done
 
-          # 【致命 Bug 修复】：直接用 echo 物理写入 GRUB 参数，绝不调用 scripts/config 文件夹！
-          echo 'CONFIG_GRUB_BOOTOPTS="rootwait cgroup_enable=memory swapaccount=1"' >> .config
-          
-          log_i "✅ 内核基因重写与 Cgroup V2 引导参数注入完毕！"
           # ==============================================================================
+          # 【架构师终极篡改 2】：劫持底层 ImageBuilder 打包工厂，强制附加 GRUB 引导参数！
+          # ==============================================================================
+          log_i "🔥 正在物理劫持 x86 镜像打包脚本，强加 Docker Bootargs..."
+          
+          # 篡改生成镜像的核心 Makefile
+          SED_TARGET="target/linux/x86/image/Makefile"
+          if [ -f "$SED_TARGET" ]; then
+              sed -i 's/rootwait/rootwait cgroup_enable=memory swapaccount=1 cgroup_hierarchy=legacy/g' "$SED_TARGET"
+          fi
+          
+          # 篡改所有引导配置文件模板 (涵盖 GRUB、Syslinux、Extlinux)
+          for cfg in target/linux/x86/image/*.cfg target/linux/x86/image/*.conf; do
+              if [ -f "$cfg" ]; then
+                  sed -i 's/rootwait/rootwait cgroup_enable=memory swapaccount=1 cgroup_hierarchy=legacy/g' "$cfg"
+              fi
+          done
+
+          # 兜底：强行覆盖全局引导参数
+          echo 'CONFIG_BOOTARGS="rootwait console=tty0 console=ttyS0,115200n8 noinitrd swiotlb=65536 cgroup_enable=memory swapaccount=1 cgroup_hierarchy=legacy"' >> .config
+          
+          log_i "✅ 内核基因重写与底层引导参数劫持全部完成！"
           
           # 2. 运行 DIY Part 2 脚本
           SCRIPT="${{ github.workspace }}/diy-part2.sh"
@@ -349,7 +371,7 @@ jobs:
           make defconfig
 
           # ==============================================================================
-          # 4. 【工业级流水线优化】：Hyy2001X 环境注入 (完美切分 底层指纹 与 UI标签)
+          # 4. 【工业级流水线优化】：Hyy2001X 环境注入
           # ==============================================================================
           echo "🚀 启动 CI 级环境适配..."
 
