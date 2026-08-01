@@ -302,10 +302,10 @@ jobs:
           cat ${{ github.workspace }}/x86_64.config > .config
 
           # ==============================================================================
-          # 【架构师终极篡改】：上帝视角，物理重写 Linux 6.12 底层内核模板！
+          # 【架构师终极篡改】：上帝视角，物理重写 Linux 6.12/6.6 底层内核模板！
           # 直接往靶机 config 里灌入纯血 Cgroup 基因，彻底解决内核残疾问题！
           # ==============================================================================
-          log_i "🚀 正在物理篡改 Linux 内核模板，强开 Memory 与 Cpuset 基因..."
+          log_i "🔥 正在物理篡改 Linux 内核模板，强开 Memory 与 Cpuset 基因..."
           
           for conf in target/linux/x86/config-* target/linux/x86/64/config-default; do
               if [ -f "$conf" ]; then
@@ -314,7 +314,7 @@ jobs:
                   sed -i '/CONFIG_MEMCG/d' "$conf" 2>/dev/null || true
                   sed -i '/CONFIG_CPUSETS/d' "$conf" 2>/dev/null || true
                   
-                  # 硬核注入内核原生配置 (注意这里没有 CONFIG_KERNEL_ 前缀，直通内核)
+                  # 硬核注入内核原生配置
                   cat >> "$conf" << 'EOF'
           CONFIG_CGROUPS=y
           CONFIG_MEMCG=y
@@ -332,8 +332,8 @@ jobs:
               fi
           done
 
-          # 【拥抱 Cgroup V2】：去掉 legacy 强制回退参数，让系统原生支持 V2 消除弃用警告
-          ./scripts/config --set-str CONFIG_GRUB_BOOTOPTS "rootwait cgroup_enable=memory swapaccount=1"
+          # 【致命 Bug 修复】：直接用 echo 物理写入 GRUB 参数，绝不调用 scripts/config 文件夹！
+          echo 'CONFIG_GRUB_BOOTOPTS="rootwait cgroup_enable=memory swapaccount=1"' >> .config
           
           log_i "✅ 内核基因重写与 Cgroup V2 引导参数注入完毕！"
           # ==============================================================================
