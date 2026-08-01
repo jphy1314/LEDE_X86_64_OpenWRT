@@ -294,44 +294,49 @@ jobs:
         run: |
           set -euo pipefail
 
-          # 【核心修复】：补齐全部日志函数，防止隔离环境调用抛出 command not found
           log_i() { echo -e "\e[32m[INFO] $1\e[0m"; }
           log_w() { echo -e "\e[33m[WARN] $1\e[0m"; }
           log_e() { echo -e "\e[31m[ERROR] $1\e[0m"; exit 1; }
           
           # 1. 导入独立的基础配置清单
           cat ${{ github.workspace }}/x86_64.config > .config
-          
-          # ==============================================================================
-          # 【架构师终极重构】：物理篡改底层内核模板！(放弃执行错误目录)
-          # ==============================================================================
-          log_i "🚀 物理注入 Linux 内核模板，强开 Cgroup 与 Docker 隔离特性..."
 
-          # 遍历所有 x86 底层内核模板并暴力追加特性
+          # ==============================================================================
+          # 【架构师终极篡改】：上帝视角，物理重写 Linux 6.12 底层内核模板！
+          # 直接往靶机 config 里灌入纯血 Cgroup 基因，彻底解决内核残疾问题！
+          # ==============================================================================
+          log_i "🚀 正在物理篡改 Linux 内核模板，强开 Memory 与 Cpuset 基因..."
+          
           for conf in target/linux/x86/config-* target/linux/x86/64/config-default; do
               if [ -f "$conf" ]; then
-                  echo "CONFIG_CGROUPS=y" >> "$conf"
-                  echo "CONFIG_MEMCG=y" >> "$conf"
-                  echo "CONFIG_MEMCG_SWAP=y" >> "$conf"
-                  echo "CONFIG_MEMCG_V1=y" >> "$conf"
-                  echo "CONFIG_CPUSETS=y" >> "$conf"
-                  echo "CONFIG_CPUSETS_V1=y" >> "$conf"
-                  echo "CONFIG_CGROUP_CPUACCT=y" >> "$conf"
-                  echo "CONFIG_CGROUP_DEVICE=y" >> "$conf"
-                  echo "CONFIG_CGROUP_FREEZER=y" >> "$conf"
-                  echo "CONFIG_CGROUP_SCHED=y" >> "$conf"
-                  echo "CONFIG_CGROUP_NET_CLASSID=y" >> "$conf"
-                  echo "CONFIG_CGROUP_NET_PRIO=y" >> "$conf"
-                  echo "CONFIG_NAMESPACES=y" >> "$conf"
-                  echo "CONFIG_USER_NS=y" >> "$conf"
-                  echo "CONFIG_KEYS=y" >> "$conf"
+                  # 先清理可能存在的冲突项
+                  sed -i '/CONFIG_CGROUP/d' "$conf" 2>/dev/null || true
+                  sed -i '/CONFIG_MEMCG/d' "$conf" 2>/dev/null || true
+                  sed -i '/CONFIG_CPUSETS/d' "$conf" 2>/dev/null || true
+                  
+                  # 硬核注入内核原生配置 (注意这里没有 CONFIG_KERNEL_ 前缀，直通内核)
+                  cat >> "$conf" << 'EOF'
+          CONFIG_CGROUPS=y
+          CONFIG_MEMCG=y
+          CONFIG_MEMCG_SWAP=y
+          CONFIG_CPUSETS=y
+          CONFIG_CGROUP_CPUACCT=y
+          CONFIG_CGROUP_DEVICE=y
+          CONFIG_CGROUP_FREEZER=y
+          CONFIG_CGROUP_SCHED=y
+          CONFIG_CGROUP_NET_CLASSID=y
+          CONFIG_CGROUP_NET_PRIO=y
+          CONFIG_CGROUP_BPF=y
+          CONFIG_NAMESPACES=y
+          EOF
               fi
           done
 
-          # 将 GRUB 底层引导参数直接注入顶层 .config，让 ImageBuilder 打包时自动读取
-          echo 'CONFIG_GRUB_BOOTOPTS="rootwait cgroup_enable=memory swapaccount=1 systemd.unified_cgroup_hierarchy=0 cgroup_hierarchy=legacy"' >> .config
-
-          log_i "✅ Cgroup 特性与 GRUB 引导参数底层注入完毕！"
+          # 【拥抱 Cgroup V2】：去掉 legacy 强制回退参数，让系统原生支持 V2 消除弃用警告
+          ./scripts/config --set-str CONFIG_GRUB_BOOTOPTS "rootwait cgroup_enable=memory swapaccount=1"
+          
+          log_i "✅ 内核基因重写与 Cgroup V2 引导参数注入完毕！"
+          # ==============================================================================
           
           # 2. 运行 DIY Part 2 脚本
           SCRIPT="${{ github.workspace }}/diy-part2.sh"
@@ -340,7 +345,7 @@ jobs:
               bash "$SCRIPT"
           fi
           
-          # 3. 补全依赖配置 (defconfig 会完美吸收上面修改的所有底层参数)
+          # 3. 补全依赖配置 (此时 defconfig 将被迫吃下我们篡改过的内核模板)
           make defconfig
 
           # ==============================================================================
@@ -361,12 +366,10 @@ jobs:
           cat <<EOF > "$ROOT_FILES/etc/autoupdate/default"
           Author="jphy1314"
           Github="https://github.com/${{ github.repository }}"
-          # [底层指纹]：匹配真实文件名 openwrt-x86-64-generic...
           TARGET_PROFILE="x86-64"
           TARGET_BOARD="x86"
           TARGET_SUBTARGET="64"
           Firmware_Type="combined-efi.img.gz"
-          # [UI 标签]：纯字母，绝对绕过前端严格正则校验
           TARGET_FLAG="x86"
           OP_VERSION="${{ env.TAG_VERSION }}"
           OP_AUTHOR="jphy1314"
@@ -392,7 +395,6 @@ jobs:
           find "$ROOT_FILES" -type f -exec chmod 644 {} +
 
           echo "✅ 环境适配完成: 版本号 ${{ env.TAG_VERSION }} 已注入。"
-          # ==============================================================================
           
           # 5. 开启 CCACHE 优化
           if ! grep -q "CONFIG_CCACHE=y" .config; then
