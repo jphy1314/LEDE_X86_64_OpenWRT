@@ -81,10 +81,9 @@ if command -v uci >/dev/null 2>&1; then
 fi
 
 # =========================================================================
-# 【架构师终极防御】：暴力修改 GRUB/Extlinux 引导参数，强行唤醒被内核封印的 Docker 容器隔离特性！
-# 彻底消除 Dockerman 里的 No memory/swap/oom limit 等警告！
+# 【架构师终极防御】：暴力修改 GRUB/Extlinux 引导参数，强行唤醒 Docker 容器隔离！
+# 全面拥抱 Cgroup V2，彻底消除 v1 is deprecated 警告！
 # =========================================================================
-# 检测实际使用的引导加载器
 BOOT_CFG=""
 SEARCH_PATTERN="rootwait"
 BOOT_TYPE=""
@@ -100,22 +99,19 @@ elif [ -f /boot/syslinux/syslinux.cfg ]; then
     BOOT_TYPE="syslinux"
 fi
 
-if [ -n "$BOOT_CFG" ] && [ -f "$BOOT_CFG" ]; then
-    # 防止重复追加
-    if ! grep -q "cgroup_enable=memory" "$BOOT_CFG"; then
-        # 构建内核参数追加字符串（根据不同的引导器使用不同的分隔符）
-        case "$BOOT_TYPE" in
+# 【架构师修复】：对变量加上反斜杠转义 (\$BOOT_CFG)，防止在 CI 机器上提前解析导致变为空值！
+if [ -n "\$BOOT_CFG" ] && [ -f "\$BOOT_CFG" ]; then
+    if ! grep -q "cgroup_enable=memory" "\$BOOT_CFG"; then
+        case "\$BOOT_TYPE" in
             grub)
-                # GRUB: 在 rootwait 后追加参数
-                sed -i "s/${SEARCH_PATTERN}/${SEARCH_PATTERN} cgroup_enable=memory swapaccount=1 systemd.unified_cgroup_hierarchy=0 cgroup_hierarchy=legacy/g" "$BOOT_CFG"
+                # 移除 legacy，开启 unified_cgroup_hierarchy=1 (即 Cgroup V2 模式)
+                sed -i "s/\${SEARCH_PATTERN}/\${SEARCH_PATTERN} cgroup_enable=memory swapaccount=1 systemd.unified_cgroup_hierarchy=1/g" "\$BOOT_CFG"
                 ;;
             extlinux|syslinux)
-                # Extlinux/Syslinux: 在 APPEND 行追加参数
-                sed -i "s/\(APPEND .*\)/\1 cgroup_enable=memory swapaccount=1 systemd.unified_cgroup_hierarchy=0 cgroup_hierarchy=legacy/g" "$BOOT_CFG"
+                sed -i "s/\\(APPEND .*\\)/\\1 cgroup_enable=memory swapaccount=1 systemd.unified_cgroup_hierarchy=1/g" "\$BOOT_CFG"
                 ;;
         esac
-        # 增加 || true 防护，防止极早期阶段 syslogd 未启动导致 uci-defaults 崩溃
-        logger -t "System-Opt" "✅ 引导参数修改成功 ($BOOT_TYPE)，Docker 完整环境已解锁！" 2>/dev/null || true
+        logger -t "System-Opt" "✅ 引导参数修改成功 (\$BOOT_TYPE)，Docker Cgroup V2 完整环境已解锁！" 2>/dev/null || true
     fi
 fi
 
