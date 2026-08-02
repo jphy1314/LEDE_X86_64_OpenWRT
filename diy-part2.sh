@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# OpenWrt DIY Part 2 - 企业级生产环境版功能特性 (包含 Docker 极致调优)
+# OpenWrt DIY Part 2 - 企业终级增强版 (22/23/24 兼容)
 # ==============================================================================
 # 核心设计目标：
 # 1. 物理级服务隔离 (Service Isolation)：
@@ -17,14 +17,9 @@
 #    - TRIM 补丁：只对真实物理固态盘执行，绕过虚拟文件系统。采用 99-zz 命名反杀流氓洗白插件。
 # 6. 网络硬件加速 (Hardware Offload)：
 #    - 自动化 ethtool 策略注入，静默开启物理网卡 TSO/GSO 加速，提升企业级大流量转发性能。
-# 7. 容器化引擎满血解锁 (Docker Cgroups)：
-#    - 暴力破解内核限制，强制在 GRUB 引导期开启被阉割的内存/Swap 隔离等高级特性。
 # ==============================================================================
 
 set -euo pipefail
-
-# CI 错误捕捉：在构建日志中精确定位报错行号
-trap 'echo "::error file=${BASH_SOURCE[0]},line=${LINENO}::❌ 构建失败，请检查脚本逻辑"; exit 1' ERR
 
 # --------------------------------------------------------------------------
 # 全局配置 & 可调优参数 (CI 环境变量)
@@ -33,25 +28,22 @@ readonly TARGET_IP="192.168.5.1"
 readonly TARGET_HOSTNAME="LEDE"
 readonly FILES_DIR="files"
 
-# 默认参数（支持从外部 CI 环境变量覆盖）
 : "${TRIM_SCHEDULE:="0 3 * * *"}"
 : "${SSD_READ_AHEAD_KB:="2048"}"
 : "${HDD_READ_AHEAD_KB:="128"}"
 
+trap 'echo "::error file=${BASH_SOURCE[0]},line=${LINENO}::❌ 构建失败，请检查脚本逻辑"; exit 1' ERR
+
 log() { echo -e "\033[36m[INFO]\033[0m $1"; }
 
-# 预检：必须在 OpenWrt 源码根目录执行
-[[ -f scripts/feeds ]] || { echo "❌ 必须在 OpenWrt 源码根目录执行此脚本"; exit 1; }
+[[ -f scripts/feeds ]] || { echo "❌ 必须在 OpenWrt 源码根目录执行"; exit 1; }
 
-# 创建标准的目录结构 (files 目录将被编译进 ROM)
 mkdir -p "${FILES_DIR}/etc/"{uci-defaults,init.d,hotplug.d/block,hotplug.d/mount,config}
 mkdir -p "${FILES_DIR}/usr/bin"
 
 # ==============================================================================
-# 阶段 1: 系统初始化 (静态配置注入)
+# 阶段 1: 系统初始化 (CI安全版)
 # ==============================================================================
-log "🔥 正在注入系统初始化与 Docker 引导解锁..."
-
 # 分离 CI 环境变量注入，彻底斩断单段 EOF 带来的反斜杠转义地狱
 cat <<EOF > "${FILES_DIR}/etc/uci-defaults/90-system-init"
 #!/bin/sh
@@ -75,59 +67,21 @@ if command -v uci >/dev/null 2>&1; then
         uci set samba4.@samba[-1].charset='UTF-8'
         uci set samba4.@samba[-1].interface='lan'
     fi
-    # 彻底清除默认的模版共享盘，防止垃圾挂载点残留
     while uci -q delete samba4.@sambashare[0]; do :; done
     uci commit samba4
-fi
-
-# =========================================================================
-# 【架构师终极防御】：暴力修改 GRUB/Extlinux 引导参数，强行唤醒 Docker 容器隔离！
-# 全面拥抱 Cgroup V2，彻底消除 v1 is deprecated 警告！
-# =========================================================================
-BOOT_CFG=""
-SEARCH_PATTERN="rootwait"
-BOOT_TYPE=""
-
-if [ -f /boot/grub/grub.cfg ]; then
-    BOOT_CFG="/boot/grub/grub.cfg"
-    BOOT_TYPE="grub"
-elif [ -f /boot/extlinux/extlinux.conf ]; then
-    BOOT_CFG="/boot/extlinux/extlinux.conf"
-    BOOT_TYPE="extlinux"
-elif [ -f /boot/syslinux/syslinux.cfg ]; then
-    BOOT_CFG="/boot/syslinux/syslinux.cfg"
-    BOOT_TYPE="syslinux"
-fi
-
-# 【架构师修复】：对变量加上反斜杠转义 (\$BOOT_CFG)，防止在 CI 机器上提前解析导致变为空值！
-if [ -n "\$BOOT_CFG" ] && [ -f "\$BOOT_CFG" ]; then
-    if ! grep -q "cgroup_enable=memory" "\$BOOT_CFG"; then
-        case "\$BOOT_TYPE" in
-            grub)
-                # 移除 legacy，开启 unified_cgroup_hierarchy=1 (即 Cgroup V2 模式)
-                sed -i "s/\${SEARCH_PATTERN}/\${SEARCH_PATTERN} cgroup_enable=memory swapaccount=1 systemd.unified_cgroup_hierarchy=1/g" "\$BOOT_CFG"
-                ;;
-            extlinux|syslinux)
-                sed -i "s/\\(APPEND .*\\)/\\1 cgroup_enable=memory swapaccount=1 systemd.unified_cgroup_hierarchy=1/g" "\$BOOT_CFG"
-                ;;
-        esac
-        logger -t "System-Opt" "✅ 引导参数修改成功 (\$BOOT_TYPE)，Docker Cgroup V2 完整环境已解锁！" 2>/dev/null || true
-    fi
 fi
 
 exit 0
 EOF
 
 chmod 0755 "${FILES_DIR}/etc/uci-defaults/90-system-init"
-log "✅ 系统初始化注入完成 (包含 Docker 引导唤醒)"
-
+log "✅ 系统初始化注入完成"
 
 # ==============================================================================
 # 阶段 2: IPSec VPN 双将夺权终极物理隔离 (Build-time Override)
 # ==============================================================================
 log "🔥 正在注入 IPSec 物理空壳，彻底拦截原生服务抢权..."
 
-# 在编译期直接伪造一个空壳启动脚本，强行覆盖掉 StrongSwan 原生的 /etc/init.d/ipsec
 cat << 'EOF' > "${FILES_DIR}/etc/init.d/ipsec"
 #!/bin/sh /etc/rc.common
 # =======================================================
@@ -137,7 +91,6 @@ cat << 'EOF' > "${FILES_DIR}/etc/init.d/ipsec"
 START=99
 
 start() {
-    # 物理级静默，不执行任何操作
     exit 0
 }
 stop() {
@@ -148,11 +101,9 @@ chmod 0755 "${FILES_DIR}/etc/init.d/ipsec"
 
 log "✅ IPSec 空壳注入完成，出厂即免冲突状态"
 
-
 # ==============================================================================
 # 阶段 3: init.d 挂载提速 Hook（非侵入式内核 Remount）
 # ==============================================================================
-
 cat <<'EOF' > "${FILES_DIR}/etc/init.d/mount-optimize"
 #!/bin/sh /etc/rc.common
 
@@ -188,11 +139,9 @@ EOF
 chmod 0755 "${FILES_DIR}/etc/init.d/mount-optimize"
 log "✅ init.d 挂载修复 Hook 注入完成"
 
-
 # ==============================================================================
 # 阶段 4: 网卡硬件加速服务 (ethtool 策略)
 # ==============================================================================
-
 cat <<'EOF' > "${FILES_DIR}/etc/init.d/network-accel"
 #!/bin/sh /etc/rc.common
 
@@ -201,7 +150,6 @@ START=85
 start() {
     command -v ethtool >/dev/null || return
 
-    # 遍历所有网络接口并开启硬件加速
     for i in /sys/class/net/*; do
         iface=$(basename "$i")
         case "$iface" in
@@ -209,7 +157,6 @@ start() {
                 continue
             ;;
         esac
-        # 开启 TSO/GSO 加速，忽略不支持的报错
         ethtool -K "$iface" tso on 2>/dev/null || true
         ethtool -K "$iface" gso on 2>/dev/null || true
     done
@@ -219,12 +166,10 @@ EOF
 chmod 0755 "${FILES_DIR}/etc/init.d/network-accel"
 log "✅ 网卡加速注入完成"
 
-
 # ==============================================================================
-# 阶段 5: Block IO 物理层优化 (NVMe/SSD/HDD 自动适配)
+# 阶段 5: Block IO 物理层优化 (精准白名单设备解析)
 # ==============================================================================
-
-# 分段注入 CI 变量，安全可控
+# 分段注入 CI 变量
 cat <<EOF > "${FILES_DIR}/etc/hotplug.d/block/93-optimize-io"
 #!/bin/sh
 SSD_READ_AHEAD_KB="${SSD_READ_AHEAD_KB}"
@@ -237,7 +182,6 @@ cat <<'EOF' >> "${FILES_DIR}/etc/hotplug.d/block/93-optimize-io"
 [ -z "$DEVNAME" ] && exit 0
 
 # 提取主设备名逻辑 (兼容 NVMe, mmcblk, sdX, vdX 等虚拟块设备)
-# 【架构师修复】：拆分 sd* 和 vd*，彻底避免上古版 BusyBox 对合并模式的不兼容解析失败
 case "$DEVNAME" in
     nvme*)   dev="${DEVNAME%p[0-9]*}" ;;
     mmcblk*) dev="${DEVNAME%p[0-9]*}" ;;
@@ -251,10 +195,8 @@ esac
 BASE="/sys/block/$dev"
 [ -d "$BASE" ] || exit 0
 
-# 提取旋转介质标识 (0 为 SSD, 1 为 HDD)
 ROT=$(cat "$BASE/queue/rotational" 2>/dev/null || echo 1)
 
-# 安全预检 read_ahead_kb 节点是否存在，防止老内核或精简版内核报错
 if [ -f "$BASE/queue/read_ahead_kb" ]; then
     if [ "$ROT" = "0" ]; then
         echo "$SSD_READ_AHEAD_KB" > "$BASE/queue/read_ahead_kb" 2>/dev/null || true
@@ -267,44 +209,36 @@ EOF
 chmod 0755 "${FILES_DIR}/etc/hotplug.d/block/93-optimize-io"
 log "✅ block I/O 优化注入完成"
 
-
 # ==============================================================================
 # 阶段 6: mount 热插拔 noatime (暴力拦截动态挂载)
 # ==============================================================================
-
 cat <<'EOF' > "${FILES_DIR}/etc/hotplug.d/mount/94-optimize-mount"
 #!/bin/sh
 
 [ "$ACTION" = "add" ] || exit 0
 [ -z "$MOUNTPOINT" ] && exit 0
 
-# 【护盾】：绝对不碰系统引导盘和内部虚拟分区，保持系统纯净
 case "$MOUNTPOINT" in
     /|/rom|/overlay|/boot)
         exit 0
     ;;
 esac
 
-# 拦截热插拔动态挂载，暴力覆盖性能参数
 mount -o remount,noatime "$MOUNTPOINT" 2>/dev/null || true
-
 EOF
 
 chmod 0755 "${FILES_DIR}/etc/hotplug.d/mount/94-optimize-mount"
 log "✅ mount 优化注入完成"
 
-
 # ==============================================================================
 # 阶段 7: TRIM 引擎及静态 Cron 注入 (首次开机立即生效)
 # ==============================================================================
-
 cat <<'EOF' > "${FILES_DIR}/usr/bin/auto-fstrim"
 #!/bin/sh
 
 command -v fstrim >/dev/null || exit 0
 
 # 仅对物理磁盘且支持 TRIM 的文件系统执行物理块回收
-# 绝对禁止对 tmpfs(内存盘) 或 squashfs(只读包) 发送无意义的 discard 指令
 while read -r dev mp fs _; do
     case "$dev" in
         /dev/*) ;;
@@ -318,7 +252,6 @@ while read -r dev mp fs _; do
     
     fstrim "$mp" 2>/dev/null || true
 done < /proc/mounts
-
 EOF
 
 chmod 0755 "${FILES_DIR}/usr/bin/auto-fstrim"
@@ -330,11 +263,9 @@ cat <<EOF > "${FILES_DIR}/etc/uci-defaults/99-zz-cron-trim"
 mkdir -p /etc/crontabs
 touch /etc/crontabs/root
 
-# 清理旧 TRIM 任务，避免重复
 sed -i '/auto-fstrim/d' /etc/crontabs/root 2>/dev/null || true
 echo "${TRIM_SCHEDULE} /usr/bin/auto-fstrim" >> /etc/crontabs/root
 
-# ⭐ 修复盲点：立即重启 Cron，确保第一次开机就能生效
 /etc/init.d/cron restart 2>/dev/null || true
 
 exit 0
@@ -343,5 +274,4 @@ EOF
 chmod 0755 "${FILES_DIR}/etc/uci-defaults/99-zz-cron-trim"
 log "✅ TRIM 引擎及 Cron 注入完成"
 
-
-log "🎉 CI 终极稳定版 Part2 (完美注释守护版) 彻底无风险完成！"
+log "🎉 CI终极稳定版 Part2 (完美注释守护版) 彻底无风险完成！"
