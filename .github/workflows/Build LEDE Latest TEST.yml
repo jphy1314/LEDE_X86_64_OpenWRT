@@ -32,6 +32,15 @@ jobs:
         with:
           fetch-depth: 1
 
+      # 【架构师级性能补丁】：在极简云服务器上强行划出 10GB 虚拟内存，死保高并发编译不 OOM！
+      - name: Create Swap Space
+        run: |
+          sudo fallocate -l 10G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          free -h
+
       - name: Free Disk Space
         uses: jlumbroso/free-disk-space@main
         with:
