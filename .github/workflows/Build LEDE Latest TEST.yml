@@ -317,14 +317,12 @@ jobs:
                   sed -i '/CONFIG_MEMCG/d' "$conf" 2>/dev/null || true
                   sed -i '/CONFIG_CPUSETS/d' "$conf" 2>/dev/null || true
                   
-                  # 强行注入满血基因，并显式开启 V1 兼容以应对 6.12 的弃用机制
+                  # 满血支持 (全面拥抱 Cgroup V2) 兼容以应对 6.12 的弃用机制
                   cat >> "$conf" << 'EOF'
           CONFIG_CGROUPS=y
           CONFIG_MEMCG=y
           CONFIG_MEMCG_SWAP=y
-          CONFIG_MEMCG_V1=y
           CONFIG_CPUSETS=y
-          CONFIG_CPUSETS_V1=y
           CONFIG_CGROUP_CPUACCT=y
           CONFIG_CGROUP_DEVICE=y
           CONFIG_CGROUP_FREEZER=y
