@@ -1,29 +1,24 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# OpenWrt DIY Part 2 - 企业终级增强版 (22/23/24 兼容)
-# ==============================================================================
-# 核心设计目标：
-# 1. 物理级服务隔离 (Service Isolation)：
-#    - 通过编译期静态注入“空壳”脚本，彻底封堵原生 IPSec 与插件间的启动冲突。
-# 2. 非破坏性挂载策略 (Smart Fstab) & 非侵入式提速：
-#    - 彻底放弃修改 uci fstab，改用 init.d 和 hotplug 钩子在底层强行 remount,noatime。
-#    - 100% 免疫 LuCI 界面的脏数据覆盖，实现视觉妥协与内核极速的完美平衡。
-# 3. 全路径兼容性 (Path Resilience)：
-#    - 完美支持包含空格、特殊字符的挂载点路径，解决工业级多盘挂载环境下的解析失效问题。
-# 4. 静态时序优化 (Boot-time Injection)：
-#    - 遵循 OpenWrt 官方启动时序规范，所有配置通过 files 目录静态打入 ROM，出厂即预置完成。
-# 5. 存储生命周期维护 (TRIM & IO Engine)：
-#    - IO 探针：自动识别 NVMe/SSD/HDD 介质，精准白名单匹配，动态配置最优预读缓存 (Read-Ahead)。
-#    - TRIM 补丁：只对真实物理固态盘执行，绕过虚拟文件系统。采用 99-zz 命名反杀流氓洗白插件。
-# 6. 网络硬件加速 (Hardware Offload)：
-#    - 自动化 ethtool 策略注入，静默开启物理网卡 TSO/GSO 加速，提升企业级大流量转发性能。
+# OpenWrt DIY Part 2 - 企业终级版 v2 (完全无风险)
+# 设计目标：
+# - 不修改 fstools 源码 (非侵入式设计)
+# - 幂等执行 & CI 防污染
+# - Snapshot 安全
+# - hotplug + init.d hook 双保险
+# - 物理设备精准正则过滤 (防虚拟设备报错)
+# - 兼容 FUSE (ntfs-3g) 及极端早期引导日志保护
+# - 完全兼容 BusyBox / Snapshot / 22/23/24
 # ==============================================================================
 
 set -euo pipefail
 
+trap 'echo "::error file=${BASH_SOURCE[0]},line=${LINENO}::❌ 构建失败"; exit 1' ERR
+
 # --------------------------------------------------------------------------
-# 全局配置 & 可调优参数 (CI 环境变量)
+# 全局配置 & CI 环境变量
 # --------------------------------------------------------------------------
+
 readonly TARGET_IP="192.168.5.1"
 readonly TARGET_HOSTNAME="LEDE"
 readonly FILES_DIR="files"
@@ -32,8 +27,6 @@ readonly FILES_DIR="files"
 : "${SSD_READ_AHEAD_KB:="2048"}"
 : "${HDD_READ_AHEAD_KB:="128"}"
 
-trap 'echo "::error file=${BASH_SOURCE[0]},line=${LINENO}::❌ 构建失败，请检查脚本逻辑"; exit 1' ERR
-
 log() { echo -e "\033[36m[INFO]\033[0m $1"; }
 
 [[ -f scripts/feeds ]] || { echo "❌ 必须在 OpenWrt 源码根目录执行"; exit 1; }
@@ -41,17 +34,19 @@ log() { echo -e "\033[36m[INFO]\033[0m $1"; }
 mkdir -p "${FILES_DIR}/etc/"{uci-defaults,init.d,hotplug.d/block,hotplug.d/mount,config}
 mkdir -p "${FILES_DIR}/usr/bin"
 
+
 # ==============================================================================
 # 阶段 1: 系统初始化 (CI安全版)
 # ==============================================================================
-# 分离 CI 环境变量注入，彻底斩断单段 EOF 带来的反斜杠转义地狱
+
+# 分离环境变量注入，防转义地狱
 cat <<EOF > "${FILES_DIR}/etc/uci-defaults/90-system-init"
 #!/bin/sh
 TARGET_IP='${TARGET_IP}'
 TARGET_HOSTNAME='${TARGET_HOSTNAME}'
 EOF
 
-# 追加原生路由器运行逻辑 (带单引号的 'EOF'，内部变量免转义，绝对安全)
+# 追加原生路由器逻辑 (使用单引号 'EOF'，内部彻底免转义，杜绝所有语法陷阱！)
 cat <<'EOF' >> "${FILES_DIR}/etc/uci-defaults/90-system-init"
 uci set network.lan.ipaddr="$TARGET_IP"
 uci set system.@system[0].hostname="$TARGET_HOSTNAME"
@@ -59,7 +54,7 @@ uci set system.@system[0].hostname="$TARGET_HOSTNAME"
 uci commit network
 uci commit system
 
-# Samba4 自动修复逻辑 (确保配置纯净且支持中文)
+# Samba4 自动修复
 if command -v uci >/dev/null 2>&1; then
     if ! uci -q get samba4.@samba[0] >/dev/null; then
         uci add samba4 samba
@@ -77,33 +72,11 @@ EOF
 chmod 0755 "${FILES_DIR}/etc/uci-defaults/90-system-init"
 log "✅ 系统初始化注入完成"
 
-# ==============================================================================
-# 阶段 2: IPSec VPN 双将夺权终极物理隔离 (Build-time Override)
-# ==============================================================================
-log "🔥 正在注入 IPSec 物理空壳，彻底拦截原生服务抢权..."
-
-cat << 'EOF' > "${FILES_DIR}/etc/init.d/ipsec"
-#!/bin/sh /etc/rc.common
-# =======================================================
-# [企业级架构防冲突]: 彻底拦截原生 StrongSwan 的自启
-# 让路给 luci-app-ipsec-vpnd 特派员，防止双将夺权！
-# =======================================================
-START=99
-
-start() {
-    exit 0
-}
-stop() {
-    exit 0
-}
-EOF
-chmod 0755 "${FILES_DIR}/etc/init.d/ipsec"
-
-log "✅ IPSec 空壳注入完成，出厂即免冲突状态"
 
 # ==============================================================================
-# 阶段 3: init.d 挂载提速 Hook（非侵入式内核 Remount）
+# 阶段 2: init.d 挂载修复 Hook（非侵入式内核 Remount）
 # ==============================================================================
+
 cat <<'EOF' > "${FILES_DIR}/etc/init.d/mount-optimize"
 #!/bin/sh /etc/rc.common
 
@@ -139,9 +112,11 @@ EOF
 chmod 0755 "${FILES_DIR}/etc/init.d/mount-optimize"
 log "✅ init.d 挂载修复 Hook 注入完成"
 
+
 # ==============================================================================
-# 阶段 4: 网卡硬件加速服务 (ethtool 策略)
+# 阶段 3: 网卡硬件加速服务
 # ==============================================================================
+
 cat <<'EOF' > "${FILES_DIR}/etc/init.d/network-accel"
 #!/bin/sh /etc/rc.common
 
@@ -166,9 +141,11 @@ EOF
 chmod 0755 "${FILES_DIR}/etc/init.d/network-accel"
 log "✅ 网卡加速注入完成"
 
+
 # ==============================================================================
-# 阶段 5: Block IO 物理层优化 (精准白名单设备解析)
+# 阶段 4: block 热插拔优化 (精准白名单设备解析)
 # ==============================================================================
+
 # 分段注入 CI 变量
 cat <<EOF > "${FILES_DIR}/etc/hotplug.d/block/93-optimize-io"
 #!/bin/sh
@@ -182,6 +159,7 @@ cat <<'EOF' >> "${FILES_DIR}/etc/hotplug.d/block/93-optimize-io"
 [ -z "$DEVNAME" ] && exit 0
 
 # 提取主设备名逻辑 (兼容 NVMe, mmcblk, sdX, vdX 等虚拟块设备)
+# 【架构师修复】：拆分 sd* 和 vd*，彻底避免上古版 BusyBox 对合并模式的不兼容解析失败
 case "$DEVNAME" in
     nvme*)   dev="${DEVNAME%p[0-9]*}" ;;
     mmcblk*) dev="${DEVNAME%p[0-9]*}" ;;
@@ -195,8 +173,10 @@ esac
 BASE="/sys/block/$dev"
 [ -d "$BASE" ] || exit 0
 
+# 提取旋转介质标识 (0 为 SSD, 1 为 HDD)
 ROT=$(cat "$BASE/queue/rotational" 2>/dev/null || echo 1)
 
+# 安全预检 read_ahead_kb 节点是否存在，防止老内核或精简版内核报错
 if [ -f "$BASE/queue/read_ahead_kb" ]; then
     if [ "$ROT" = "0" ]; then
         echo "$SSD_READ_AHEAD_KB" > "$BASE/queue/read_ahead_kb" 2>/dev/null || true
@@ -209,9 +189,11 @@ EOF
 chmod 0755 "${FILES_DIR}/etc/hotplug.d/block/93-optimize-io"
 log "✅ block I/O 优化注入完成"
 
+
 # ==============================================================================
-# 阶段 6: mount 热插拔 noatime (暴力拦截动态挂载)
+# 阶段 5: mount 热插拔 noatime
 # ==============================================================================
+
 cat <<'EOF' > "${FILES_DIR}/etc/hotplug.d/mount/94-optimize-mount"
 #!/bin/sh
 
@@ -224,21 +206,26 @@ case "$MOUNTPOINT" in
     ;;
 esac
 
+# 拦截热插拔动态挂载，暴力覆盖性能参数
 mount -o remount,noatime "$MOUNTPOINT" 2>/dev/null || true
+
 EOF
 
 chmod 0755 "${FILES_DIR}/etc/hotplug.d/mount/94-optimize-mount"
 log "✅ mount 优化注入完成"
 
+
 # ==============================================================================
-# 阶段 7: TRIM 引擎及静态 Cron 注入 (首次开机立即生效)
+# 阶段 6: TRIM 引擎
 # ==============================================================================
+
 cat <<'EOF' > "${FILES_DIR}/usr/bin/auto-fstrim"
 #!/bin/sh
 
 command -v fstrim >/dev/null || exit 0
 
 # 仅对物理磁盘且支持 TRIM 的文件系统执行物理块回收
+# 绝对禁止对 tmpfs(内存盘) 或 squashfs(只读包) 发送无意义的 discard 指令
 while read -r dev mp fs _; do
     case "$dev" in
         /dev/*) ;;
@@ -252,6 +239,7 @@ while read -r dev mp fs _; do
     
     fstrim "$mp" 2>/dev/null || true
 done < /proc/mounts
+
 EOF
 
 chmod 0755 "${FILES_DIR}/usr/bin/auto-fstrim"
@@ -272,6 +260,7 @@ exit 0
 EOF
 
 chmod 0755 "${FILES_DIR}/etc/uci-defaults/99-zz-cron-trim"
-log "✅ TRIM 引擎及 Cron 注入完成"
+log "✅ TRIM 引擎注入完成"
 
-log "🎉 CI终极稳定版 Part2 (完美注释守护版) 彻底无风险完成！"
+
+log "🎉 CI终极稳定版 Part2 彻底无风险完成！"
