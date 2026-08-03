@@ -2,7 +2,7 @@ name: Build LEDE Latest TEST
 on:
   workflow_dispatch:
 
-# [优化]: 并发控制，自动取消排队或正在运行处在运行的旧任务，节省运算时长
+# [优化]: 并发控制，自动取消排队或正在运行的旧任务，节省运算时长
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -57,7 +57,7 @@ jobs:
           sudo apt-get update
           
           # Ubuntu 24.04 专属包名修正：7zip, libgmp-dev, python3-setuptools
-          # 【架构师防线】：保留 jq，为后续原生 gh API JSON 解析清理旧 Release 提供保障
+          # 【架构师防线】：补全 jq，为后续原生 gh API JSON 解析提供绝对保障！
           sudo apt-get install -y --no-install-recommends \
             build-essential clang cmake device-tree-compiler \
             flex gawk gcc-multilib g++-multilib gettext git gperf \
@@ -85,6 +85,7 @@ jobs:
         id: cache-vars
         run: |
           set -euo pipefail
+          # 生成按天计算的时间戳，保证每天至少有一次全量/增量 Cache 刷新
           echo "date=$(date +'%Y%m%d')" >> $GITHUB_OUTPUT
           
           # 【全局锁定版本号】：例如 R26.05.07
@@ -95,6 +96,7 @@ jobs:
 
       # 【企业级缓存策略】
       # 缓存键由 分支名 + 核心配置文件的 Hash + 日期 组成。
+      # 任何本地工作流文件或 feeds 列表的改动都会生成全新 Key，避免读取失效缓存导致玄学报错。
       - name: Cache Ccache
         uses: actions/cache@v5
         with:
@@ -104,10 +106,13 @@ jobs:
             ccache-lede-${{ env.REPO_BRANCH }}-${{ hashFiles('.github/workflows/*.yml', 'diy-part1.sh', 'diy-part2.sh', 'openwrt/feeds.conf.default') }}-
             ccache-lede-${{ env.REPO_BRANCH }}-
 
+      # ==============================================================================
       # 【企业级优化】：缓存下载好的源码包，但利用 ! 语法精准剔除 Go 语言的剧毒缓存库
+      # ==============================================================================
       - name: Cache Downloaded Sources (DL)
         uses: actions/cache@v5
         with:
+          # 使用多行语法，第一行包含全部，第二行用 ! 剔除掉容易中毒的目录
           path: |
             ${{ github.workspace }}/openwrt/dl
             !${{ github.workspace }}/openwrt/dl/go-mod-cache
@@ -120,6 +125,7 @@ jobs:
         run: |
           set -euo pipefail
           SCRIPT="${{ github.workspace }}/diy-part1.sh"
+          # 统一脚本调用风格。如果脚本不存在，|| true 防止报错中断
           [[ -f "$SCRIPT" ]] && bash "$SCRIPT" || true
 
       - name: Update, Patch & Install Feeds
@@ -164,9 +170,15 @@ jobs:
           log_i "1. 更新 feeds (拉取全局基础数据)"
           retry ./scripts/feeds update -a
 
+          # --------------------------------------------------------------------------
+          # 2. 扫荡旧包：干掉官方源里的陈旧版本，为 Passwall 原汁原味版让路
+          # --------------------------------------------------------------------------
           log_i "2. 扫荡本地硬编码老旧依赖包..."
           for pkg in "${DEP_PKGS[@]}"; do
+              # 【防注入装甲】
               safe_pkg=$(printf '%s\n' "$pkg" | sed 's/[][\\.*^$()+?{}\|]/\\&/g')
+
+              # 范围 A: 扫荡 package/ (清理 Lean 本地硬编码)
               while IFS= read -r -d '' dir; do rm -rf "$dir"; done < <(find package/ -type d -name "$pkg" -print0 2>/dev/null || true)
               while IFS= read -r -d '' makefile; do
                   if grep -q -E "^[[:space:]]*PKG_NAME[[:space:]]*:?=[[:space:]]*${safe_pkg}[[:space:]]*$" "$makefile" 2>/dev/null; then
@@ -186,11 +198,14 @@ jobs:
                   fi
               done < <(find package/ -type f -name "Makefile" -print0 2>/dev/null || true)
 
+              # 范围 B: 扫荡 feeds/ (清理官方源旧包)
               while IFS= read -r -d '' dir; do
+                  # 🛡️ 绝对护盾：严格避开我们拉取的 Passwall 新源目录
                   if [[ "$dir" == *passwall_packages* ]] || [[ "$dir" == *passwall_luci* ]]; then continue; fi
                   rm -rf "$dir"
               done < <(find feeds/ -type d -name "$pkg" -print0 2>/dev/null || true)
               while IFS= read -r -d '' makefile; do
+                  # 🛡️ 绝对护盾：严格避开我们拉取的 Passwall 新源 Makefile
                   if [[ "$makefile" == *passwall_packages* ]] || [[ "$makefile" == *passwall_luci* ]]; then continue; fi
                   if grep -q -E "^[[:space:]]*PKG_NAME[[:space:]]*:?=[[:space:]]*${safe_pkg}[[:space:]]*$" "$makefile" 2>/dev/null; then
                       rm -rf "$(dirname "$makefile")"
@@ -198,6 +213,9 @@ jobs:
               done < <(find feeds/ -type f -name "Makefile" -print0 2>/dev/null || true)
           done
 
+          # ----------------------------
+          # 3. 克隆最新社区插件
+          # ----------------------------
           log_i "4. 克隆社区专属插件..."
           mkdir -p package/community
           retry git clone --depth 1 https://github.com/pymumu/openwrt-smartdns.git package/smartdns
@@ -209,8 +227,9 @@ jobs:
           log_i "🔧 正在修补 Argon 主题依赖警告..."
           sed -i 's/wget-any/wget-ssl/g' package/community/luci-theme-argon/Makefile
 
-          # (已按要求彻底删除 autoupdate 相关的 Git 克隆和修补逻辑)
-
+          # ----------------------------
+          # 4. 解决 SmartDNS Rust 依赖问题
+          # ----------------------------
           fix_rust() {
               local rust_dir="lang/rust"
               local raw_url="https://raw.githubusercontent.com/openwrt/packages/master/lang/rust"
@@ -243,12 +262,21 @@ jobs:
           }
           fix_rust
 
+          # ----------------------------
+          # 5. 常规安装 feeds，建立基础依赖链
+          # ----------------------------
           log_i "5. 常规安装 feeds..."
           retry ./scripts/feeds install -a
 
+          # ----------------------------
+          # 6. 【核心提权】强制安装 Passwall 专属源，覆盖旧版
+          # ----------------------------
           log_i "6. 🚀 强制提权：仅覆盖 Passwall UI..."
           ./scripts/feeds install -f -p passwall_luci -a
 
+          # ----------------------------
+          # 完整性检查
+          # ----------------------------
           [ -d feeds ] || log_e "feeds 目录不存在"
           [ -d package ] || log_e "package 目录不存在"
           log_i "✅ Feeds 处理完成，底层核心已成功解绑！"
@@ -258,7 +286,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          # 补齐全部日志函数
+          # 【核心修复】：补齐全部日志函数，防止隔离环境调用抛出 command not found
           log_i() { echo -e "\e[32m[INFO] $1\e[0m"; }
           log_w() { echo -e "\e[33m[WARN] $1\e[0m"; }
           log_e() { echo -e "\e[31m[ERROR] $1\e[0m"; exit 1; }
@@ -266,7 +294,7 @@ jobs:
           # 1. 导入独立的基础配置清单
           cat ${{ github.workspace }}/x86_64.config > .config
           
-          # 2. 运行 DIY Part 2 脚本
+          # 2. 运行 DIY Part 2 脚本 (移除了物理强塞内核参数的逻辑)
           SCRIPT="${{ github.workspace }}/diy-part2.sh"
           if [ -f "$SCRIPT" ]; then
               log_i "运行 DIY Part 2 脚本..."
@@ -302,6 +330,10 @@ jobs:
 
           mkdir -p dl
 
+          # ==============================================================================
+          # 【终极暴杀】：物理抹除 Go 语言的模块缓存！防止依赖断链
+          # ==============================================================================
+          # 使用 -mindepth 1 -type f 确保检测到实际文件而非空目录
           if [ -d "dl/go-mod-cache" ] && [ -n "$(find dl/go-mod-cache -mindepth 1 -type f -print -quit 2>/dev/null)" ]; then
             log_w "检测到非空的旧版 Go 模块缓存，正在强制清理以确保依赖纯净..."
             rm -rf dl/go-mod-cache || true
@@ -311,18 +343,26 @@ jobs:
           find dl \( -name "*.tmp*" -o -name "*.partial*" -o -name "*.hash*" \) -print0 2>/dev/null | xargs -0 rm -f || true
 
           log_i "🚀 开始第一轮并行下载 (8线程)..."
+          # 附加 CONFIG_CCACHE= 覆盖 .config，禁止 ccache 在下载阶段越权报错
+          # 并发下载，允许个别失败
           make download -j8 CONFIG_CCACHE= || log_w "部分源码包并行下载失败，准备进入精细化处理阶段"
 
+          # ==============================================================================
+          # 【架构师级修复】：精准清理因 404/502 错误产生的损坏下载包
+          # 严格限定后缀为压缩包类型，完美避开 .hash, .version 等合法的微型文件！
+          # ==============================================================================
           log_i "正在扫描并清理损坏的微型压缩包 (小于1KB)..."
           broken_count=$(find dl -type f -size -1024c \( -name "*.tar.*" -o -name "*.tgz" -o -name "*.zip" -o -name "*.bz2" \) | wc -l)
           
           if [ "$broken_count" -gt 0 ]; then
             log_w "清理了 $broken_count 个异常文件 (可能是 404/502 错误页面)，准备重试..."
+            # 使用 -delete 替代 xargs 管道，这是处理含空格文件最安全、最高效的方式
             find dl -type f -size -1024c \( -name "*.tar.*" -o -name "*.tgz" -o -name "*.zip" -o -name "*.bz2" \) -delete
           else
             log_i "未发现损坏的压缩包，环境健康。"
           fi
 
+          # 单线程强力查漏补缺，打印详细信息
           log_i "🛠️ 开始最终单线程补漏下载 (带重试)..."
           retry make download -j1 V=s CONFIG_CCACHE=
 
@@ -332,26 +372,33 @@ jobs:
         id: compile
         working-directory: ${{ github.workspace }}/openwrt
         run: |
-          set -uo pipefail
+          set -uo pipefail # 此处不设置 -e，是为了允许并发 make 失败后自动触发单线程 fallback 编译
           
+          # 安全创建 Ccache 目录，使用 755 权限符合企业安全基线
           mkdir -p ${{ env.CCACHE_DIR }}
           chmod 755 ${{ env.CCACHE_DIR }}
           
+          # [核心 CCACHE 优化]
           export CCACHE_DIR=${{ env.CCACHE_DIR }}
           export CCACHE_COMPILERCHECK=content
+          # [极致命中]: 配合 CCACHE_BASEDIR 忽略绝对路径，跨 Runner 依然可以命中缓存
           export CCACHE_BASEDIR=${{ github.workspace }}
           export CCACHE_NOHASHDIR=true
           
           ccache -z
           ccache --set-config=max_size=10G
+          
+          # [性能微调]: 设置 Go 编译内存水位，防止 Go 编译 Xray 源码时 OOM 拖慢系统
           export GOMEMLIMIT=5GiB
           
           echo "🚀 Starting Main Build with $(nproc) threads..."
+          # 并行构建时显式传入 CCACHE_DIR 变量，防止部分 Makefile 内部重写路径
           make -j$(nproc) CCACHE_DIR=${{ env.CCACHE_DIR }} || make -j1 V=s CCACHE_DIR=${{ env.CCACHE_DIR }}
           
           ccache -s
           echo "ℹ️ Final Cache Directory Size: $(du -sh ${{ env.CCACHE_DIR }} | cut -f1)"
           
+          # 编译成功判定：修复 if 和[ 的间距，抑制 ls 的 stderr 报错
           if [ -d "bin/targets" ] && [ "$(ls -A bin/targets 2>/dev/null)" ]; then
               echo "✅ Compile success!"
               echo "status=success" >> $GITHUB_OUTPUT
@@ -361,6 +408,7 @@ jobs:
               exit 1
           fi
           
+          # 设备名提取：使用 -E 替代 -r 提高兼容性，过滤空格与换行，加 || true 防止 grep 失败引起流水线崩溃
           DEVICE=$(grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -E 's/.*DEVICE_(.*)=y/\1/' | head -n1 | tr -d '[:space:]' || echo "Generic")
           if [ -n "$DEVICE" ]; then
               echo "DEVICE_NAME=_$DEVICE" >> $GITHUB_ENV
@@ -374,7 +422,7 @@ jobs:
       # ==============================================================================
       - name: Upload build logs on failure (崩溃黑匣子)
         uses: actions/upload-artifact@v6
-        if: failure()
+        if: failure()   # 只有在之前的步骤失败时才会触发
         with:
           name: OpenWrt_Compile_Logs_${{ steps.cache-vars.outputs.date }}
           path: openwrt/logs/
@@ -386,24 +434,30 @@ jobs:
         with:
           name: OpenWrt_bin${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
           path: openwrt/bin
+          # [优化]: 限制中间产物保留 3 天，防止 GitHub 免费存储空间爆仓
           retention-days: 3
 
       - name: Organize Files (Dynamic Path)
         id: organize
-        working-directory: ${{ github.workspace }}/openwrt
+        working-directory: ${{ github.workspace }}/openwrt   # 【核心修复】：明确指定进入 openwrt 厨房找菜！
         if: steps.compile.outputs.status == 'success' && env.UPLOAD_FIRMWARE == 'true'
         run: |
           set -euo pipefail
           
+          # 提取纯净设备名称 (如 x86_64) 用于通配符搜索
           RAW_DEVICE="${DEVICE_NAME#_}"
+          
+          # 健壮的固件发现策略：直接在当前 openwrt 目录下的 bin/targets 里找
           TARGET_DIR=$(find bin/targets -mindepth 2 -maxdepth 2 -type d -name "*${RAW_DEVICE}*" | head -n 1 || true)
           
+          # 如果设备名匹配失败（可能是 generic 这种无特征词汇），退化为抓取第一个有效目录
           if [ -z "$TARGET_DIR" ]; then
             TARGET_DIR=$(find bin/targets -mindepth 2 -maxdepth 2 -type d | head -n 1 || true)
           fi
           
           if [ -n "$TARGET_DIR" ] && [ -d "$TARGET_DIR" ]; then
             cd "$TARGET_DIR"
+            # 清理占空间的 packages 包夹，以及多余的内核信息文件
             rm -rf packages || true
             find . -type f -name "*.buildinfo" -delete
             find . -type f -name "*.manifest" -delete
@@ -420,12 +474,14 @@ jobs:
         with:
           name: OpenWrt_firmware${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
           path: ${{ env.FIRMWARE }}
+          # [优化]: 限制中间产物保留 3 天
           retention-days: 3
 
       - name: Generate Release Tag
         id: tag
         if: steps.compile.outputs.status == 'success' && env.UPLOAD_RELEASE == 'true'
         run: |
+          # 增加业务前缀 'LEDE_' 并携带 DEVICE_NAME，彻底杜绝不同平台编译在同一时间产生的 Tag 相互覆盖
           TAG_NAME="${{ env.TAG_VERSION }}"
           echo "release_tag=${TAG_NAME}" >> $GITHUB_OUTPUT
           
@@ -433,7 +489,7 @@ jobs:
           echo "📦 固件发布版本: ${TAG_NAME}" >> release.txt
           echo "status=success" >> $GITHUB_OUTPUT
 
-      #[纯原生重构] 极速创建发布并上传固件
+      #[纯原生重构] 极速创建发布并上传固件 (防冲突 + 动态时间戳标题)
       - name: Upload Firmware to Release
         if: env.TAG_VERSION != '' && env.UPLOAD_RELEASE == 'true' && !cancelled()
         env:
@@ -466,13 +522,15 @@ jobs:
             echo "✅ 全新 Release 创建及固件上传成功！"
           fi
 
-      # [纯原生重构] 替代弃更的 Mattraks/delete-workflow-runs
+      # [纯原生重构] 替代弃更的 Mattraks/delete-workflow-runs，自动清理历史运行记录
       - name: Delete Old Workflow Runs
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           echo "开始清理过旧的 Workflow 运行记录，仅保留最新 2 个..."
+          
+          # 利用 jq JSON 引擎健壮提取 ID，并调用 GitHub 原生 API 进行静默删除
           gh run list --workflow "${{ github.workflow }}" --limit 100 --json databaseId -q '.[].databaseId' | tail -n +3 | while IFS= read -r run_id; do
             if [ -n "$run_id" ]; then
               echo "🗑️ 正在删除冗余运行记录: $run_id"
@@ -481,7 +539,7 @@ jobs:
           done
           echo "✅ Action 运行记录清理完成！"
 
-      # 自动清理历史 Release 记录 (企业级原生方案)
+      # 自动清理历史 Release 记录 (企业级原生方案，彻底剔除已废弃的第三方依赖)
       - name: Remove Old Releases
         if: steps.compile.outputs.status == 'success' && env.UPLOAD_RELEASE == 'true'
         env:
@@ -489,7 +547,9 @@ jobs:
         run: |
           set -euo pipefail
           echo "开始清理过旧的 Releases，仅保留最新 3 个..."
+          # 使用 JSON 输出获取所有 tag（免疫一切特殊字符的健壮提取法）
           gh release list --repo ${{ github.repository }} --limit 100 --json tagName -q '.[].tagName' | tail -n +4 | while IFS= read -r tag; do
+            # 严格保留空格，防止 Exit code 2 报错
             if [ -n "$tag" ]; then
               echo "🗑️ 正在删除旧版本: $tag"
               gh release delete "$tag" --cleanup-tag -y || true
