@@ -149,7 +149,7 @@ jobs:
           }
 
           # --------------------------------------------------------------------------
-          # [类 1]: 底层依赖包 (绝对不碰 feeds/，保留官方大社区最新源兜底)
+          # [类 1]: 底层核心依赖包 (将在 package/ 与 feeds/ 中双重扫荡旧版，由 passwall_packages 提权覆盖)
           # --------------------------------------------------------------------------
           DEP_PKGS=(
               xray-core v2ray-geodata sing-box chinadns-ng dns2socks hysteria
@@ -171,9 +171,9 @@ jobs:
           retry ./scripts/feeds update -a
 
           # --------------------------------------------------------------------------
-          # 2. 扫荡旧包：干掉官方源里的陈旧版本，为 Passwall 原汁原味版让路
+          # 2. 扫荡旧包：干掉官方源及本地里的陈旧核心组件，为 Passwall 最新组件让路
           # --------------------------------------------------------------------------
-          log_i "2. 扫荡本地硬编码老旧依赖包..."
+          log_i "2. 扫荡本地及 feeds 里的旧核心依赖包 (DEP_PKGS)..."
           for pkg in "${DEP_PKGS[@]}"; do
               # 【防注入装甲】
               safe_pkg=$(printf '%s\n' "$pkg" | sed 's/[][\\.*^$()+?{}\|]/\\&/g')
@@ -185,6 +185,20 @@ jobs:
                       rm -rf "$(dirname "$makefile")"
                   fi
               done < <(find package/ -type f -name "Makefile" -print0 2>/dev/null || true)
+
+              # 范围 B: 扫荡 feeds/ (清理官方 packages 源中的旧版本)
+              while IFS= read -r -d '' dir; do
+                  # 🛡️ 绝对护盾：严格避开我们拉取的 Passwall 新源目录
+                  if [[ "$dir" == *passwall_packages* ]] || [[ "$dir" == *passwall_luci* ]]; then continue; fi
+                  rm -rf "$dir"
+              done < <(find feeds/ -type d -name "$pkg" -print0 2>/dev/null || true)
+              while IFS= read -r -d '' makefile; do
+                  # 🛡️ 绝对护盾：严格避开我们拉取的 Passwall 新源 Makefile
+                  if [[ "$makefile" == *passwall_packages* ]] || [[ "$makefile" == *passwall_luci* ]]; then continue; fi
+                  if grep -q -E "^[[:space:]]*PKG_NAME[[:space:]]*:?=[[:space:]]*${safe_pkg}[[:space:]]*$" "$makefile" 2>/dev/null; then
+                      rm -rf "$(dirname "$makefile")"
+                  fi
+              done < <(find feeds/ -type f -name "Makefile" -print0 2>/dev/null || true)
           done
 
           log_i "3. 彻底绞杀旧版 Passwall UI..."
@@ -269,17 +283,26 @@ jobs:
           retry ./scripts/feeds install -a
 
           # ----------------------------
-          # 6. 【核心提权】强制安装 Passwall 专属源，覆盖旧版
+          # 6. 【核心提权】强制覆盖安装 Passwall 核心组件源及 UI 源
           # ----------------------------
-          log_i "6. 🚀 强制提权：仅覆盖 Passwall UI..."
+          log_i "6. 🚀 强制提权：覆盖 Passwall 核心组件源 (xray-core / sing-box / chinadns-ng 等)..."
+          ./scripts/feeds install -f -p passwall_packages -a
+
+          log_i "7. 🚀 强制提权：覆盖 Passwall UI 源..."
           ./scripts/feeds install -f -p passwall_luci -a
+
+          # ----------------------------
+          # 7. 清理 tmp 缓存以确保版本与依赖链刷新
+          # ----------------------------
+          log_i "8. 🧹 清理 openwrt tmp/ 目录缓存..."
+          rm -rf tmp
 
           # ----------------------------
           # 完整性检查
           # ----------------------------
           [ -d feeds ] || log_e "feeds 目录不存在"
           [ -d package ] || log_e "package 目录不存在"
-          log_i "✅ Feeds 处理完成，底层核心已成功解绑！"
+          log_i "✅ Feeds 处理完成，底层核心已成功解绑与提权升级！"
 
       - name: Generate Configuration (配置解耦与探针注入)
         working-directory: ${{ github.workspace }}/openwrt
