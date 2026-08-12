@@ -67,4 +67,7 @@ if [[ -n "${DUPLICATES}" ]]; then
     log_err "致命错误：检测到 ${FEEDS_CONF} 中存在重复命名的源：\n${DUPLICATES}"
 fi
 
+# 非 DEBUG 模式下自动清理备份文件
+[[ -z "${DEBUG:-}" ]] && rm -f "${FEEDS_CONF_BAK}"
+
 log_info "========== DIY Part 1 执行完毕，配置校验通过 ✅ =========="
