@@ -45,6 +45,7 @@ jobs:
           haskell: true
           large-packages: true
           docker-images: true
+          # 保留 swap 空间防止 OOM（编译 Xray/Go 项目需要大量内存）
           swap-storage: false
 
       - name: Initialize Environment
@@ -95,6 +96,8 @@ jobs:
           echo "🚀 锁定的版本号为: ${VERSION_TAG}"
 
       # 【企业级缓存策略】
+      # 注意：hashFiles 引用的 openwrt/ 路径在 Clone 步骤之后才存在，
+      # 因此此步骤必须放在 Clone 之后以确保缓存 key 正确生成。
       # 缓存键由 分支名 + 核心配置文件的 Hash + 日期 组成。
       # 任何本地工作流文件或 feeds 列表的改动都会生成全新 Key，避免读取失效缓存导致玄学报错。
       - name: Cache Ccache
@@ -416,12 +419,16 @@ jobs:
           
           echo "🚀 Starting Main Build with $(nproc) threads..."
           # 并行构建时显式传入 CCACHE_DIR 变量，防止部分 Makefile 内部重写路径
-          make -j$(nproc) CCACHE_DIR=${{ env.CCACHE_DIR }} || make -j1 V=s CCACHE_DIR=${{ env.CCACHE_DIR }}
+          # 并行失败时明确 fallback 到单线程 verbose 模式
+          make -j$(nproc) CCACHE_DIR=${{ env.CCACHE_DIR }} || {
+            echo "⚠️ 并行编译失败，切换为单线程 fallback 模式 (V=s)..."
+            make -j1 V=s CCACHE_DIR=${{ env.CCACHE_DIR }}
+          }
           
           ccache -s
           echo "ℹ️ Final Cache Directory Size: $(du -sh ${{ env.CCACHE_DIR }} | cut -f1)"
           
-          # 编译成功判定：修复 if 和[ 的间距，抑制 ls 的 stderr 报错
+          # 编译成功判定：修复 if 和[ 的间距，抑制 ls 的 stderr 报错，明确判定失败后 exit 1
           if [ -d "bin/targets" ] && [ "$(ls -A bin/targets 2>/dev/null)" ]; then
               echo "✅ Compile success!"
               echo "status=success" >> $GITHUB_OUTPUT
