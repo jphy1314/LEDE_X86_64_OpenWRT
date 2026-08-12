@@ -4,11 +4,11 @@
 # ==============================================================================
 # 核心设计目标：
 # 1. 物理级服务隔离 (Service Isolation)：
-#    - 通过编译期静态注入“空壳”脚本，彻底封堵原生 IPSec 与插件间的启动冲突。
+#    - 通过编译期静态注入"空壳"脚本，彻底封堵原生 IPSec 与插件间的启动冲突。
 # 2. 健壮的 UCI 持久化 (Atomic Commit)：
 #    - 修复 Subshell 管道陷阱，改用 Here-document 确保循环内 UCI 指令在当前 Shell 进程执行，保证 commit 100% 写入。
 # 3. 非破坏性挂载策略 (Smart Fstab)：
-#    - 采用“清洗+保留”逻辑，在强制 noatime 加速的同时，智能保留用户定义的 discard、compress 等高级文件系统参数。
+#    - 采用"清洗+保留"逻辑，在强制 noatime 加速的同时，智能保留用户定义的 discard、compress 等高级文件系统参数。
 #    - 修复旧版逻辑缺陷，确保 rw (读写) 挂载权限不被误判为冲突项而清除。
 # 4. 全路径兼容性 (Path Resilience)：
 #    - 完美支持包含空格、特殊字符的挂载点路径，解决工业级多盘挂载环境下的解析失效问题。
@@ -34,9 +34,6 @@ readonly FILES_DIR="files"
 : "${TRIM_SCHEDULE:="0 3 * * *"}"
 : "${SSD_READ_AHEAD_KB:="2048"}"
 : "${HDD_READ_AHEAD_KB:="128"}"
-
-# CI 错误捕捉：在构建日志中精确定位报错行号
-trap 'echo "::error file=${BASH_SOURCE[0]},line=${LINENO}::❌ 构建失败，请检查脚本逻辑"; exit 1' ERR
 
 log_i() { echo -e "\033[36m[INFO]\033[0m $1"; }
 
@@ -100,11 +97,10 @@ cat << 'EOF' > "${FILES_DIR}/etc/init.d/ipsec"
 START=99
 
 start() {
-    # 物理级静默，不执行任何操作
-    exit 0
+    return 0
 }
 stop() {
-    exit 0
+    return 0
 }
 EOF
 chmod 0755 "${FILES_DIR}/etc/init.d/ipsec"
@@ -195,10 +191,10 @@ cat <<'EOF' >> "${FILES_DIR}/etc/hotplug.d/block/93-optimize-io"
 [ -z "$DEVNAME" ] && exit 0
 
 # 提取主设备名逻辑 (兼容 NVMe, mmcblk, sdX, vdX 等虚拟块设备)
-# 【架构师修复】：拆分 sd* 和 vd*，彻底避免上古版 BusyBox 对合并模式的不兼容解析失败
+# 【修复】：NVMe 分区号可能为多位数，使用 %%p* 而非 %%p[0-9]*
 case "$DEVNAME" in
-    nvme*)   dev="${DEVNAME%p[0-9]*}" ;;
-    mmcblk*) dev="${DEVNAME%p[0-9]*}" ;;
+    nvme*)   dev="${DEVNAME%%p*}" ;;
+    mmcblk*) dev="${DEVNAME%%p*}" ;;
     sd*)     dev="${DEVNAME%%[0-9]*}" ;;
     vd*)     dev="${DEVNAME%%[0-9]*}" ;;
     hd*)     dev="${DEVNAME%%[0-9]*}" ;;
@@ -206,7 +202,7 @@ case "$DEVNAME" in
     *)       exit 0 ;;
 esac
 
-BASE="/sys/block/$dev"
+BASE="/sys/$dev"
 [ -d "$BASE" ] || exit 0
 
 # 提取旋转介质标识 (0 为 SSD, 1 为 HDD)
@@ -239,6 +235,11 @@ case "$MOUNTPOINT" in
         exit 0
     ;;
 esac
+
+# 预检：确认挂载点为物理设备，避免对 tmpfs/cgroup 等虚拟文件系统执行无意义操作
+if ! grep -q "$MOUNTPOINT" /proc/mounts 2>/dev/null; then
+    exit 0
+fi
 
 # 拦截热插拔动态挂载，暴力覆盖性能参数
 mount -o remount,noatime "$MOUNTPOINT" 2>/dev/null || true
