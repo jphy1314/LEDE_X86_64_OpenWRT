@@ -318,7 +318,7 @@ jobs:
           log_e() { echo -e "\e[31m[ERROR] $1\e[0m"; exit 1; }
           
           # 1. 导入独立的基础配置清单
-          cat ${{ github.workspace }}/x86_64.config > .config
+          cat ${{ github.workspace }}/D525_x86_64.config > .config
           
           # 2. 运行 DIY Part 2 脚本 (移除了物理强塞内核参数的逻辑)
           SCRIPT="${{ github.workspace }}/diy-part2.sh"
