@@ -14,17 +14,25 @@ log_err()  { echo -e "\e[31m[ERROR][$(date +'%Y-%m-%dT%H:%M:%S%z')] $1\e[0m" >&2
 readonly FEEDS_CONF="feeds.conf.default"
 readonly FEEDS_CONF_BAK="${FEEDS_CONF}.orig"
 
-# 待清理的冲突源关键字
+# 待清理的冲突源关键字 (防御未来上游合并引发的包冲突)
 readonly SCRUB_LIST=(
     "passwall"
-    "helloworld"
+    "luci-app-passwall"
     "openclash"
+    "luci-app-openclash"
+    "helloworld"
+    "homeproxy"
+    "nikki"
+    "mosdns"
+    "luci-theme-argon"
+    "argon" # 补全简写防御
 )
 
-# 待注入的自定义源 (已彻底移除末尾的 ;main 分支指定)
+# 待注入的自定义源 (已彻底移除末尾的 ;main 分支指定，采用默认分支)
 readonly CUSTOM_FEEDS=(
     "src-git passwall_packages https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git"
     "src-git passwall_luci https://github.com/Openwrt-Passwall/openwrt-passwall.git"
+    "src-git argon https://github.com/jerrykuku/luci-theme-argon.git"
 )
 
 if [[ ! -f "${FEEDS_CONF}" ]]; then
@@ -36,7 +44,7 @@ log_info "========== 开始执行 DIY Part 1 (环境净化与源注入) ========
 
 # ---[ 1. 净化阶段：列级别的精确匹配 ] ---
 for pattern in "${SCRUB_LIST[@]}"; do
-    matched_feeds=$(awk '!/^#/ && NF>=2 {print $2}' "${FEEDS_CONF}" | grep -iE "${pattern}" || true)
+    matched_feeds=$(awk '!/^#/ && NF>=2 {print $2}' "${FEEDS_CONF}" | grep -iE "(^|[-_])${pattern}([-_]|$)" || true)
     if [[ -n "${matched_feeds}" ]]; then
         for fn in ${matched_feeds}; do
             log_warn "匹配到关键字 '${pattern}' 的源: '${fn}'，执行精准移除..."

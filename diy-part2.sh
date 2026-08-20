@@ -3,22 +3,21 @@
 # OpenWrt DIY Part 2 - 企业级生产环境版功能特性
 # ==============================================================================
 # 核心设计目标：
-# 1. 物理级服务隔离 (Service Isolation)：
-#    - 通过编译期静态注入"空壳"脚本，彻底封堵原生 IPSec 与插件间的启动冲突。
+# 1. 协议级服务共存 (VPN Coexistence)：
+#    - 预置 IPSec (包含 ESP 协议) 与 WireGuard 防火墙规则，实现完美共存。
 # 2. 健壮的 UCI 持久化 (Atomic Commit)：
-#    - 修复 Subshell 管道陷阱，改用 Here-document 确保循环内 UCI 指令在当前 Shell 进程执行，保证 commit 100% 写入。
+#    - 改用 Here-document 确保 UCI 指令在当前 Shell 进程执行，保证 commit 100% 写入。
 # 3. 非破坏性挂载策略 (Smart Fstab)：
-#    - 采用"清洗+保留"逻辑，在强制 noatime 加速的同时，智能保留用户定义的 discard、compress 等高级文件系统参数。
-#    - 修复旧版逻辑缺陷，确保 rw (读写) 挂载权限不被误判为冲突项而清除。
+#    - 采用"清洗+保留"逻辑，在强制 noatime 加速的同时，智能保留用户高级文件系统参数。
 # 4. 全路径兼容性 (Path Resilience)：
 #    - 完美支持包含空格、特殊字符的挂载点路径，解决工业级多盘挂载环境下的解析失效问题。
 # 5. 静态时序优化 (Boot-time Injection)：
-#    - 遵循 OpenWrt 官方启动时序规范，所有配置通过 files 目录静态打入 ROM，出厂即预置完成，无需二次重启。
+#    - 所有配置通过 files 目录静态打入 ROM，出厂即预置完成，无需二次重启。
 # 6. 存储生命周期维护 (TRIM & IO Engine)：
 #    - IO 探针：自动识别 NVMe/SSD/HDD 介质，动态匹配最优预读缓存 (Read-Ahead)。
-#    - TRIM 补丁：修复 Cron 首次启动不生效盲点，通过 uci-defaults 强制重载 Cron 进程确保定时任务即刻服役。
-# 7. 网络硬件加速 (Hardware Offload)：
-#    - 自动化 ethtool 策略注入，静默开启物理网卡 TSO/GSO 加速，提升企业级大流量转发性能。
+#    - TRIM 补丁：通过 uci-defaults 强制重载 Cron 进程，确保定时任务即刻服役。
+# 7. 智能网卡硬件加速 (Smart Hardware Offload)：
+#    - 自动探针识别 Intel/Realtek 驱动，Intel 全量加速，Realtek 只开安全加速防断流。
 # ==============================================================================
 
 set -euo pipefail
@@ -48,20 +47,19 @@ mkdir -p "${FILES_DIR}/usr/bin"
 # 阶段 1: 系统初始化 (静态配置注入)
 # ==============================================================================
 
-# 分离 CI 环境变量注入，彻底斩断单段 EOF 带来的反斜杠转义地狱
 cat <<EOF > "${FILES_DIR}/etc/uci-defaults/90-system-init"
 #!/bin/sh
 TARGET_IP='${TARGET_IP}'
 TARGET_HOSTNAME='${TARGET_HOSTNAME}'
 EOF
 
-# 追加原生路由器运行逻辑 (带单引号的 'EOF'，内部变量免转义，绝对安全)
 cat <<'EOF' >> "${FILES_DIR}/etc/uci-defaults/90-system-init"
-uci set network.lan.ipaddr="$TARGET_IP"
-uci set system.@system[0].hostname="$TARGET_HOSTNAME"
+# 增加 -q 静默执行，防止上游改名导致报错
+uci -q set network.lan.ipaddr="$TARGET_IP"
+uci -q set system.@system[0].hostname="$TARGET_HOSTNAME"
 
-uci commit network
-uci commit system
+uci -q commit network
+uci -q commit system
 
 # Samba4 自动修复逻辑 (确保配置纯净且支持中文)
 if command -v uci >/dev/null 2>&1; then
@@ -71,8 +69,10 @@ if command -v uci >/dev/null 2>&1; then
         uci set samba4.@samba[-1].charset='UTF-8'
         uci set samba4.@samba[-1].interface='lan'
     fi
-    # 彻底清除默认的模版共享盘，防止垃圾挂载点残留
-    while uci -q delete samba4.@sambashare[0]; do :; done
+    # 精准清除默认模板名称的共享，保留用户后续可能自定义的共享盘
+    for share in homes home public tmp root; do
+        uci -q delete samba4.$share
+    done
     uci commit samba4
 fi
 
@@ -83,29 +83,46 @@ chmod 0755 "${FILES_DIR}/etc/uci-defaults/90-system-init"
 log_i "✅ 阶段 1: 系统初始化注入完成"
 
 # ==============================================================================
-# 阶段 2: IPSec VPN 双将夺权终极物理隔离 (Build-time Override)
+# 阶段 2: VPN 防火墙预置 (IPSec 与 WireGuard 完美共存)
 # ==============================================================================
-log_i "🔥 正在注入 IPSec 物理空壳，彻底拦截原生服务抢权..."
+log_i "🔥 正在注入 VPN 端口放行规则，保障开机即用..."
 
-# 在编译期直接伪造一个空壳启动脚本，强行覆盖掉 StrongSwan 原生的 /etc/init.d/ipsec
-cat << 'EOF' > "${FILES_DIR}/etc/init.d/ipsec"
-#!/bin/sh /etc/rc.common
-# =======================================================
-# [企业级架构防冲突]: 彻底拦截原生 StrongSwan 的自启
-# 让路给 luci-app-ipsec-vpnd 特派员，防止双将夺权！
-# =======================================================
-START=99
+cat << 'EOF' > "${FILES_DIR}/etc/uci-defaults/91-vpn-firewall"
+#!/bin/sh
+# 动态注入防火墙规则，保障 IPSec (UDP 500/4500 + ESP) 和 WireGuard 顺畅通行
+if command -v uci >/dev/null 2>&1; then
+    # 放行 IPSec IKE & NAT-T
+    uci -q delete firewall.ipsec_allow
+    uci set firewall.ipsec_allow=rule
+    uci set firewall.ipsec_allow.name='Allow-IPsec'
+    uci set firewall.ipsec_allow.src='wan'
+    uci set firewall.ipsec_allow.dest_port='500 4500'
+    uci set firewall.ipsec_allow.proto='udp'
+    uci set firewall.ipsec_allow.target='ACCEPT'
 
-start() {
-    return 0
-}
-stop() {
-    return 0
-}
+    # 放行 IPSec ESP 协议 (为非 NAT 环境的纯 IPSec 提供支持)
+    uci -q delete firewall.ipsec_esp
+    uci set firewall.ipsec_esp=rule
+    uci set firewall.ipsec_esp.name='Allow-IPsec-ESP'
+    uci set firewall.ipsec_esp.src='wan'
+    uci set firewall.ipsec_esp.proto='esp'
+    uci set firewall.ipsec_esp.target='ACCEPT'
+
+    # 放行 WireGuard
+    uci -q delete firewall.wg_allow
+    uci set firewall.wg_allow=rule
+    uci set firewall.wg_allow.name='Allow-WireGuard'
+    uci set firewall.wg_allow.src='wan'
+    uci set firewall.wg_allow.dest_port='51820'
+    uci set firewall.wg_allow.proto='udp'
+    uci set firewall.wg_allow.target='ACCEPT'
+
+    uci commit firewall
+fi
+exit 0
 EOF
-chmod 0755 "${FILES_DIR}/etc/init.d/ipsec"
-
-log_i "✅ 阶段 2: IPSec 空壳注入完成，出厂即免冲突状态"
+chmod 0755 "${FILES_DIR}/etc/uci-defaults/91-vpn-firewall"
+log_i "✅ 阶段 2: VPN 端口防火墙规则预置完成"
 
 # ==============================================================================
 # 阶段 3: init.d 挂载提速 Hook（非侵入式内核 Remount）
@@ -120,7 +137,7 @@ start() {
         return
     fi
 
-    # 架构师补全: 仅针对物理真实挂载盘进行 remount，彻底避开虚拟文件系统
+    # 仅针对物理真实挂载盘进行 remount，彻底避开虚拟文件系统
     # 兼容 fuseblk 以完美支持 ntfs-3g 的 noatime 提速
     while read -r dev mp fs _; do
         case "$dev" in
@@ -137,7 +154,7 @@ start() {
             /|/rom|/overlay|/boot) continue ;;
         esac
         
-        mount -o remount,noatime "$mp" 2>/dev/null || true
+        mount -o remount,noatime,nodiratime "$mp" 2>/dev/null || true
     done < /proc/mounts
 }
 EOF
@@ -146,7 +163,7 @@ chmod 0755 "${FILES_DIR}/etc/init.d/mount-optimize"
 log_i "✅ 阶段 3: init.d 挂载修复 Hook 注入完成"
 
 # ==============================================================================
-# 阶段 4: 网卡硬件加速服务 (ethtool 策略)
+# 阶段 4: 智能网卡硬件加速服务 (ethtool 防断流策略)
 # ==============================================================================
 cat <<'EOF' > "${FILES_DIR}/etc/init.d/network-accel"
 #!/bin/sh /etc/rc.common
@@ -156,7 +173,7 @@ START=85
 start() {
     command -v ethtool >/dev/null || return
 
-    # 遍历所有网络接口并开启硬件加速
+    # 遍历所有网络接口并根据驱动类型智能分配硬件加速策略
     for i in /sys/class/net/*; do
         iface=$(basename "$i")
         case "$iface" in
@@ -164,15 +181,25 @@ start() {
                 continue
             ;;
         esac
-        # 开启 TSO/GSO 加速，忽略不支持的报错
-        ethtool -K "$iface" tso on 2>/dev/null || true
-        ethtool -K "$iface" gso on 2>/dev/null || true
+        
+        # 提取网卡驱动名称
+        driver=$(ethtool -i "$iface" 2>/dev/null | awk '/driver/{print $2}')
+        
+        # 匹配高级网卡 (Intel/Mellanox)，开启完整 Offload
+        if echo "$driver" | grep -qE "e1000e|igb|ixgbe|mlx|intel"; then
+            logger -t NIC-ACCEL "Enable Full Offload (TSO, GSO, GRO) for Intel/Mellanox NIC: $iface"
+            ethtool -K "$iface" tso on gso on gro on 2>/dev/null || true
+        else
+            # 针对螃蟹卡(Realtek)或虚拟网卡，仅开 SG/GRO，强制关 TSO/GSO 防止断流
+            logger -t NIC-ACCEL "Enable Safe Offload (SG, GRO) for Realtek/Virtual NIC: $iface"
+            ethtool -K "$iface" sg on gro on tso off gso off 2>/dev/null || true
+        fi
     done
 }
 EOF
 
 chmod 0755 "${FILES_DIR}/etc/init.d/network-accel"
-log_i "✅ 阶段 4: 网卡加速注入完成"
+log_i "✅ 阶段 4: 智能网卡加速策略注入完成"
 
 # ==============================================================================
 # 阶段 5: Block IO 物理层优化 (精准白名单设备解析)
@@ -191,7 +218,6 @@ cat <<'EOF' >> "${FILES_DIR}/etc/hotplug.d/block/93-optimize-io"
 [ -z "$DEVNAME" ] && exit 0
 
 # 提取主设备名逻辑 (兼容 NVMe, mmcblk, sdX, vdX 等虚拟块设备)
-# 【修复】：NVMe 分区号可能为多位数，使用 %%p* 而非 %%p[0-9]*
 case "$DEVNAME" in
     nvme*)   dev="${DEVNAME%%p*}" ;;
     mmcblk*) dev="${DEVNAME%%p*}" ;;
@@ -202,7 +228,8 @@ case "$DEVNAME" in
     *)       exit 0 ;;
 esac
 
-BASE="/sys/$dev"
+# 修复：必须增加 block 路径才能正确访问块设备的 sysfs 节点
+BASE="/sys/block/$dev"
 [ -d "$BASE" ] || exit 0
 
 # 提取旋转介质标识 (0 为 SSD, 1 为 HDD)
@@ -241,7 +268,7 @@ if ! grep -q "$MOUNTPOINT" /proc/mounts 2>/dev/null; then
     exit 0
 fi
 
-# 拦截热插拔动态挂载，暴力覆盖性能参数
+# 拦截热插拔动态挂载，覆盖性能参数
 mount -o remount,noatime "$MOUNTPOINT" 2>/dev/null || true
 
 EOF
@@ -258,7 +285,6 @@ cat <<'EOF' > "${FILES_DIR}/usr/bin/auto-fstrim"
 command -v fstrim >/dev/null || exit 0
 
 # 仅对物理磁盘且支持 TRIM 的文件系统执行物理块回收
-# 绝对禁止对 tmpfs(内存盘) 或 squashfs(只读包) 发送无意义的 discard 指令
 while read -r dev mp fs _; do
     case "$dev" in
         /dev/*) ;;
@@ -296,4 +322,4 @@ EOF
 chmod 0755 "${FILES_DIR}/etc/uci-defaults/99-zz-cron-trim"
 log_i "✅ 阶段 7: TRIM 引擎及 Cron 注入完成"
 
-log_i "🎉 CI 终极稳定版 Part 2 (纯净版无 Docker) 彻底无风险完成！"
+log_i "🎉 CI 终极稳定版 Part 2 (架构增强版) 彻底无风险完成！"
