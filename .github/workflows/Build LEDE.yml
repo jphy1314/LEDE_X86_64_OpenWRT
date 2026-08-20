@@ -1,4 +1,4 @@
-name: Build LEDE Latest
+name: Build LEDE
 on:
   workflow_dispatch:
 
