@@ -322,4 +322,53 @@ EOF
 chmod 0755 "${FILES_DIR}/etc/uci-defaults/99-zz-cron-trim"
 log_i "✅ 阶段 7: TRIM 引擎及 Cron 注入完成"
 
+# ==============================================================================
+# 阶段 8: 解决 IPSec "双将夺权" 启动冲突
+# 禁用原生 strongSwan 服务，让位给 luci-app-ipsec-vpnd
+# ==============================================================================
+
+log_i "🔥 正在注入 IPSec 启动防冲突补丁..."
+
+cat << 'EOF' > "${FILES_DIR}/etc/uci-defaults/92-disable-native-ipsec"
+#!/bin/sh
+
+# ============================================================
+# IPSec 服务架构：
+#
+#   luci-app-ipsec-vpnd
+#          ↓
+#     ipsec-vpnd
+#          ↓
+#       charon
+#
+# 禁止原生 /etc/init.d/ipsec 与 ipsec-vpnd 同时运行
+# ============================================================
+
+# 1. 禁止原生 strongSwan ipsec 服务以后开机自动启动
+if [ -x "/etc/init.d/ipsec" ]; then
+    /etc/init.d/ipsec disable 2>/dev/null
+
+    # 关键：
+    # 如果第一次启动时原生 ipsec 已经被 S90ipsec 拉起，
+    # 必须立即停止它，否则会与 ipsec-vpnd 争夺 charon / UDP 500 / 4500。
+    /etc/init.d/ipsec stop 2>/dev/null
+fi
+
+# 2. 确保 luci-app-ipsec-vpnd 成为唯一的 IPSec 管理入口
+if [ -x "/etc/init.d/ipsec-vpnd" ]; then
+    /etc/init.d/ipsec-vpnd enable 2>/dev/null
+
+    # 关键：
+    # 重新启动 ipsec-vpnd，使其在原生 ipsec 被停止后重新建立
+    # 正确的 charon 实例，同时刷新 procd 运行状态。
+    /etc/init.d/ipsec-vpnd restart 2>/dev/null
+fi
+
+exit 0
+EOF
+
+chmod 0755 "${FILES_DIR}/etc/uci-defaults/92-disable-native-ipsec"
+
+log_i "✅ 阶段 8: IPSec 启动防冲突补丁注入完成"
+
 log_i "🎉 CI 终极稳定版 Part 2 (架构增强版) 彻底无风险完成！"
