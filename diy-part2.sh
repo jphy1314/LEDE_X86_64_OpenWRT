@@ -372,59 +372,253 @@ chmod 0755 "${FILES_DIR}/etc/uci-defaults/92-disable-native-ipsec"
 log_i "✅ 阶段 8: IPSec 启动防冲突补丁注入完成"
 
 # ==============================================================================
-# 阶段 9: 优化 fstools 自动挂载策略
+# 阶段 9: 系统盘保护型自动挂载
 #
-# 目标：
-# 1. 禁止匿名自动挂载，避免 fstools 对未配置设备进行匿名挂载处理
-# 2. 保留已明确配置设备的自动挂载能力
-# 3. 不修改 fstools / blockd / 79_move_config
-# 4. 不通过 @mount[N] 硬编码配置索引
-# 5. 不触碰 /rom、/overlay、/boot 系统挂载
+# 架构目标：
+# 1. 保留 OpenWrt 原生普通存储设备自动挂载能力
+# 2. 禁止 /boot、/rom、/overlay 对应设备进入匿名自动挂载
+# 3. 禁止系统启动盘的保留分区进入 15-automount
+# 4. 不关闭 auto_mount
+# 5. 不修改 /sbin/block、blockd、79_move_config
+# 6. 不硬编码 /dev/sda
+# 7. 普通 FAT32 / exFAT / NTFS / ext4 USB 存储仍然即插即用
 # ==============================================================================
 
-log_i "🔥 正在注入 fstools 自动挂载策略优化..."
+log_i "🔥 正在注入系统盘保护型自动挂载策略..."
 
-cat << 'EOF' > "${FILES_DIR}/etc/uci-defaults/93-optimize-fstools"
+cat <<'EOF' > "${FILES_DIR}/etc/hotplug.d/block/15-automount"
 #!/bin/sh
 
-# ------------------------------------------------------------------------------
-# 确保 UCI 可用
-# ------------------------------------------------------------------------------
-command -v uci >/dev/null 2>&1 || exit 0
+# ==============================================================================
+# OpenWrt / LEDE 自动挂载保护层
+#
+# 核心原则：
+#   系统盘保护
+#   普通外部存储保持自动挂载
+#
+# 不关闭 auto_mount。
+# 不修改 fstools。
+# 不修改 blockd。
+# ==============================================================================
+
+# 仅处理真正的 block add 事件
+[ "$ACTION" = "add" ] || exit 0
+
+[ -n "$DEVNAME" ] || exit 0
+[ -n "$DEVPATH" ] || exit 0
 
 # ------------------------------------------------------------------------------
-# 1. 禁止匿名自动挂载
+# 1. 只处理传统 sdX 类块设备
 #
-# 未在 /etc/config/fstab 中明确配置的块设备，不进行匿名自动挂载。
+# 保留官方脚本的行为边界：
+#   sda1
+#   sdb1
+#   sdc1
 #
-# 这样可以避免系统盘上的：
-#   /dev/sda128
-#   其它未配置保留分区
-#
-# 被作为匿名设备进入自动挂载流程。
+# NVMe / mmc 等设备不由这里进行匿名自动挂载。
 # ------------------------------------------------------------------------------
-uci -q set fstab.@global[0].anon_mount='0'
+
+case "$DEVNAME" in
+    sd[a-z][0-9]*)
+        ;;
+    *)
+        exit 0
+        ;;
+esac
 
 # ------------------------------------------------------------------------------
-# 2. 保留明确配置设备的自动挂载
+# 2. 获取分区所在的物理磁盘
 #
-# 已经存在 fstab mount section、并且 enabled=1 的设备，
-# 仍然允许 block/blockd 自动挂载。
+# sda1   -> sda
+# sda128 -> sda
+# sdb1   -> sdb
+# sdc2   -> sdc
 # ------------------------------------------------------------------------------
-uci -q set fstab.@global[0].auto_mount='1'
+
+DISK="${DEVNAME%%[0-9]*}"
+
+[ -n "$DISK" ] || exit 0
+[ -d "/sys/block/$DISK" ] || exit 0
 
 # ------------------------------------------------------------------------------
-# 3. 仅针对明确的数据盘挂载点设置性能参数
+# 3. 获取当前系统已经使用的块设备
 #
-# 不遍历全部 mount section，避免误修改：
+# 通过 /proc/mounts 动态识别，而不是硬编码：
+#
+#   /boot
 #   /rom
 #   /overlay
-#   /boot
 #
-# 当前固件的数据盘为：
-#   UUID=c09e2735-a6a5-443f-9733-de75c1001542
-#   TARGET=/mnt/sdb1
+# 因此：
+#
+#   /dev/sda1 -> /boot
+#   /dev/sda2 -> /rom
+#   /dev/loop0 -> /overlay
+#
+# 都会自动受到保护。
 # ------------------------------------------------------------------------------
+
+is_system_device() {
+    local target="$1"
+    local dev
+
+    dev="$(awk -v mp="$target" '$2 == mp {print $1; exit}' /proc/mounts 2>/dev/null)"
+
+    [ -n "$dev" ] || return 1
+
+    case "$dev" in
+        /dev/*)
+            [ "$dev" = "/dev/$DEVNAME" ] && return 0
+            ;;
+    esac
+
+    return 1
+}
+
+# ------------------------------------------------------------------------------
+# 4. 保护 /boot
+# ------------------------------------------------------------------------------
+
+if is_system_device "/boot"; then
+    logger -t AUTO-MOUNT "Skip system device $DEVNAME: /boot"
+    exit 0
+fi
+
+# ------------------------------------------------------------------------------
+# 5. 保护 /rom
+# ------------------------------------------------------------------------------
+
+if is_system_device "/rom"; then
+    logger -t AUTO-MOUNT "Skip system device $DEVNAME: /rom"
+    exit 0
+fi
+
+# ------------------------------------------------------------------------------
+# 6. 保护 /overlay
+# ------------------------------------------------------------------------------
+
+if is_system_device "/overlay"; then
+    logger -t AUTO-MOUNT "Skip system device $DEVNAME: /overlay"
+    exit 0
+fi
+
+# ------------------------------------------------------------------------------
+# 7. 系统盘拓扑保护
+#
+# 如果本分区与 /boot /rom 属于同一物理磁盘，
+# 则进一步保护该磁盘上的其它分区。
+#
+# 这一步专门解决：
+#
+#   /dev/sda128
+#
+# 这种没有文件系统的保留分区被 15-automount 尝试探测的问题。
+#
+# 注意：
+# 只有在能够明确确认该磁盘就是系统盘时才执行。
+# 不会影响 sdb/sdc 等外部磁盘。
+# ------------------------------------------------------------------------------
+
+SYSTEM_DISK=""
+
+for SYSTEM_TARGET in /boot /rom; do
+    SYSTEM_DEV="$(awk -v mp="$SYSTEM_TARGET" '$2 == mp {print $1; exit}' /proc/mounts 2>/dev/null)"
+
+    case "$SYSTEM_DEV" in
+        /dev/sd[a-z][0-9]*)
+            SYSTEM_DISK="${SYSTEM_DEV##/dev/}"
+            SYSTEM_DISK="${SYSTEM_DISK%%[0-9]*}"
+            break
+            ;;
+    esac
+done
+
+if [ -n "$SYSTEM_DISK" ] && [ "$DISK" = "$SYSTEM_DISK" ]; then
+    logger -t AUTO-MOUNT "Skip system-disk partition $DEVNAME on /dev/$SYSTEM_DISK"
+    exit 0
+fi
+
+# ------------------------------------------------------------------------------
+# 8. 使用 block info 判断设备是否已经由 block/fstab 处理
+#
+# 如果 block info 已经明确知道该设备对应某个挂载点，
+# 不再让匿名 automount 重复处理。
+# ------------------------------------------------------------------------------
+
+if block info 2>/dev/null | grep -q "^/dev/$DEVNAME:"; then
+    INFO="$(block info 2>/dev/null | grep "^/dev/$DEVNAME:" | head -n 1)"
+
+    case "$INFO" in
+        *'MOUNT="/boot"'*)
+            logger -t AUTO-MOUNT "Skip configured system device: $DEVNAME (/boot)"
+            exit 0
+            ;;
+        *'MOUNT="/rom"'*)
+            logger -t AUTO-MOUNT "Skip configured system device: $DEVNAME (/rom)"
+            exit 0
+            ;;
+        *'MOUNT="/overlay"'*)
+            logger -t AUTO-MOUNT "Skip configured system device: $DEVNAME (/overlay)"
+            exit 0
+            ;;
+    esac
+fi
+
+# ------------------------------------------------------------------------------
+# 9. 保留普通外部存储自动挂载
+#
+# 到这里说明：
+#
+#   不是 /boot
+#   不是 /rom
+#   不是 /overlay
+#   不是系统启动盘其它保留分区
+#
+# 因此继续保持原生即插即用行为。
+# ------------------------------------------------------------------------------
+
+mntpnt="$DEVNAME"
+
+mkdir -p "/mnt/$mntpnt"
+chmod 777 "/mnt/$mntpnt"
+
+# 对 SSD / USB 闪存使用 noatime。
+# 不再强制对所有设备使用 discard，
+# 避免某些设备出现：
+#
+#   device does not support discard
+#
+# 的无意义内核日志。
+mount -o rw,noatime "/dev/$DEVNAME" "/mnt/$mntpnt" 2>/dev/null || true
+
+exit 0
+EOF
+
+chmod 0755 "${FILES_DIR}/etc/hotplug.d/block/15-automount"
+
+# ------------------------------------------------------------------------------
+# Smart Fstab
+#
+# 保持自动挂载能力。
+# 不设置 anon_mount=0。
+# 不关闭 auto_mount。
+# ------------------------------------------------------------------------------
+
+cat <<'EOF' > "${FILES_DIR}/etc/uci-defaults/93-optimize-fstools"
+#!/bin/sh
+
+command -v uci >/dev/null 2>&1 || exit 0
+
+# 保留自动挂载能力
+uci -q set fstab.@global[0].auto_mount='1'
+
+# 不主动关闭 anon_mount。
+# 交由经过系统盘保护的 15-automount 决定是否自动挂载。
+
+# ------------------------------------------------------------------------------
+# 对已经明确配置的数据盘进行性能优化
+# ------------------------------------------------------------------------------
+
 config_load fstab 2>/dev/null
 
 set_data_mount() {
@@ -447,9 +641,6 @@ set_data_mount() {
 
 config_foreach set_data_mount mount
 
-# ------------------------------------------------------------------------------
-# 保存配置
-# ------------------------------------------------------------------------------
 uci -q commit fstab
 
 exit 0
@@ -457,6 +648,11 @@ EOF
 
 chmod 0755 "${FILES_DIR}/etc/uci-defaults/93-optimize-fstools"
 
-log_i "✅ 阶段 9: fstools 自动挂载策略优化完成"
+log_i "✅ 阶段 9: 系统盘保护型自动挂载策略注入完成"
+log_i "   - 保留 FAT32/exFAT/NTFS/ext4 USB 自动挂载"
+log_i "   - 保护 /boot、/rom、/overlay"
+log_i "   - 保护系统盘其它保留分区"
+log_i "   - 保留 fstab auto_mount=1"
+log_i "   - 不修改 fstools/blockd/79_move_config"
 
 log_i "🎉 CI 终极稳定版 Part 2 (架构增强版) 彻底无风险完成！"
