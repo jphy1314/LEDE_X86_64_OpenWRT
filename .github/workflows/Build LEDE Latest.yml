@@ -130,9 +130,10 @@ jobs:
           SCRIPT="${{ github.workspace }}/diy-part1.sh"
           # 统一脚本调用风格。如果脚本不存在，|| true 防止报错中断
           if [[ -f "$SCRIPT" ]]; then
+              echo "🚀 正在执行自定义脚本: $SCRIPT"
               bash "$SCRIPT"
           else
-              echo "❌ diy-part1.sh 不存在"
+              echo "❌ 错误: $SCRIPT 文件不存在！"
               exit 1
           fi
 
