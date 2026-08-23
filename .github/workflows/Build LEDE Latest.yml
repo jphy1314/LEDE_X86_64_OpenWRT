@@ -129,7 +129,12 @@ jobs:
           set -euo pipefail
           SCRIPT="${{ github.workspace }}/diy-part1.sh"
           # 统一脚本调用风格。如果脚本不存在，|| true 防止报错中断
-          [[ -f "$SCRIPT" ]] && bash "$SCRIPT" || true
+          if [[ -f "$SCRIPT" ]]; then
+              bash "$SCRIPT"
+          else
+              echo "❌ diy-part1.sh 不存在"
+              exit 1
+          fi
 
       - name: Update, Patch & Install Feeds
         working-directory: ${{ github.workspace }}/openwrt
