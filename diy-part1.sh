@@ -30,8 +30,8 @@ readonly SCRUB_LIST=(
 
 # 待注入的自定义源 (已彻底移除末尾的 ;main 分支指定，采用默认分支)
 readonly CUSTOM_FEEDS=(
-    "src-git passwall_packages https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git"
-    "src-git passwall_luci https://github.com/Openwrt-Passwall/openwrt-passwall.git"
+    "src-git passwall_packages https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git;main"
+    "src-git passwall_luci https://github.com/Openwrt-Passwall/openwrt-passwall.git;main"
     "src-git argon https://github.com/jerrykuku/luci-theme-argon.git"
 )
 
