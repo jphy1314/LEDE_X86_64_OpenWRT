@@ -96,17 +96,35 @@ mkdir -p "${FILES_DIR}/usr/bin"
 
 log_i "🔥 正在下载 Argon 主题及配置插件..."
 
-# 1. 暴力清除系统自带的旧版 argon (防止冲突)
+# --------------------------------------------------------------------------
+# 1. 清理可能存在的旧版 Argon
+#
+# Argon 不再作为 feed 管理，避免 feeds index 阶段解析异常。
+# 统一由 package 目录管理。
+# --------------------------------------------------------------------------
+
 rm -rf feeds/luci/themes/luci-theme-argon
 rm -rf feeds/luci/applications/luci-app-argon-config
 
-# 2. 直接拉取最新版 Jerrykuku Argon 到 package 目录
-git clone --depth=1 https://github.com/jerrykuku/luci-theme-argon.git package/luci-theme-argon
-git clone --depth=1 https://github.com/jerrykuku/luci-app-argon-config.git package/luci-app-argon-config
+rm -rf package/luci-theme-argon
+rm -rf package/luci-app-argon-config
+
+
+# --------------------------------------------------------------------------
+# 2. 拉取 Jerrykuku Argon
+# --------------------------------------------------------------------------
+
+git clone --depth=1 \
+    https://github.com/jerrykuku/luci-theme-argon.git \
+    package/luci-theme-argon
+
+
+git clone --depth=1 \
+    https://github.com/jerrykuku/luci-app-argon-config.git \
+    package/luci-app-argon-config
+
 
 log_i "✅ Argon 主题及插件注入完成"
-
-# ⬆️⬆️⬆️ 插入结束 ⬆️⬆️⬆️
 
 # ==============================================================================
 # 阶段 1: 系统初始化 (静态配置注入)
