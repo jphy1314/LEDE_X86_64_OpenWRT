@@ -95,19 +95,25 @@ jobs:
           echo "CURRENT_DATE=$(date +%Y%m%d)" >> $GITHUB_ENV
           echo "🚀 锁定的版本号为: ${VERSION_TAG}"
 
-      # 【企业级缓存策略】
-      # 注意：hashFiles 引用的 openwrt/ 路径在 Clone 步骤之后才存在，
+      # 【企业级 Ccache 缓存策略】
+      # 注意：hashFiles 引用的 openwrt/ 和当前工作区路径在 Clone 步骤之后才存在，
       # 因此此步骤必须放在 Clone 之后以确保缓存 key 正确生成。
-      # 缓存键由 分支名 + 核心配置文件的 Hash + 日期 组成。
-      # 任何本地工作流文件或 feeds 列表的改动都会生成全新 Key，避免读取失效缓存导致玄学报错。
+      # 缓存键由 操作系统 + 分支/引用名 + 核心配置文件的 Hash 组合而成。
+      # 当 x86_64.config、diy-part*.sh、工作流或 feeds 发生改动时自动更新缓存键，避免使用失效缓存。
       - name: Cache Ccache
-        uses: actions/cache@v5
+        uses: actions/cache@v4
         with:
-          path: ${{ env.CCACHE_DIR }}
-          key: ccache-lede-${{ env.REPO_BRANCH }}-${{ hashFiles('.github/workflows/*.yml', 'diy-part1.sh', 'diy-part2.sh', 'openwrt/feeds.conf.default') }}-${{ steps.cache-vars.outputs.date }}
+          path: /home/runner/.ccache
+          key: |
+            ccache-${{ runner.os }}-${{ github.ref_name }}-${{ hashFiles(
+              'x86_64.config',
+              'diy-part*.sh',
+              '.github/workflows/*.yml',
+              'openwrt/feeds.conf.default'
+            ) }}
           restore-keys: |
-            ccache-lede-${{ env.REPO_BRANCH }}-${{ hashFiles('.github/workflows/*.yml', 'diy-part1.sh', 'diy-part2.sh', 'openwrt/feeds.conf.default') }}-
-            ccache-lede-${{ env.REPO_BRANCH }}-
+            ccache-${{ runner.os }}-${{ github.ref_name }}-
+            ccache-${{ runner.os }}-
 
       # ==============================================================================
       # 【企业级优化】：缓存下载好的源码包，但利用 ! 语法精准剔除 Go 语言的剧毒缓存库
