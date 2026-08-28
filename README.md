@@ -2,21 +2,21 @@
 
 A customized **OpenWrt / LEDE x86_64 firmware build repository** based on the **coolsnowwolf/lede** project.
 
-This project provides an automated GitHub Actions build environment for x86_64 soft routers, integrating commonly used network services, proxy components, DNS optimization, security features, and hardware performance tuning.
+This project provides an automated GitHub Actions build environment for x86_64 soft routers, integrating commonly used network services, proxy components, DNS optimization, security features, network storage, and hardware performance tuning.
 
 ---
 
 # Project Highlights
 
 * Based on the latest LEDE source code
-* Automated firmware compilation with GitHub Actions
+* Automated firmware compilation with GitHub Actions (Ubuntu 24.04 environment)
 * Designed for x86_64 soft router platforms
-* Optimized for low-power Intel platforms
-* Complete PassWall dependency environment
+* Optimized for low-power Intel Atom Bonnell platforms
+* Complete PassWall dependency & multi-protocol environment
 * Integrated SmartDNS high-performance DNS service
-* Integrated Argon LuCI theme
-* IPv4 / IPv6 network support
-* Storage and SSD optimization features
+* Integrated Argon LuCI theme & modern UI utilities
+* IPv4 / IPv6 network dual-stack support
+* Storage, filesystem, and SSD optimization features
 
 ---
 
@@ -32,7 +32,7 @@ Primary test platform:
 | Storage      | SATA / SSD / USB storage        |
 | System       | OpenWrt / LEDE                  |
 
-CPU optimization settings:
+CPU optimization settings (`.config`):
 
 ```bash
 -O2 -pipe -march=bonnell -mtune=bonnell -fomit-frame-pointer
@@ -46,75 +46,62 @@ Optimized specifically for Intel Atom Bonnell architecture.
 
 ## Proxy & Network Acceleration
 
-* PassWall
-* Xray
-* Sing-box
+* PassWall (with Nftables & Iptables transparent proxy support)
+* Xray & Sing-box
+* Shadowsocks-Rust & Libev
+* Hysteria & NaiveProxy & Tuic
 * TCP / UDP forwarding support
-* Regional routing rules
-* Proxy traffic management
+* Regional routing rules & geo data
 
 ---
 
-## DNS Services
+## DNS Services & Ad Blocking
 
-* SmartDNS
-* DNS cache optimization
-* Smart DNS forwarding
-* DNSSEC support
-* dnsmasq-full
+* SmartDNS high-performance resolver
+* dnsmasq-full (with DNSSEC & nftset support)
+* adblock-fast (integrated ad blocking)
 
 ---
 
-## Network Features
+## Network Features & VPN
 
-* IPv6 support
-* WireGuard VPN
-* IPsec VPN
+* IPv6 helper & dual-stack routing
+* WireGuard VPN (kernel mode)
+* IPsec VPN (strongSwan with Xauth / libipsec)
 * Dynamic DNS (DDNS)
 * TCP BBR congestion control
-* Network performance optimization
+* Network performance & IRQ optimizations
 
 ---
 
-## System Management
+## System Management & Themes
 
 * LuCI Web administration interface
-* Argon theme
-* CPU frequency management
-* IRQ optimization
-* Package management
+* Argon theme (`luci-theme-argon`) & Argon Config
+* CPU frequency management (`luci-app-cpufreq`)
+* Autoreboot & DiskMan partition management
+* ttyd terminal web access
+* UnblockNeteaseMusic
 
 ---
 
-## Storage Support
+## Storage & File Sharing
 
-* EXT4 filesystem
-* Btrfs filesystem
-* XFS filesystem
-* NVMe storage
-* USB storage support
-* SSD TRIM optimization
-
----
-
-## Additional Services
-
-* USB printer server
-* KMS service
-* Network diagnostic tools
+* Filesystem support: EXT4, Btrfs, XFS, VFAT, NTFS (ntfs3), F2FS
+* Block device & mount management (`block-mount`)
+* SSD TRIM optimization (`fstrim`, `smartmontools`)
+* Samba4 Network file sharing (`luci-app-samba4`)
+* USB printer server & storage support
 
 ---
 
 # Build Environment
 
-This project uses GitHub Actions for automated compilation.
+This project uses GitHub Actions for automated compilation:
 
-Environment:
-
-* Ubuntu 24.04 Runner
-* OpenWrt / LEDE Master branch
-* ccache compilation acceleration
-* Automated firmware artifact upload
+* Runner OS: Ubuntu 24.04
+* Upstream: OpenWrt / LEDE Master branch
+* Acceleration: `ccache` caching strategy + parallel source pre-downloads
 
 ---
 
@@ -124,7 +111,6 @@ Environment:
 
 ```bash
 git clone https://github.com/jphy1314/LEDE_X86_64_OpenWRT.git
-
 cd LEDE_X86_64_OpenWRT
 ```
 
@@ -135,13 +121,11 @@ cd LEDE_X86_64_OpenWRT
 Main configuration files:
 
 ```text
-.config
-diy-part1.sh
-diy-part2.sh
-.github/workflows/*.yml
+.config                # Main kernel & package configuration (D525 optimized)
+diy-part1.sh           # Feeds source customization & plugin clones
+diy-part2.sh           # Custom patches & IP/hostname adjustments
+.github/workflows/     # GitHub Actions workflow yml files
 ```
-
-Modify these files according to your hardware and feature requirements.
 
 ---
 
@@ -152,28 +136,24 @@ Open:
 ```text
 GitHub Repository
  → Actions
- → Build LEDE Latest
+ → Build LEDE Latest (or Build LEDE)
  → Run workflow
 ```
 
-The firmware will be compiled automatically.
+The firmware will be compiled automatically with full error log upload on failure and automatic Release publishing.
 
 ---
 
 # Firmware Output
 
-After successful compilation, download the firmware from GitHub Actions artifacts:
+After successful compilation, download the firmware from GitHub Actions artifacts or Releases:
 
-```text
-openwrt-x86-64-generic-squashfs-combined.img.gz
-```
+* `openwrt-x86-64-generic-squashfs-combined.img.gz`
 
 Supported installation environments:
 
 * Bare metal x86_64 devices
-* VMware
-* ESXi
-* Proxmox VE (PVE)
+* VMware / ESXi / Proxmox VE (PVE)
 * UEFI boot systems
 
 ---
@@ -184,11 +164,12 @@ Supported installation environments:
 .
 ├── .github
 │   └── workflows
-│       └── build.yml
-│
+│       ├── Build LEDE.yml
+│       └── Build LEDE Latest.yml
+├── D525_x86_64.config
 ├── diy-part1.sh
 ├── diy-part2.sh
-├── .config
+├── LICENSE
 └── README.md
 ```
 
@@ -196,10 +177,10 @@ Supported installation environments:
 
 # Notes
 
-1. This is a personal customized firmware project and may not work perfectly on every device.
+1. This is a personal customized firmware project tailored for Intel Atom D525 soft routers.
 2. It is recommended to reset configurations after the first boot before production deployment.
 3. VPN, proxy, and network acceleration features should be configured according to local laws and regulations.
-4. Firmware features may change as upstream sources are updated.
+4. Firmware features and package feeds may change as upstream sources update.
 
 ---
 
@@ -218,5 +199,3 @@ Special thanks to the following open-source projects:
 # License
 
 This project follows the licenses of the original open-source projects.
-
-For personal learning, research, and soft router deployment purposes only.
