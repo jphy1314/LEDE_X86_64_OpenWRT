@@ -101,7 +101,7 @@ jobs:
       # 缓存键由 操作系统 + 分支/引用名 + 核心配置文件的 Hash 组合而成。
       # 当 x86_64.config、diy-part*.sh、工作流或 feeds 发生改动时自动更新缓存键，避免使用失效缓存。
       - name: Cache Ccache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: /home/runner/.ccache
           key: |
