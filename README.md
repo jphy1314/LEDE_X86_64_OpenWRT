@@ -152,7 +152,7 @@ Open:
 ```text
 GitHub Repository
  → Actions
- → Build LEDE Latest TEST
+ → Build LEDE Latest
  → Run workflow
 ```
 
