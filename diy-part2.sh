@@ -83,7 +83,7 @@ VPND_INIT_SRC=$(find package feeds -type f -path "*/luci-app-ipsec-vpnd/root/etc
 
 if [ -n "$VPND_INIT_SRC" ] && [ -f "$VPND_INIT_SRC" ]; then
 
-    # 精准修复错误的 UCI 查询路径
+    # 精准修复错误的 UCI 查询路径（直接原地修改）
     sed -i 's#uci get ipsec-vpnd@service\[0\]\.enabled#uci get ipsec-vpnd.ipsec.enabled#g' "$VPND_INIT_SRC"
 
     if grep -q 'uci get ipsec-vpnd.ipsec.enabled' "$VPND_INIT_SRC"; then
@@ -92,11 +92,9 @@ if [ -n "$VPND_INIT_SRC" ] && [ -f "$VPND_INIT_SRC" ]; then
     else
         log_w "⚠️ ipsec-vpnd UCI 查询修复验证失败"
     fi
-    diff -u "${VPND_INIT_SRC}.bak" "$VPND_INIT_SRC" || true
 else
     log_w "⚠️ 未找到 ipsec-vpnd 初始化脚本源码，跳过源码级修复"
 fi
-
 # ==============================================================================
 # 阶段 1: 系统初始化 (静态配置注入)
 # ==============================================================================
