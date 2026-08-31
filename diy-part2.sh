@@ -82,7 +82,6 @@ log_i "🔧 正在修复 luci-app-ipsec-vpnd 源码级状态查询 Bug..."
 VPND_INIT_SRC=$(find package feeds -type f -path "*/luci-app-ipsec-vpnd/root/etc/init.d/ipsec-vpnd" 2>/dev/null | head -n 1 || true)
 
 if [ -n "$VPND_INIT_SRC" ] && [ -f "$VPND_INIT_SRC" ]; then
-    cp "$VPND_INIT_SRC" "${VPND_INIT_SRC}.bak"
 
     # 精准修复错误的 UCI 查询路径
     sed -i 's#uci get ipsec-vpnd@service\[0\]\.enabled#uci get ipsec-vpnd.ipsec.enabled#g' "$VPND_INIT_SRC"
