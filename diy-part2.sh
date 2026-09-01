@@ -734,7 +734,7 @@ for required_file in \
     "${FILES_DIR}/etc/hotplug.d/block/15-automount" \
     "${FILES_DIR}/etc/hotplug.d/block/93-optimize-io" \
     "${FILES_DIR}/etc/hotplug.d/mount/94-optimize-mount" \
-    "${FILES_DIR}/usr/bin/auto-fstrim" \
+    "${FILES_DIR}/usr/bin/auto-fstrim"
 do
 
     if [ ! -f "$required_file" ]; then
