@@ -4,38 +4,45 @@
 # ==============================================================================
 # 核心设计目标：
 #
-# 1. 协议级服务共存 (VPN Coexistence)：
-#    - 预置 IPSec (包含 ESP 协议) 与 WireGuard 防火墙规则，实现协议共存。
+# 1. 协议级服务共存 (VPN Coexistence)
+#    - IPSec：IKE / NAT-T / ESP
+#    - WireGuard：UDP 51820
 #
-# 2. 健壮的 UCI 持久化：
-#    - 所有需要运行于路由器端的 UCI 操作统一注入 uci-defaults。
-#    - GitHub Actions 编译阶段不会直接执行路由器专用命令。
+# 2. 健壮的 UCI 持久化
+#    - 路由器端 UCI 操作统一注入 uci-defaults
+#    - GitHub Actions 编译阶段不直接执行路由器 UCI 命令
 #
-# 3. 存储挂载分层架构：
-#    - fstab：只负责已经明确配置的固定设备。
-#    - 15-automount：负责普通可移动存储设备的即插即用自动挂载。
-#    - 系统盘保护：自动识别 /boot、/rom、/overlay 所属设备并隔离。
+# 3. 存储挂载分层架构
+#    - fstab：管理明确配置的固定设备
+#    - 15-automount：普通可移动设备自动挂载
+#    - /boot /rom /overlay 及 GPT/BIOS 保留分区保护
 #
-# 4. IPSec 完美修复：
-#    - 源码级修复 luci-app-ipsec-vpnd 的 @service[0] 状态重载 Bug。
-#    - 动态接管原生 ipsec 服务，解决双将夺权与端口冲突。
+# 4. IPSec / LuCI 完整修复
+#    - 禁止原生 /etc/init.d/ipsec 自动启动
+#    - ipsec-vpnd 成为唯一管理入口
+#    - 修复 ipsec-vpnd reload_service() 中错误的 running 调用
+#    - 修复旧版 UCI section 查询兼容问题
+#    - LuCI 保存配置后自动调用：
+#        luci.setInitAction("ipsec-vpnd", "reload")
+#    - LuCI Enable 开启后立即启动
+#    - LuCI Enable 关闭后立即停止
 #
-# 5. 存储生命周期与 IO 优化：
-#    - 自动识别 SSD/HDD 并动态设置 read_ahead_kb。
-#    - 独立 fstrim 垃圾回收机制。
+# 5. 存储生命周期与 IO 优化
+#    - 自动识别 SSD/HDD
+#    - 动态 read_ahead_kb
+#    - 自动 TRIM
 #
-# 6. 智能网卡硬件加速：
-#    - 自动识别 Intel/Mellanox 等网卡开启全 Offload，其余网卡保守加速防断流。
+# 6. 智能网卡硬件加速
 #
-# 7. gettext host 编译修复 & 消除 baresip 循环依赖：
-#    - 修复 gettext-full host 编译时 BISON_LOCALEDIR 未定义问题。
-#    - 清除 feeds 中 baresip 的 Kconfig 循环依赖死锁。
+# 7. gettext host 编译修复
+#
+# 8. baresip 循环依赖清理
 # ==============================================================================
 
 set -euo pipefail
 
 # --------------------------------------------------------------------------
-# 全局配置 & CI 环境变量
+# 全局配置
 # --------------------------------------------------------------------------
 readonly TARGET_IP="192.168.5.1"
 readonly TARGET_HOSTNAME="LEDE"
@@ -45,11 +52,16 @@ readonly FILES_DIR="files"
 : "${SSD_READ_AHEAD_KB:="2048"}"
 : "${HDD_READ_AHEAD_KB:="128"}"
 
-log_i() { echo -e "\033[36m[INFO]\033[0m $1"; }
-log_w() { echo -e "\033[33m[WARN]\033[0m $1"; }
+log_i() {
+    echo -e "\033[36m[INFO]\033[0m $1"
+}
+
+log_w() {
+    echo -e "\033[33m[WARN]\033[0m $1"
+}
 
 # --------------------------------------------------------------------------
-# 预检与目录初始化
+# 预检
 # --------------------------------------------------------------------------
 [[ -f scripts/feeds ]] || {
     echo "❌ 错误: 必须在 OpenWrt 源码根目录执行此脚本"
@@ -58,9 +70,10 @@ log_w() { echo -e "\033[33m[WARN]\033[0m $1"; }
 
 mkdir -p "${FILES_DIR}/etc/"{uci-defaults,init.d,hotplug.d/block,hotplug.d/mount,config}
 mkdir -p "${FILES_DIR}/usr/bin"
+mkdir -p "${FILES_DIR}/www/luci-static/resources/view"
 
 # ==============================================================================
-# 阶段 0: 注入第三方独立插件 (避免 index 解析错误)
+# 阶段 0：Argon
 # ==============================================================================
 log_i "🔥 正在下载 Argon 主题及配置插件..."
 
@@ -75,29 +88,97 @@ git clone --depth=1 https://github.com/jerrykuku/luci-app-argon-config.git packa
 log_i "✅ Argon 主题及插件注入完成"
 
 # ==============================================================================
-# 阶段 0.5: 修复 luci-app-ipsec-vpnd 源码级重载 Bug
+# 阶段 0.5：完整修复 luci-app-ipsec-vpnd
 # ==============================================================================
-log_i "🔧 正在修复 luci-app-ipsec-vpnd 源码级状态查询 Bug..."
+#
+# 当前已经确认：
+#
+# LuCI：
+#   enabled=1
+#
+# 但如果只保存 UCI：
+#   ipsec-vpnd.ipsec.enabled=1
+#
+# 并不会自动执行：
+#   /etc/init.d/ipsec-vpnd reload
+#
+# 实测：
+#
+# ubus call luci setInitAction \
+# '{"name":"ipsec-vpnd","action":"reload"}'
+#
+# 可以正常启动服务。
+#
+# 因此这里同时修复：
+#
+# 1. init.d 中旧的 UCI 查询
+# 2. init.d 中错误的 running 函数
+# 3. LuCI 保存后的 reload
+# ==============================================================================
 
-VPND_INIT_SRC=$(find package feeds -type f -path "*/luci-app-ipsec-vpnd/root/etc/init.d/ipsec-vpnd" 2>/dev/null | head -n 1 || true)
+log_i "🔧 正在修复 luci-app-ipsec-vpnd..."
+
+VPND_INIT_SRC="$(
+    find package feeds \
+        -type f \
+        -path "*/luci-app-ipsec-vpnd/root/etc/init.d/ipsec-vpnd" \
+        2>/dev/null |
+        head -n 1 ||
+        true
+)"
 
 if [ -n "$VPND_INIT_SRC" ] && [ -f "$VPND_INIT_SRC" ]; then
 
-    # 精准修复错误的 UCI 查询路径。
-    sed -i 's#uci get ipsec-vpnd@service\[0\]\.enabled#uci get ipsec-vpnd.ipsec.enabled#g' "$VPND_INIT_SRC"
+    log_i "找到 ipsec-vpnd 初始化脚本：$VPND_INIT_SRC"
 
-    if grep -q 'uci get ipsec-vpnd.ipsec.enabled' "$VPND_INIT_SRC"; then
-        log_i "✅ 成功修复 ipsec-vpnd UCI section 查询"
-        log_i "   修复: ipsec-vpnd@service[0].enabled → ipsec-vpnd.ipsec.enabled"
+    # --------------------------------------------------------------------------
+    # 修复旧版 UCI section 查询
+    #
+    # 旧：
+    #   ipsec-vpnd@service[0].enabled
+    #
+    # 当前实际配置：
+    #   ipsec-vpnd.ipsec.enabled
+    # --------------------------------------------------------------------------
+    sed -i \
+        's#uci get ipsec-vpnd@service\[0\]\.enabled#uci get ipsec-vpnd.ipsec.enabled#g' \
+        "$VPND_INIT_SRC"
+
+    # --------------------------------------------------------------------------
+    # 修复 reload_service() 中错误的 running
+    #
+    # 原代码：
+    #   running && {
+    #
+    # 但本脚本中真正存在的是：
+    #   service_running()
+    #
+    # --------------------------------------------------------------------------
+    sed -i \
+        's/^[[:space:]]*running && {/        service_running \&\& {/' \
+        "$VPND_INIT_SRC"
+
+    # --------------------------------------------------------------------------
+    # 验证
+    # --------------------------------------------------------------------------
+    if grep -q 'service_running && {' "$VPND_INIT_SRC"; then
+        log_i "✅ 已修复 ipsec-vpnd reload_service()"
     else
-        log_w "⚠️ ipsec-vpnd UCI 查询修复验证失败"
+        log_w "⚠️ 未检测到 service_running 修复结果"
     fi
+
+    if grep -q 'ipsec-vpnd.ipsec.enabled' "$VPND_INIT_SRC"; then
+        log_i "✅ ipsec-vpnd UCI section 查询正确"
+    else
+        log_w "⚠️ 未检测到正确的 UCI section"
+    fi
+
 else
-    log_w "⚠️ 未找到 ipsec-vpnd 初始化脚本源码，跳过源码级修复"
+    log_w "⚠️ 未找到 ipsec-vpnd 初始化脚本，跳过源码修复"
 fi
 
 # ==============================================================================
-# 阶段 0.6: 修复 gettext-full host 编译 BISON_LOCALEDIR 未定义问题
+# 阶段 0.6：gettext-full BISON_LOCALEDIR
 # ==============================================================================
 log_i "🔧 正在修复 gettext-full host 编译 BISON_LOCALEDIR 问题..."
 
@@ -105,40 +186,26 @@ GETTEXT_MK="package/libs/gettext-full/Makefile"
 
 if [ -f "$GETTEXT_MK" ]; then
 
-    # --------------------------------------------------------------------------
-    # 检查是否已经存在 BISON_LOCALEDIR 定义
-    # 使用纯文本匹配，避免误判等号、反斜杠及引号
-    # --------------------------------------------------------------------------
     if grep -qF 'BISON_LOCALEDIR' "$GETTEXT_MK"; then
 
-        log_i "ℹ️ gettext-full Makefile 已存在 BISON_LOCALEDIR，跳过重复修改"
+        log_i "ℹ️ gettext-full Makefile 已存在 BISON_LOCALEDIR，跳过"
 
-    # --------------------------------------------------------------------------
-    # 优先修改 gettext-full 原有 HOST_CPPFLAGS
-    # 这是最直接、最可靠的 host 编译预处理宏传递方式
-    # --------------------------------------------------------------------------
     elif grep -qE '^[[:space:]]*HOST_CPPFLAGS[[:space:]]*\+=' "$GETTEXT_MK"; then
 
         sed -i \
             '/^[[:space:]]*HOST_CPPFLAGS[[:space:]]*+=/ s#$# -DBISON_LOCALEDIR=\"$(STAGING_DIR_HOSTPKG)/share/locale\"#' \
             "$GETTEXT_MK"
 
-        log_i "✅ 已向现有 HOST_CPPFLAGS 注入 BISON_LOCALEDIR"
+        log_i "✅ 已向 HOST_CPPFLAGS 注入 BISON_LOCALEDIR"
 
-    # --------------------------------------------------------------------------
-    # 如果没有 HOST_CPPFLAGS，但存在 HOST_CFLAGS，则作为兼容方案
-    # --------------------------------------------------------------------------
     elif grep -qE '^[[:space:]]*HOST_CFLAGS[[:space:]]*\+=' "$GETTEXT_MK"; then
 
         sed -i \
             '/^[[:space:]]*HOST_CFLAGS[[:space:]]*+=/ s#$# -DBISON_LOCALEDIR=\"$(STAGING_DIR_HOSTPKG)/share/locale\"#' \
             "$GETTEXT_MK"
 
-        log_i "✅ 未找到 HOST_CPPFLAGS，已向 HOST_CFLAGS 注入 BISON_LOCALEDIR"
+        log_i "✅ 已向 HOST_CFLAGS 注入 BISON_LOCALEDIR"
 
-    # --------------------------------------------------------------------------
-    # 最后兜底：直接创建 HOST_CPPFLAGS
-    # --------------------------------------------------------------------------
     else
 
         cat <<'EOF' >> "$GETTEXT_MK"
@@ -147,59 +214,54 @@ if [ -f "$GETTEXT_MK" ]; then
 HOST_CPPFLAGS += -DBISON_LOCALEDIR=\"$(STAGING_DIR_HOSTPKG)/share/locale\"
 EOF
 
-        log_i "✅ 已创建 HOST_CPPFLAGS 并注入 BISON_LOCALEDIR"
+        log_i "✅ 已创建 HOST_CPPFLAGS"
 
     fi
 
-    # --------------------------------------------------------------------------
-    # 最终验证
-    # --------------------------------------------------------------------------
     if grep -qF 'BISON_LOCALEDIR' "$GETTEXT_MK"; then
-
         log_i "✅ gettext-full BISON_LOCALEDIR 修复验证通过"
-
-        grep -n 'BISON_LOCALEDIR' "$GETTEXT_MK" | head -n 5 || true
-
     else
-
-        log_w "⚠️ gettext-full BISON_LOCALEDIR 修复验证失败"
-
+        log_w "⚠️ gettext-full 修复验证失败"
     fi
 
 else
-
     log_w "⚠️ 未找到 $GETTEXT_MK，跳过 gettext-full 修复"
-
 fi
 
 # ==============================================================================
-# 阶段 0.7: 消除 feeds 中 baresip 的 Kconfig 循环依赖死锁
+# 阶段 0.7：清理 baresip
 # ==============================================================================
 log_i "🔧 正在清理 baresip 循环依赖软件包..."
 
-find feeds/ -type d -name "baresip" -exec rm -rf {} + 2>/dev/null || true
+find feeds/ \
+    -type d \
+    -name "baresip" \
+    -exec rm -rf {} + \
+    2>/dev/null || true
+
 rm -rf package/feeds/packages/baresip 2>/dev/null || true
 
 log_i "✅ baresip 冲突包已清除"
 
 # ==============================================================================
-# 阶段 1: 系统初始化 (静态配置注入)
+# 阶段 1：系统初始化
 # ==============================================================================
 log_i "🔥 正在注入系统初始化配置..."
 
 cat <<EOF > "${FILES_DIR}/etc/uci-defaults/90-system-init"
 #!/bin/sh
+
 TARGET_IP='${TARGET_IP}'
 TARGET_HOSTNAME='${TARGET_HOSTNAME}'
-EOF
 
-cat <<'EOF' >> "${FILES_DIR}/etc/uci-defaults/90-system-init"
-uci -q set network.lan.ipaddr="$TARGET_IP"
-uci -q set system.@system[0].hostname="$TARGET_HOSTNAME"
+uci -q set network.lan.ipaddr="\$TARGET_IP"
+uci -q set system.@system[0].hostname="\$TARGET_HOSTNAME"
+
 uci -q commit network
 uci -q commit system
 
 if command -v uci >/dev/null 2>&1; then
+
     if ! uci -q get samba4.@samba[0] >/dev/null 2>&1; then
         uci add samba4 samba
         uci set samba4.@samba[-1].workgroup='WORKGROUP'
@@ -208,7 +270,7 @@ if command -v uci >/dev/null 2>&1; then
     fi
 
     for share in homes home public tmp root; do
-        uci -q delete samba4.$share
+        uci -q delete samba4.\$share
     done
 
     uci commit samba4
@@ -218,19 +280,20 @@ exit 0
 EOF
 
 chmod 0755 "${FILES_DIR}/etc/uci-defaults/90-system-init"
-log_i "✅ 阶段 1: 系统初始化注入完成"
+
+log_i "✅ 阶段 1 完成"
 
 # ==============================================================================
-# 阶段 2: VPN 防火墙预置 (IPSec 与 WireGuard 共存)
+# 阶段 2：VPN 防火墙
 # ==============================================================================
-log_i "🔥 正在注入 VPN 端口放行规则..."
+log_i "🔥 正在注入 VPN 防火墙规则..."
 
 cat <<'EOF' > "${FILES_DIR}/etc/uci-defaults/91-vpn-firewall"
 #!/bin/sh
 
 if command -v uci >/dev/null 2>&1; then
 
-    # IPSec IKE & NAT-T
+    # IPSec IKE
     uci -q delete firewall.ipsec_allow
     uci set firewall.ipsec_allow=rule
     uci set firewall.ipsec_allow.name='Allow-IPsec'
@@ -263,18 +326,21 @@ exit 0
 EOF
 
 chmod 0755 "${FILES_DIR}/etc/uci-defaults/91-vpn-firewall"
-log_i "✅ 阶段 2: VPN 防火墙规则预置完成"
+
+log_i "✅ 阶段 2 完成"
 
 # ==============================================================================
-# 阶段 3: init.d 挂载提速 Hook
+# 阶段 3：挂载优化
 # ==============================================================================
 log_i "🔥 正在注入挂载提速 Hook..."
 
 cat <<'EOF' > "${FILES_DIR}/etc/init.d/mount-optimize"
 #!/bin/sh /etc/rc.common
+
 START=92
 
 start() {
+
     command -v mount >/dev/null 2>&1 || return 0
 
     while read -r dev mp fs _; do
@@ -290,25 +356,30 @@ start() {
         esac
 
         case "$mp" in
-            /|/rom|/overlay|/boot) continue ;;
+            /|/rom|/overlay|/boot)
+                continue
+                ;;
         esac
 
-        mount -o remount,noatime,nodiratime "$mp" 2>/dev/null || true
+        mount -o remount,noatime,nodiratime "$mp" \
+            2>/dev/null || true
 
     done < /proc/mounts
 }
 EOF
 
 chmod 0755 "${FILES_DIR}/etc/init.d/mount-optimize"
-log_i "✅ 阶段 3: 挂载提速 Hook 注入完成"
+
+log_i "✅ 阶段 3 完成"
 
 # ==============================================================================
-# 阶段 4: 智能网卡硬件加速服务
+# 阶段 4：网卡硬件加速
 # ==============================================================================
 log_i "🔥 正在注入智能网卡硬件加速..."
 
 cat <<'EOF' > "${FILES_DIR}/etc/init.d/network-accel"
 #!/bin/sh /etc/rc.common
+
 START=85
 
 start() {
@@ -320,24 +391,37 @@ start() {
         iface=$(basename "$i")
 
         case "$iface" in
-            lo|br-*|docker*|veth*|ifb*|tun*|tap*|wg*) continue ;;
+            lo|br-*|docker*|veth*|ifb*|tun*|tap*|wg*)
+                continue
+                ;;
         esac
 
-        driver=$(ethtool -i "$iface" 2>/dev/null | awk '/driver/{print $2}')
+        driver=$(ethtool -i "$iface" 2>/dev/null |
+            awk '/driver/{print $2}')
 
-        if echo "$driver" | grep -qE "e1000e|igb|ixgbe|mlx|intel"; then
+        if echo "$driver" |
+            grep -qE "e1000e|igb|ixgbe|mlx|intel"; then
 
             logger -t NIC-ACCEL \
-                "Enable Full Offload (TSO, GSO, GRO) for Intel/Mellanox NIC: $iface"
+                "Enable Full Offload: $iface"
 
-            ethtool -K "$iface" tso on gso on gro on 2>/dev/null || true
+            ethtool -K "$iface" \
+                tso on \
+                gso on \
+                gro on \
+                2>/dev/null || true
 
         else
 
             logger -t NIC-ACCEL \
-                "Enable Safe Offload (SG, GRO) for Realtek/Virtual NIC: $iface"
+                "Enable Safe Offload: $iface"
 
-            ethtool -K "$iface" sg on gro on tso off gso off 2>/dev/null || true
+            ethtool -K "$iface" \
+                sg on \
+                gro on \
+                tso off \
+                gso off \
+                2>/dev/null || true
 
         fi
 
@@ -346,51 +430,66 @@ start() {
 EOF
 
 chmod 0755 "${FILES_DIR}/etc/init.d/network-accel"
-log_i "✅ 阶段 4: 网卡加速策略注入完成"
+
+log_i "✅ 阶段 4 完成"
 
 # ==============================================================================
-# 阶段 5: Block IO 物理层优化
+# 阶段 5：Block IO
 # ==============================================================================
 log_i "🔥 正在注入 Block IO 优化..."
 
 cat <<EOF > "${FILES_DIR}/etc/hotplug.d/block/93-optimize-io"
 #!/bin/sh
+
 SSD_READ_AHEAD_KB="${SSD_READ_AHEAD_KB}"
 HDD_READ_AHEAD_KB="${HDD_READ_AHEAD_KB}"
-EOF
 
-cat <<'EOF' >> "${FILES_DIR}/etc/hotplug.d/block/93-optimize-io"
+[ "\$ACTION" = "add" ] || exit 0
+[ -z "\$DEVNAME" ] && exit 0
 
-[ "$ACTION" = "add" ] || exit 0
-[ -z "$DEVNAME" ] && exit 0
-
-case "$DEVNAME" in
-    nvme*|mmcblk*) dev="${DEVNAME%%p*}" ;;
-    sd*|vd*|hd*|xvd*) dev="${DEVNAME%%[0-9]*}" ;;
-    *) exit 0 ;;
+case "\$DEVNAME" in
+    nvme*|mmcblk*)
+        dev="\${DEVNAME%%p*}"
+        ;;
+    sd*|vd*|hd*|xvd*)
+        dev="\${DEVNAME%%[0-9]*}"
+        ;;
+    *)
+        exit 0
+        ;;
 esac
 
-BASE="/sys/block/$dev"
-[ -d "$BASE" ] || exit 0
+BASE="/sys/block/\$dev"
 
-ROT=$(cat "$BASE/queue/rotational" 2>/dev/null || echo 1)
+[ -d "\$BASE" ] || exit 0
 
-if [ -f "$BASE/queue/read_ahead_kb" ]; then
+ROT=$(cat "\$BASE/queue/rotational" 2>/dev/null || echo 1)
 
-    if [ "$ROT" = "0" ]; then
-        echo "$SSD_READ_AHEAD_KB" > "$BASE/queue/read_ahead_kb" 2>/dev/null || true
+if [ -f "\$BASE/queue/read_ahead_kb" ]; then
+
+    if [ "\$ROT" = "0" ]; then
+
+        echo "\$SSD_READ_AHEAD_KB" \
+            > "\$BASE/queue/read_ahead_kb" \
+            2>/dev/null || true
+
     else
-        echo "$HDD_READ_AHEAD_KB" > "$BASE/queue/read_ahead_kb" 2>/dev/null || true
+
+        echo "\$HDD_READ_AHEAD_KB" \
+            > "\$BASE/queue/read_ahead_kb" \
+            2>/dev/null || true
+
     fi
 
 fi
 EOF
 
 chmod 0755 "${FILES_DIR}/etc/hotplug.d/block/93-optimize-io"
-log_i "✅ 阶段 5: Block IO read_ahead 优化注入完成"
+
+log_i "✅ 阶段 5 完成"
 
 # ==============================================================================
-# 阶段 6: mount 热插拔优化
+# 阶段 6：Mount 热插拔
 # ==============================================================================
 log_i "🔥 正在注入 mount 热插拔优化..."
 
@@ -401,25 +500,30 @@ cat <<'EOF' > "${FILES_DIR}/etc/hotplug.d/mount/94-optimize-mount"
 [ -z "$MOUNTPOINT" ] && exit 0
 
 case "$MOUNTPOINT" in
-    /|/rom|/overlay|/boot) exit 0 ;;
+    /|/rom|/overlay|/boot)
+        exit 0
+        ;;
 esac
 
 if ! grep -q " $MOUNTPOINT " /proc/mounts 2>/dev/null; then
     exit 0
 fi
 
-mount -o remount,noatime,nodiratime "$MOUNTPOINT" 2>/dev/null || true
+mount -o remount,noatime,nodiratime \
+    "$MOUNTPOINT" \
+    2>/dev/null || true
 
 exit 0
 EOF
 
 chmod 0755 "${FILES_DIR}/etc/hotplug.d/mount/94-optimize-mount"
-log_i "✅ 阶段 6: mount 热插拔优化完成"
+
+log_i "✅ 阶段 6 完成"
 
 # ==============================================================================
-# 阶段 7: TRIM 引擎及静态 Cron 注入
+# 阶段 7：TRIM
 # ==============================================================================
-log_i "🔥 正在注入 TRIM 引擎及计划任务..."
+log_i "🔥 正在注入 TRIM 引擎..."
 
 cat <<'EOF' > "${FILES_DIR}/usr/bin/auto-fstrim"
 #!/bin/sh
@@ -453,45 +557,400 @@ cat <<EOF > "${FILES_DIR}/etc/uci-defaults/99-zz-cron-trim"
 mkdir -p /etc/crontabs
 touch /etc/crontabs/root
 
-sed -i '/auto-fstrim/d' /etc/crontabs/root 2>/dev/null || true
-echo "${TRIM_SCHEDULE} /usr/bin/auto-fstrim" >> /etc/crontabs/root
+sed -i '/auto-fstrim/d' \
+    /etc/crontabs/root \
+    2>/dev/null || true
 
-/etc/init.d/cron restart 2>/dev/null || true
+echo "${TRIM_SCHEDULE} /usr/bin/auto-fstrim" \
+    >> /etc/crontabs/root
+
+/etc/init.d/cron restart \
+    2>/dev/null || true
 
 exit 0
 EOF
 
 chmod 0755 "${FILES_DIR}/etc/uci-defaults/99-zz-cron-trim"
-log_i "✅ 阶段 7: TRIM 引擎及 Cron 注入完成"
+
+log_i "✅ 阶段 7 完成"
 
 # ==============================================================================
-# 阶段 8: 解决 IPSec 启动冲突 (交接权杖)
+# 阶段 8：IPSec 服务唯一管理入口
 # ==============================================================================
-log_i "🔥 正在注入 IPSec 启动防冲突补丁..."
+log_i "🔥 正在配置 IPSec 服务唯一管理入口..."
 
 cat <<'EOF' > "${FILES_DIR}/etc/uci-defaults/92-disable-native-ipsec"
 #!/bin/sh
 
-# 1. 禁用原生 strongSwan 自动启动并释放端口
+# ============================================================================
+# IPSec 服务架构：
+#
+# /etc/init.d/ipsec
+#       ↓
+#       禁止自动启动
+#
+# /etc/init.d/ipsec-vpnd
+#       ↓
+#       唯一管理 strongSwan
+#
+# 这样可以避免两个 starter / charon 实例争夺：
+# UDP 500
+# UDP 4500
+# ESP
+# ipsec0
+# ============================================================================
+
 if [ -x "/etc/init.d/ipsec" ]; then
-    /etc/init.d/ipsec disable 2>/dev/null || true
-    /etc/init.d/ipsec stop 2>/dev/null || true
+
+    /etc/init.d/ipsec disable \
+        2>/dev/null || true
+
+    /etc/init.d/ipsec stop \
+        2>/dev/null || true
+
 fi
 
-# 2. 让 ipsec-vpnd 成为唯一管理入口
 if [ -x "/etc/init.d/ipsec-vpnd" ]; then
-    /etc/init.d/ipsec-vpnd enable 2>/dev/null || true
-    /etc/init.d/ipsec-vpnd restart 2>/dev/null || true
+
+    /etc/init.d/ipsec-vpnd enable \
+        2>/dev/null || true
+
+    /etc/init.d/ipsec-vpnd restart \
+        2>/dev/null || true
+
 fi
 
 exit 0
 EOF
 
 chmod 0755 "${FILES_DIR}/etc/uci-defaults/92-disable-native-ipsec"
-log_i "✅ 阶段 8: IPSec 启动防冲突补丁注入完成"
+
+log_i "✅ 阶段 8：IPSec 唯一管理入口完成"
 
 # ==============================================================================
-# 阶段 9: 最终存储自动挂载架构
+# 阶段 8.5：LuCI IPSec 永久启动修复
+# ==============================================================================
+#
+# 这是本次真正解决：
+#
+# “LuCI 可以关闭，但关闭后再点击开启不会立即运行”
+#
+# 的核心补丁。
+#
+# 原 LuCI：
+#
+#   form.Map()
+#       ↓
+#   只提交 UCI
+#       ↓
+#   ipsec-vpnd.ipsec.enabled=1
+#
+# 但没有：
+#
+#   ipsec-vpnd reload
+#
+# 新版：
+#
+#   保存成功
+#       ↓
+#   luci.setInitAction()
+#       ↓
+#   ipsec-vpnd reload
+#
+# 实测该 UBus 调用已经确认能够启动服务。
+# ==============================================================================
+
+log_i "🔧 正在注入 LuCI IPSec 永久启动修复..."
+
+cat <<'EOF' > "${FILES_DIR}/www/luci-static/resources/view/ipsec-vpnd.js"
+'use strict';
+
+'require form';
+'require poll';
+'require rpc';
+'require uci';
+'require view';
+
+
+const callServiceList = rpc.declare({
+        object: 'service',
+        method: 'list',
+        params: ['name'],
+        expect: { '': {} }
+});
+
+
+const callServiceAction = rpc.declare({
+        object: 'luci',
+        method: 'setInitAction',
+        params: ['name', 'action'],
+        expect: { result: true }
+});
+
+
+function getServiceStatus() {
+
+        return L.resolveDefault(
+                callServiceList('ipsec-vpnd'),
+                {}
+        ).then(function(res) {
+
+                let isRunning = false;
+
+                try {
+
+                        isRunning =
+                                res['ipsec-vpnd']
+                                ['instances']
+                                ['instance1']
+                                ['running'];
+
+                } catch (e) {
+
+                        isRunning = false;
+
+                }
+
+                return isRunning;
+        });
+}
+
+
+function renderStatus(isRunning) {
+
+        let spanTemp =
+                '<em><span style="color:%s">' +
+                '<strong>%s %s</strong>' +
+                '</span></em>';
+
+        let renderHTML;
+
+        if (isRunning) {
+
+                renderHTML = spanTemp.format(
+                        'green',
+                        _('IPSec VPN'),
+                        _('RUNNING')
+                );
+
+        } else {
+
+                renderHTML = spanTemp.format(
+                        'red',
+                        _('IPSec VPN'),
+                        _('NOT RUNNING')
+                );
+        }
+
+        return renderHTML;
+}
+
+
+return view.extend({
+
+        render() {
+
+                let m, s, o;
+
+                m = new form.Map(
+                        'ipsec-vpnd',
+                        _('IPSec VPN Server'),
+                        _('IPSec VPN connectivity using the native built-in VPN Client on iOS or Andriod (IKEv1 with PSK and Xauth)')
+                );
+
+
+                /*
+                 * =============================================================
+                 * 核心修复
+                 * =============================================================
+                 *
+                 * LuCI 保存 UCI 配置成功以后：
+                 *
+                 *   enabled=1
+                 *          ↓
+                 *   ipsec-vpnd reload
+                 *
+                 * 或：
+                 *
+                 *   enabled=0
+                 *          ↓
+                 *   ipsec-vpnd reload
+                 *
+                 * 由 init.d 根据 enabled 自动决定启动还是停止。
+                 *
+                 * 使用 LuCI 官方 UBus：
+                 *
+                 *   luci.setInitAction
+                 *
+                 * 不直接执行 shell。
+                 */
+
+                m.on_after_commit = function() {
+
+                        return callServiceAction(
+                                'ipsec-vpnd',
+                                'reload'
+                        );
+                };
+
+
+                /*
+                 * 服务状态
+                 */
+
+                s = m.section(form.TypedSection);
+
+                s.anonymous = true;
+
+                s.render = function() {
+
+                        poll.add(function() {
+
+                                return L.resolveDefault(
+                                        getServiceStatus(),
+                                        false
+                                ).then(function(res) {
+
+                                        let status =
+                                                document.getElementById(
+                                                        'service_status'
+                                                );
+
+                                        if (status) {
+
+                                                status.innerHTML =
+                                                        renderStatus(res);
+
+                                        }
+
+                                });
+
+                        });
+
+                        return E(
+                                'div',
+                                {
+                                        class: 'cbi-section',
+                                        id: 'status_bar'
+                                },
+                                [
+                                        E(
+                                                'p',
+                                                {
+                                                        id: 'service_status'
+                                                },
+                                                _('Collecting data...')
+                                        )
+                                ]
+                        );
+                };
+
+
+                /*
+                 * IPSec 配置
+                 */
+
+                s = m.section(
+                        form.NamedSection,
+                        'ipsec',
+                        'service'
+                );
+
+
+                /*
+                 * Enable
+                 */
+
+                o = s.option(
+                        form.Flag,
+                        'enabled',
+                        _('Enable')
+                );
+
+                o.default = o.disabled;
+                o.rmempty = false;
+
+
+                /*
+                 * VPN Client IP
+                 */
+
+                o = s.option(
+                        form.Value,
+                        'clientip',
+                        _('VPN Client IP'),
+                        _('LAN DHCP reserved started IP addresses with the same subnet mask')
+                );
+
+                o.datatype = 'ip4addr';
+                o.rmempty = false;
+
+
+                /*
+                 * VPN Client DNS
+                 */
+
+                o = s.option(
+                        form.Value,
+                        'clientdns',
+                        _('VPN Client DNS'),
+                        _('DNS using in VPN tunnel.Set to the router\'s LAN IP is recommended')
+                );
+
+                o.datatype = 'ip4addr';
+                o.rmempty = false;
+
+
+                /*
+                 * Account
+                 */
+
+                o = s.option(
+                        form.Value,
+                        'account',
+                        _('Account')
+                );
+
+                o.rmempty = false;
+
+
+                /*
+                 * Password
+                 */
+
+                o = s.option(
+                        form.Value,
+                        'password',
+                        _('Password')
+                );
+
+                o.password = true;
+                o.rmempty = false;
+
+
+                /*
+                 * Pre-Shared Key
+                 */
+
+                o = s.option(
+                        form.Value,
+                        'secret',
+                        _('Secret Pre-Shared Key')
+                );
+
+                o.password = true;
+                o.rmempty = false;
+
+
+                return m.render();
+        }
+});
+EOF
+
+log_i "✅ LuCI IPSec 自动 reload 修复已注入"
+
+# ==============================================================================
+# 阶段 9：最终存储自动挂载
 # ==============================================================================
 log_i "🔥 正在部署最终存储自动挂载架构..."
 
@@ -500,10 +959,7 @@ cat <<'EOF' > "${FILES_DIR}/etc/uci-defaults/93-optimize-fstools"
 
 command -v uci >/dev/null 2>&1 || exit 0
 
-# 禁止 blockd/fstools 对匿名设备进行自动挂载
 uci -q set fstab.@global[0].anon_mount='0'
-
-# 保留 fstab 对明确配置设备的管理能力
 uci -q set fstab.@global[0].auto_mount='1'
 
 if command -v config_load >/dev/null 2>&1; then
@@ -523,7 +979,8 @@ if command -v config_load >/dev/null 2>&1; then
 
             /mnt/sdb1)
 
-                [ "$uuid" = "c09e2735-a6a5-443f-9733-de75c1001542" ] || return 0
+                [ "$uuid" = "c09e2735-a6a5-443f-9733-de75c1001542" ] ||
+                    return 0
 
                 uci -q set "fstab.$cfg.enabled=1"
                 uci -q set "fstab.$cfg.options=rw,noatime,nodiratime"
@@ -534,6 +991,7 @@ if command -v config_load >/dev/null 2>&1; then
     }
 
     config_foreach set_data_mount mount
+
 fi
 
 uci -q commit fstab
@@ -543,6 +1001,7 @@ EOF
 
 chmod 0755 "${FILES_DIR}/etc/uci-defaults/93-optimize-fstools"
 
+
 cat <<'EOF' > "${FILES_DIR}/etc/hotplug.d/block/15-automount"
 #!/bin/sh
 
@@ -550,16 +1009,20 @@ cat <<'EOF' > "${FILES_DIR}/etc/hotplug.d/block/15-automount"
 [ -z "$DEVNAME" ] && exit 0
 
 case "$DEVNAME" in
-    sd[[:alnum:]]*|nvme[0-9]*p[0-9]*|mmcblk[0-9]*p[0-9]*) ;;
-    *) exit 0 ;;
+    sd[[:alnum:]]*|nvme[0-9]*p[0-9]*|mmcblk[0-9]*p[0-9]*)
+        ;;
+    *)
+        exit 0
+        ;;
 esac
+
 
 protect_system_device() {
 
     local dev="$1"
     local protected
+    local protected_name
 
-    # 保护核心挂载点所属设备
     for protected in /boot /rom /overlay; do
 
         while read -r protected_dev protected_mp _ _ _; do
@@ -572,7 +1035,8 @@ protect_system_device() {
 
                     protected_name="${protected_dev#/dev/}"
 
-                    [ "$dev" = "$protected_name" ] && return 0
+                    [ "$dev" = "$protected_name" ] &&
+                        return 0
 
                     ;;
 
@@ -582,7 +1046,7 @@ protect_system_device() {
 
     done
 
-    # 保护 GPT/BIOS 保留分区
+
     case "$dev" in
         sd[[:alnum:]]*128|nvme[0-9]*p128|mmcblk[0-9]*p128)
             return 0
@@ -592,54 +1056,81 @@ protect_system_device() {
     return 1
 }
 
+
 if protect_system_device "$DEVNAME"; then
     exit 0
 fi
 
+
 FS_TYPE=""
 
 if command -v blkid >/dev/null 2>&1; then
-    FS_TYPE="$(blkid -o value -s TYPE "/dev/$DEVNAME" 2>/dev/null || true)"
+
+    FS_TYPE="$(
+        blkid \
+            -o value \
+            -s TYPE \
+            "/dev/$DEVNAME" \
+            2>/dev/null ||
+            true
+    )"
+
 fi
+
 
 [ -n "$FS_TYPE" ] || exit 0
 
+
 case "$FS_TYPE" in
-    ext2|ext3|ext4|f2fs|btrfs|xfs|vfat|exfat|ntfs|ntfs3|fuseblk) ;;
-    *) exit 0 ;;
+    ext2|ext3|ext4|f2fs|btrfs|xfs|vfat|exfat|ntfs|ntfs3|fuseblk)
+        ;;
+    *)
+        exit 0
+        ;;
 esac
+
 
 if grep -q "^/dev/$DEVNAME " /proc/mounts 2>/dev/null; then
     exit 0
 fi
 
+
 MNT="/mnt/$DEVNAME"
 
 mkdir -p "$MNT" 2>/dev/null || exit 0
+
 chmod 777 "$MNT" 2>/dev/null || true
 
-mount -o rw,noatime "/dev/$DEVNAME" "$MNT" 2>/dev/null || {
 
-    rmdir "$MNT" 2>/dev/null || true
+mount \
+    -o rw,noatime \
+    "/dev/$DEVNAME" \
+    "$MNT" \
+    2>/dev/null || {
 
-    exit 0
-}
+        rmdir "$MNT" 2>/dev/null || true
+
+        exit 0
+    }
+
 
 exit 0
 EOF
 
 chmod 0755 "${FILES_DIR}/etc/hotplug.d/block/15-automount"
 
+
 cat <<'EOF' > "${FILES_DIR}/etc/hotplug.d/block/10-mount"
-[ "$ACTION" = "add" -o "$ACTION" = "remove" ] && /sbin/block hotplug
+[ "$ACTION" = "add" -o "$ACTION" = "remove" ] &&
+    /sbin/block hotplug
 EOF
 
 chmod 0644 "${FILES_DIR}/etc/hotplug.d/block/10-mount"
 
-log_i "✅ 阶段 9: Smart Fstab + 系统盘保护架构部署完成"
+log_i "✅ 阶段 9 完成"
 
 # ==============================================================================
-# 阶段 10: 最终安全检查
+# 阶段 10：最终文件检查
 # ==============================================================================
 log_i "🔍 正在执行 DIY Part 2 静态文件检查..."
 
@@ -655,34 +1146,69 @@ for required_file in \
     "${FILES_DIR}/etc/hotplug.d/block/15-automount" \
     "${FILES_DIR}/etc/hotplug.d/block/93-optimize-io" \
     "${FILES_DIR}/etc/hotplug.d/mount/94-optimize-mount" \
-    "${FILES_DIR}/usr/bin/auto-fstrim"
+    "${FILES_DIR}/usr/bin/auto-fstrim" \
+    "${FILES_DIR}/www/luci-static/resources/view/ipsec-vpnd.js"
 do
 
-    [ -f "$required_file" ] || {
+    if [ ! -f "$required_file" ]; then
 
         echo "❌ 缺少文件: $required_file"
 
         exit 1
-    }
+
+    fi
 
 done
 
+log_i "✅ 所有必需文件检查通过"
+
 # ==============================================================================
-# 阶段 11: Shell 语法最终检查
+# 阶段 11：验证 IPSec LuCI 补丁
 # ==============================================================================
-log_i "🔍 正在执行 DIY Part 2 Shell 语法检查..."
+log_i "🔍 正在验证 IPSec LuCI 永久修复..."
+
+IPSEC_LUCI_JS="${FILES_DIR}/www/luci-static/resources/view/ipsec-vpnd.js"
+
+if grep -q "setInitAction" "$IPSEC_LUCI_JS" &&
+   grep -q "ipsec-vpnd" "$IPSEC_LUCI_JS" &&
+   grep -q "'reload'" "$IPSEC_LUCI_JS"; then
+
+    log_i "✅ LuCI IPSec setInitAction reload 修复验证通过"
+
+else
+
+    echo "❌ LuCI IPSec setInitAction 修复验证失败"
+    exit 1
+
+fi
+
+# ==============================================================================
+# 阶段 12：Shell 语法检查
+# ==============================================================================
+log_i "🔍 正在执行 Shell 语法检查..."
 
 if command -v bash >/dev/null 2>&1; then
     bash -n "$0"
 fi
 
-log_i "✅ Shell 语法检查通过"
+log_i "✅ DIY Part 2 Shell 语法检查通过"
 
 # ==============================================================================
 # 完成
 # ==============================================================================
-log_i "🎉 DIY Part 2 最终基准版生成完成！"
-log_i "📦 存储架构：fstab 管理已知设备 + 15-automount 管理普通可移动设备"
-log_i "🛡️ 系统盘保护：/boot /rom /overlay + GPT/BIOS 保留分区"
-log_i "🌐 VPN 共存：IPSec 源码级修复 (@service[0] 消除) + WireGuard"
-log_i "🔧 基础工具：gettext BISON_LOCALEDIR 宏定义已注入 + baresip 循环依赖已消除"
+log_i "======================================================"
+log_i "🎉 DIY Part 2 最终版本生成完成"
+log_i "======================================================"
+log_i "🌐 LAN：${TARGET_IP}"
+log_i "🛡️ IPSec：ipsec-vpnd 唯一管理"
+log_i "🔗 WireGuard：保留"
+log_i "🔥 IPSec：IKE / NAT-T / ESP 防火墙规则保留"
+log_i "🟢 LuCI：保存后自动 reload ipsec-vpnd"
+log_i "🔴 LuCI：关闭后自动 reload 并停止 IPSec"
+log_i "💾 存储：fstab + 自动挂载"
+log_i "⚡ IO：SSD/HDD read_ahead"
+log_i "♻️ TRIM：自动计划任务"
+log_i "🌐 NIC：智能 Offload"
+log_i "🔧 gettext：BISON_LOCALEDIR 修复"
+log_i "🔧 baresip：循环依赖清理"
+log_i "======================================================"
