@@ -485,59 +485,6 @@ chmod 0755 "${FILES_DIR}/etc/uci-defaults/99-zz-cron-trim"
 log_i "✅ 阶段 7 完成"
 
 # ==============================================================================
-# 阶段 8：IPSec 服务唯一管理入口
-# ==============================================================================
-log_i "🔥 正在配置 IPSec 服务唯一管理入口..."
-
-cat <<'EOF' > "${FILES_DIR}/etc/uci-defaults/92-disable-native-ipsec"
-#!/bin/sh
-
-# ============================================================================
-# IPSec 服务架构：
-#
-# /etc/init.d/ipsec
-#       ↓
-#       禁止自动启动
-#
-# /etc/init.d/ipsec-vpnd
-#       ↓
-#       唯一管理 strongSwan
-#
-# 这样可以避免两个 starter / charon 实例争夺：
-# UDP 500
-# UDP 4500
-# ESP
-# ipsec0
-# ============================================================================
-
-if [ -x "/etc/init.d/ipsec" ]; then
-
-    /etc/init.d/ipsec disable \
-        2>/dev/null || true
-
-    /etc/init.d/ipsec stop \
-        2>/dev/null || true
-
-fi
-
-if [ -x "/etc/init.d/ipsec-vpnd" ]; then
-
-    /etc/init.d/ipsec-vpnd enable \
-        2>/dev/null || true
-
-    /etc/init.d/ipsec-vpnd restart \
-        2>/dev/null || true
-
-fi
-
-exit 0
-EOF
-
-chmod 0755 "${FILES_DIR}/etc/uci-defaults/92-disable-native-ipsec"
-
-log_i "✅ 阶段 8：IPSec 唯一管理入口完成"
-
-# ==============================================================================
 # 阶段 9：最终存储自动挂载
 # ==============================================================================
 log_i "🔥 正在部署最终存储自动挂载架构..."
@@ -725,7 +672,6 @@ log_i "🔍 正在执行 DIY Part 2 静态文件检查..."
 for required_file in \
     "${FILES_DIR}/etc/uci-defaults/90-system-init" \
     "${FILES_DIR}/etc/uci-defaults/91-vpn-firewall" \
-    "${FILES_DIR}/etc/uci-defaults/92-disable-native-ipsec" \
     "${FILES_DIR}/etc/uci-defaults/93-optimize-fstools" \
     "${FILES_DIR}/etc/uci-defaults/99-zz-cron-trim" \
     "${FILES_DIR}/etc/init.d/mount-optimize" \
