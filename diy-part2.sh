@@ -78,56 +78,34 @@ git clone --depth=1 https://github.com/jerrykuku/luci-app-argon-config.git packa
 log_i "✅ Argon 主题及插件注入完成"
 
 # ==============================================================================
-# 阶段 0.6：gettext-full BISON_LOCALEDIR
+# 阶段 0.6: gettext-full host 编译兼容性修复
+# 目的：仅修复 BISON_LOCALEDIR 未定义问题，不修改 gettext-full 其他编译逻辑
 # ==============================================================================
-log_i "🔧 正在修复 gettext-full host 编译 BISON_LOCALEDIR 问题..."
+
+log_i "🔧 正在注入 gettext-full host 编译兼容性补丁..."
 
 GETTEXT_MK="package/libs/gettext-full/Makefile"
+PATCH_DIR="package/libs/gettext-full/patches"
 
-if [ -f "$GETTEXT_MK" ]; then
+mkdir -p "$PATCH_DIR"
 
-    if grep -qF 'BISON_LOCALEDIR' "$GETTEXT_MK"; then
-
-        log_i "ℹ️ gettext-full Makefile 已存在 BISON_LOCALEDIR，跳过"
-
-    elif grep -qE '^[[:space:]]*HOST_CPPFLAGS[[:space:]]*\+=' "$GETTEXT_MK"; then
-
-        sed -i \
-            '/^[[:space:]]*HOST_CPPFLAGS[[:space:]]*+=/ s#$# -DBISON_LOCALEDIR=\"$(STAGING_DIR_HOSTPKG)/share/locale\"#' \
-            "$GETTEXT_MK"
-
-        log_i "✅ 已向 HOST_CPPFLAGS 注入 BISON_LOCALEDIR"
-
-    elif grep -qE '^[[:space:]]*HOST_CFLAGS[[:space:]]*\+=' "$GETTEXT_MK"; then
-
-        sed -i \
-            '/^[[:space:]]*HOST_CFLAGS[[:space:]]*+=/ s#$# -DBISON_LOCALEDIR=\"$(STAGING_DIR_HOSTPKG)/share/locale\"#' \
-            "$GETTEXT_MK"
-
-        log_i "✅ 已向 HOST_CFLAGS 注入 BISON_LOCALEDIR"
-
-    else
-
-        cat <<'EOF' >> "$GETTEXT_MK"
-
-# OpenWrt DIY: fix gettext-full host BISON_LOCALEDIR
-HOST_CPPFLAGS += -DBISON_LOCALEDIR=\"$(STAGING_DIR_HOSTPKG)/share/locale\"
+cat <<'EOF' > "${PATCH_DIR}/999-fix-bison-localedir.patch"
+--- a/gettext-tools/src/msgcmp.c
++++ b/gettext-tools/src/msgcmp.c
+@@ -32,6 +32,10 @@
+ #include <locale.h>
+ #include <stdio.h>
+ 
++#ifndef BISON_LOCALEDIR
++#define BISON_LOCALEDIR "/usr/share/locale"
++#endif
++
+ #include "closeout.h"
+ #include "dir-list.h"
+ #include "error.h"
 EOF
 
-        log_i "✅ 已创建 HOST_CPPFLAGS"
-
-    fi
-
-    if grep -qF 'BISON_LOCALEDIR' "$GETTEXT_MK"; then
-        log_i "✅ gettext-full BISON_LOCALEDIR 修复验证通过"
-    else
-        log_w "⚠️ gettext-full 修复验证失败"
-    fi
-
-else
-    log_w "⚠️ 未找到 $GETTEXT_MK，跳过 gettext-full 修复"
-fi
-
+log_i "✅ 已注入 gettext-full BISON_LOCALEDIR 兼容性补丁"
 # ==============================================================================
 # 阶段 0.7：清理 baresip
 # ==============================================================================
