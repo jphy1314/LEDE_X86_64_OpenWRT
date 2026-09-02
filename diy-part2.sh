@@ -17,26 +17,16 @@
 #    - 15-automount：普通可移动设备自动挂载
 #    - /boot /rom /overlay 及 GPT/BIOS 保留分区保护
 #
-# 4. IPSec / LuCI 完整修复
-#    - 禁止原生 /etc/init.d/ipsec 自动启动
-#    - ipsec-vpnd 成为唯一管理入口
-#    - 修复 ipsec-vpnd reload_service() 中错误的 running 调用
-#    - 修复旧版 UCI section 查询兼容问题
-#    - LuCI 保存配置后自动调用：
-#        luci.setInitAction("ipsec-vpnd", "reload")
-#    - LuCI Enable 开启后立即启动
-#    - LuCI Enable 关闭后立即停止
-#
-# 5. 存储生命周期与 IO 优化
+# 4. 存储生命周期与 IO 优化
 #    - 自动识别 SSD/HDD
 #    - 动态 read_ahead_kb
 #    - 自动 TRIM
 #
-# 6. 智能网卡硬件加速
+# 5. 智能网卡硬件加速
 #
-# 7. gettext host 编译修复
+# 6. gettext host 编译修复
 #
-# 8. baresip 循环依赖清理
+# 7. baresip 循环依赖清理
 # ==============================================================================
 
 set -euo pipefail
