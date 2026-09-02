@@ -81,31 +81,31 @@ log_i "✅ Argon 主题及插件注入完成"
 # 阶段 0.6: gettext-full host 编译兼容性修复
 # 目的：仅修复 BISON_LOCALEDIR 未定义问题，不修改 gettext-full 其他编译逻辑
 # ==============================================================================
+#
+#log_i "🔧 正在注入 gettext-full host 编译兼容性补丁..."
 
-log_i "🔧 正在注入 gettext-full host 编译兼容性补丁..."
+#GETTEXT_MK="package/libs/gettext-full/Makefile"
+#PATCH_DIR="package/libs/gettext-full/patches"
 
-GETTEXT_MK="package/libs/gettext-full/Makefile"
-PATCH_DIR="package/libs/gettext-full/patches"
+#mkdir -p "$PATCH_DIR"
 
-mkdir -p "$PATCH_DIR"
-
-cat <<'EOF' > "${PATCH_DIR}/999-fix-bison-localedir.patch"
---- a/gettext-tools/src/msgcmp.c
-+++ b/gettext-tools/src/msgcmp.c
-@@ -32,6 +32,10 @@
- #include <locale.h>
- #include <stdio.h>
+#cat <<'EOF' > "${PATCH_DIR}/999-fix-bison-localedir.patch"
+#--- a/gettext-tools/src/msgcmp.c
+#+++ b/gettext-tools/src/msgcmp.c
+#@@ -32,6 +32,10 @@
+# #include <locale.h>
+# #include <stdio.h>
  
-+#ifndef BISON_LOCALEDIR
-+#define BISON_LOCALEDIR "/usr/share/locale"
-+#endif
-+
- #include "closeout.h"
- #include "dir-list.h"
- #include "error.h"
-EOF
+#+#ifndef BISON_LOCALEDIR
+#+#define BISON_LOCALEDIR "/usr/share/locale"
+#+#endif
+#+
+# #include "closeout.h"
+# #include "dir-list.h"
+# #include "error.h"
+#EOF
 
-log_i "✅ 已注入 gettext-full BISON_LOCALEDIR 兼容性补丁"
+#log_i "✅ 已注入 gettext-full BISON_LOCALEDIR 兼容性补丁"
 # ==============================================================================
 # 阶段 0.7：清理 baresip
 # ==============================================================================
