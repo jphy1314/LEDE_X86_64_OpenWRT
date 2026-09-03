@@ -69,7 +69,8 @@ jobs:
             qemu-utils rsync scons squashfs-tools subversion swig texinfo \
             uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev \
             ack antlr3 asciidoc autoconf automake autopoint binutils bison \
-            bzip2 curl genisoimage haveged ccache libc6-dev-i386 jq
+            bzip2 curl genisoimage haveged ccache libc6-dev-i386 jq \
+            libgettextpo-dev
             
           sudo apt-get autoremove --purge -y
           sudo apt-get clean
