@@ -105,14 +105,14 @@ jobs:
         with:
           path: /home/runner/.ccache
           key: |
-            ccache-${{ runner.os }}-${{ github.ref_name }}-${{ hashFiles(
-              'x86_64.config',
+            ccache-${{ runner.os }}-${{ env.REPO_BRANCH }}-${{ hashFiles(
+              'D525_x86_64.config',
               'diy-part*.sh',
               '.github/workflows/*.yml',
               'openwrt/feeds.conf.default'
             ) }}
           restore-keys: |
-            ccache-${{ runner.os }}-${{ github.ref_name }}-
+            ccache-${{ runner.os }}-${{ env.REPO_BRANCH }}-
             ccache-${{ runner.os }}-
 
       # ==============================================================================
