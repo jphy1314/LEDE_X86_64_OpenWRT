@@ -78,34 +78,21 @@ git clone --depth=1 https://github.com/jerrykuku/luci-app-argon-config.git packa
 log_i "✅ Argon 主题及插件注入完成"
 
 # ==============================================================================
-# 阶段 0.6: gettext-full host 编译兼容性修复
-# 目的：仅修复 BISON_LOCALEDIR 未定义问题，不修改 gettext-full 其他编译逻辑
+# 阶段 0.5：更新 gettext-full 版本
 # ==============================================================================
-#
-#log_i "🔧 正在注入 gettext-full host 编译兼容性补丁..."
+log_i "🔄 更新 gettext-full 版本到最新..."
 
-#GETTEXT_MK="package/libs/gettext-full/Makefile"
-#PATCH_DIR="package/libs/gettext-full/patches"
+# 找到 gettext-full 的 Makefile 并修改版本
+GETTEXT_MAKEFILE=$(find . -name "Makefile" -path "*/gettext-full/*" | head -1)
 
-#mkdir -p "$PATCH_DIR"
+if [ -f "$GETTEXT_MAKEFILE" ]; then
+    # 将版本从 0.22.5 更新到 0.23.0 或更新版本
+    sed -i 's/PKG_VERSION:=0\.22\.5/PKG_VERSION:=0.23.0/g' "$GETTEXT_MAKEFILE"
+    log_i "✅ gettext-full 版本已更新"
+else
+    log_w "⚠️ 未找到 gettext-full Makefile，跳过版本更新"
+fi
 
-#cat <<'EOF' > "${PATCH_DIR}/999-fix-bison-localedir.patch"
-#--- a/gettext-tools/src/msgcmp.c
-#+++ b/gettext-tools/src/msgcmp.c
-#@@ -32,6 +32,10 @@
-# #include <locale.h>
-# #include <stdio.h>
- 
-#+#ifndef BISON_LOCALEDIR
-#+#define BISON_LOCALEDIR "/usr/share/locale"
-#+#endif
-#+
-# #include "closeout.h"
-# #include "dir-list.h"
-# #include "error.h"
-#EOF
-
-#log_i "✅ 已注入 gettext-full BISON_LOCALEDIR 兼容性补丁"
 # ==============================================================================
 # 阶段 0.7：清理 baresip
 # ==============================================================================
