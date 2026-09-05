@@ -78,22 +78,6 @@ git clone --depth=1 https://github.com/jerrykuku/luci-app-argon-config.git packa
 log_i "✅ Argon 主题及插件注入完成"
 
 # ==============================================================================
-# 阶段 0.5：更新 gettext-full 版本
-# ==============================================================================
-log_i "🔄 更新 gettext-full 版本到最新..."
-
-# 找到 gettext-full 的 Makefile 并修改版本
-GETTEXT_MAKEFILE=$(find . -name "Makefile" -path "*/gettext-full/*" | head -1)
-
-if [ -f "$GETTEXT_MAKEFILE" ]; then
-    # 将版本从 0.22.5 更新到 0.23.0 或更新版本
-    sed -i 's/PKG_VERSION:=0\.22\.5/PKG_VERSION:=0.23.0/g' "$GETTEXT_MAKEFILE"
-    log_i "✅ gettext-full 版本已更新"
-else
-    log_w "⚠️ 未找到 gettext-full Makefile，跳过版本更新"
-fi
-
-# ==============================================================================
 # 阶段 0.7：清理 baresip
 # ==============================================================================
 log_i "🔧 正在清理 baresip 循环依赖软件包..."
