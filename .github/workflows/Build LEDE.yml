@@ -265,6 +265,10 @@ jobs:
           echo "CONFIG_TARGET_x86_64=y" >> .config
           echo "CONFIG_TARGET_x86_64_DEVICE_generic=y" >> .config
           
+          # 禁用上游 pcat-firmware 循环依赖（x86_64 不需要嵌入式 WiFi 固件）
+          echo "CONFIG_PACKAGE_pcat-firmware=n" >> .config
+          echo "CONFIG_PACKAGE_ath10k-board-qca9377-sdio=n" >> .config
+          
           make defconfig
           
           # 2. 补救措施 

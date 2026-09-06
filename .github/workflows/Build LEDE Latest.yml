@@ -340,7 +340,11 @@ jobs:
               bash "$SCRIPT"
           fi
           
-          # 3. 补全依赖配置
+          # 3. 禁用上游循环依赖包（x86_64 不需要嵌入式 WiFi 固件）
+          echo "CONFIG_PACKAGE_pcat-firmware=n" >> .config
+          echo "CONFIG_PACKAGE_ath10k-board-qca9377-sdio=n" >> .config
+          
+          # 4. 补全依赖配置
           make defconfig
           
           # 4. 开启 CCACHE 优化
