@@ -258,13 +258,43 @@ jobs:
           sed -i 's/wget-any/wget-ssl/g' package/community/luci-theme-argon/Makefile
 
           # ----------------------------
-          # 4. 解决 SmartDNS Rust 依赖问题
+          # 4. 保障 SmartDNS 的 rust-package.mk 支持文件存在（含失败回退）
           # ----------------------------
-          fix_rust() {
+          # 【作用域澄清】
+          # smartdns 主程序（/usr/sbin/smartdns）始终是 C 编译，与本函数无关。
+          # 本函数唯一的作用：让 pymumu/openwrt-smartdns/Makefile 里这一行 include 能解析：
+          #     include $(TOPDIR)/feeds/packages/lang/rust/rust-package.mk
+          # 该 include 是"无条件"的（Makefile 里没包在 ifeq 里），文件不存在会让
+          # make defconfig / make download 直接报错退出。
+          #
+          # 【为什么不是"选 Rust 编译路径"】
+          # smartdns Makefile 里 Rust 只在 smartdns-ui 子包时被激活：
+          #     PKG_BUILD_DEPENDS:=PACKAGE_smartdns-ui:rust/host
+          # 只有 CONFIG_PACKAGE_smartdns-ui=y 才会真正拉起 rust 工具链。
+          # 当前 D525_x86_64.config 未启用 smartdns-ui，所以：
+          #   - rust-package.mk 下载成功  vs  失败 fallback
+          #   - 两条路径产出的固件二进制完全一致（smartdns 都是 C 编译）
+          # 本函数是"保证 include 不炸"的保命操作，不是"选择编译后端"。
+          #
+          # 【意图】
+          # 优先从 openwrt/packages 拉取 rust-package.mk / rust-values.mk 两个文件，
+          # 让 smartdns/Makefile 保持原样（含 include 和末尾的
+          # $(eval $(call RustBinPackage,smartdns-ui)) 都能被解析）。
+          #
+          # 【失败回退】
+          # 若 GitHub raw 端点限流/超时，则：
+          #   1. 删除下载一半的半残文件（避免污染 include 路径）
+          #   2. 注释掉 smartdns/Makefile 里的 rust-package.mk include
+          #   3. 注入 5 个空 RUST_* 变量，避免后续 Makefile 出现 undefined 变量
+          #
+          # 【范围】本函数只 patch package/smartdns/Makefile。
+          #       package/luci-app-smartdns/Makefile 不 include rust-package.mk，
+          #       不受影响（它有另外的 luci.mk 双 include 问题，见 Compile 步骤注释）。
+          ensure_rust_support() {
               local rust_dir="lang/rust"
               local raw_url="https://raw.githubusercontent.com/openwrt/packages/master/lang/rust"
               local files=("rust-package.mk" "rust-values.mk")
-              local need_patch=0
+              local need_fallback=0
               mkdir -p "$rust_dir"
 
               for f in "${files[@]}"; do
@@ -273,24 +303,30 @@ jobs:
                       log_i "✅ 下载成功: $f"
                   else
                       log_w "⚠️ 下载失败或文件为空: $f"
-                      need_patch=1
+                      need_fallback=1
                       break
                   fi
               done
 
-              if [ $need_patch -eq 1 ]; then
-                  log_w "执行 Makefile 变量防断链注入..."
+              if [ $need_fallback -eq 1 ]; then
+                  log_w "执行 C 版本回退（防 rust 依赖断链）..."
                   rm -rf "$rust_dir"
-                  cp package/smartdns/Makefile package/smartdns/Makefile.bak
-                  sed -i 's|^include \.\./\.\./lang/rust/rust-package\.mk|# include ../../lang/rust/rust-package.mk|' package/smartdns/Makefile
-                  echo "RUST_TARGET_HOST:=" >> package/smartdns/Makefile
-                  echo "RUST_TARGET_ARCH:=" >> package/smartdns/Makefile
-                  echo "RUST_ARCH_DEPENDS:=" >> package/smartdns/Makefile
-                  echo "RUSTC_VARS:=" >> package/smartdns/Makefile
-                  echo "CARGO_PACKAGE_VARS:=" >> package/smartdns/Makefile
+                  local mf="package/smartdns/Makefile"
+                  if ! grep -q '# include ../../lang/rust/rust-package.mk' "$mf" 2>/dev/null; then
+                      cp "$mf" "${mf}.bak" || true
+                      sed -i 's|^include \.\./\.\./lang/rust/rust-package\.mk|# include ../../lang/rust/rust-package.mk|' "$mf"
+                      for var in RUST_TARGET_HOST RUST_TARGET_ARCH RUST_ARCH_DEPENDS RUSTC_VARS CARGO_PACKAGE_VARS; do
+                          grep -q "^${var}:=" "$mf" || echo "${var}:=" >> "$mf"
+                      done
+                      log_i "✅ 已 patch: $mf"
+                  else
+                      log_i "ℹ️ $mf 已被 patch，跳过重复注入"
+                  fi
+              else
+                  log_i "✅ rust-package.mk 支持文件就绪（smartdns 主程序始终 C 编译；仅 smartdns-ui 子包用 Rust）"
               fi
           }
-          fix_rust
+          ensure_rust_support
 
           # ----------------------------
           # 5. 常规安装 feeds，建立基础依赖链
@@ -416,6 +452,21 @@ jobs:
         working-directory: ${{ github.workspace }}/openwrt
         run: |
           set -uo pipefail # 此处不设置 -e，是为了允许并发 make 失败后自动触发单线程 fallback 编译
+
+          # ==============================================================================
+          # 【已知无害 warning 说明】—— 供 log 阅读者快速定位
+          # ==============================================================================
+          # 编译日志中若出现如下 warning，属上游行为、不影响固件功能，可忽略：
+          #   include/package.mk:365/370/377/382/388/391
+          #     warning: overriding recipe for target
+          #       'prepare-package-install' / 'clean' / 'dist' / 'distcheck' /
+          #       'force-clean-build' / 'bin/targets/x86/64/packages'
+          # 根因：pymumu/luci-app-smartdns/Makefile 同时 include
+          #       $(INCLUDE_DIR)/package.mk 与 $(TOPDIR)/feeds/luci/luci.mk，
+          #       luci.mk 内部对顶层 target 做了二次定义。
+          # 参考：Run #91 (R26.09.07) 编译成功、固件已发布，证明 warning 无害。
+          # ==============================================================================
+          echo "[INFO] 编译开始。日志中 'package.mk overriding recipe' warning 来自上游双 include 行为，不影响固件功能（见 Run #91）。"
           
           # 安全创建 Ccache 目录，使用 755 权限符合企业安全基线
           mkdir -p ${{ env.CCACHE_DIR }}
