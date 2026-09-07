@@ -253,6 +253,13 @@ jobs:
           retry git clone --depth 1 https://github.com/jerrykuku/luci-theme-argon.git package/community/luci-theme-argon
           retry git clone --depth 1 https://github.com/jerrykuku/luci-app-argon-config.git package/community/luci-app-argon-config
 
+          # StrongSwan / ipsec-vpnd 刷新
+          # 说明：
+          # - coolsnoowolf/packages 里现在已有 strongswan 6.0.7，并且包含 swanctl 包；
+          # - 这里固定使用当前最新维护版本的 luci-app-ipsec-vpnd。
+          rm -rf feeds/luci/applications/luci-app-ipsec-vpnd package/luci-app-ipsec-vpnd
+          retry git clone --depth 1 https://github.com/szwjp/luci-app-ipsec-vpnd.git package/luci-app-ipsec-vpnd
+
           # 【架构师补丁】：彻底消灭 luci-theme-argon 报 wget-any 不存在的警告
           log_i "🔧 正在修补 Argon 主题依赖警告..."
           sed -i 's/wget-any/wget-ssl/g' package/community/luci-theme-argon/Makefile

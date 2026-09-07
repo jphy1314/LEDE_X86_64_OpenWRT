@@ -97,6 +97,13 @@ jobs:
         run: |
           ./scripts/feeds update -a
           
+          # StrongSwan / ipsec-vpnd 刷新
+          # 说明：
+          # - coolsnoowolf/packages 里现在已有 strongswan 6.0.7，并且包含 swanctl 包；
+          # - 这里固定使用当前最新维护版本的 luci-app-ipsec-vpnd。
+          rm -rf feeds/luci/applications/luci-app-ipsec-vpnd package/luci-app-ipsec-vpnd
+          git clone --depth 1 https://github.com/szwjp/luci-app-ipsec-vpnd.git package/luci-app-ipsec-vpnd
+
           # Passwall 处理
           rm -rf feeds/packages/net/{xray-core,v2ray-geodata,sing-box,chinadns-ng,dns2socks,hysteria,ipt2socks,microsocks,naiveproxy,shadowsocks-libev,shadowsocks-rust,shadowsocksr-libev,simple-obfs,tcping,trojan-plus,tuic-client,v2ray-plugin,xray-plugin,geoview,shadow-tls}
           rm -rf feeds/luci/applications/luci-app-passwall
