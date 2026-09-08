@@ -562,7 +562,7 @@ jobs:
           
           if [ -n "$TARGET_DIR" ] && [ -d "$TARGET_DIR" ]; then
             cd "$TARGET_DIR"
-            # 清理占空间的 packages 包夹，以及多余的内核信息文件
+            # 清理占空间的 packages 包，以及多余的内核信息文件
             rm -rf packages || true
             find . -type f -name "*.buildinfo" -delete
             find . -type f -name "*.manifest" -delete
@@ -636,11 +636,19 @@ jobs:
           echo "开始清理过旧的 Workflow 运行记录，仅保留最新 2 个..."
           
           # 利用 jq JSON 引擎健壮提取 ID，并调用 GitHub 原生 API 进行静默删除
-          gh run list --workflow "${{ github.workflow }}" --limit 100 --json databaseId -q '.[].databaseId' | tail -n +3 | while IFS= read -r run_id; do
-            if [ -n "$run_id" ]; then
-              echo "🗑️ 正在删除冗余运行记录: $run_id"
-              gh api -X DELETE "/repos/${{ github.repository }}/actions/runs/$run_id" --silent || true
-            fi
+          # 保留最新 2 个运行，且绝不删除当前 run
+          current_run="${{ github.run_id }}"
+          keep_set="${current_run}"
+          while IFS= read -r keep_id; do
+            [ -n "$keep_id" ] && keep_set="${keep_set} ${keep_id}"
+          done < <(gh run list --workflow "${{ github.workflow }}" --limit 2 --json databaseId -q '.[].databaseId' | sort -u)
+          gh run list --workflow "${{ github.workflow }}" --limit 100 --json databaseId -q '.[].databaseId' | while IFS= read -r run_id; do
+            [ -n "$run_id" ] || continue
+            case " ${keep_set} " in
+              *" $run_id "*) continue ;;
+            esac
+            echo "🗑️ 正在删除冗余运行记录: $run_id"
+            gh api -X DELETE "/repos/${{ github.repository }}/actions/runs/$run_id" --silent || true
           done
           echo "✅ Action 运行记录清理完成！"
 
