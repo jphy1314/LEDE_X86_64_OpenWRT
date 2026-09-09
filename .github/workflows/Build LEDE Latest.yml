@@ -145,10 +145,43 @@ jobs:
           fi
 
       - name: Update, Patch & Install Feeds
+        # Hard ceiling: normal runs finish this step in ~3-10 min.
+        # 30 min is generous; anything past that is a hung git clone / hung feeds
+        # script, and we prefer an explicit failure over a zombie step.
+        timeout-minutes: 30
         working-directory: ${{ github.workspace }}/openwrt
         run: |
           #!/usr/bin/env bash
           set -euo pipefail
+
+          # ==========================================================================
+          # Cancellation handler: make this step exit within ~5s on SIGTERM/SIGINT
+          #
+          # Why this is safe:
+          #   - No `set -E`: trap does NOT propagate into subshells or pipelines,
+          #     so retry(), fix_rust(), git clone, ./scripts/feeds are untouched.
+          #   - `exit 130` inside trap -> non-zero exit -> runner marks step as
+          #     failed, which matches user intent (they pressed Cancel, expect red X).
+          #   - No background jobs / nohup / sleep-fork; total trap duration is
+          #     bounded by a 5s synchronous sleep, well below the runner's 120s
+          #     hard-kill timeout for cancelled jobs.
+          #   - pkill targets only direct children of THIS bash (PID=$$); the
+          #     runner handles orphaned grandchildren via its own process-group
+          #     cleanup, so we don't need to walk the tree.
+          #   - stderr is NOT redirected on pkill: keep failures visible for debugging.
+          #   - No `timeout N cmd` wrapper: keeps the original retry() semantics.
+          #   - Trap body is intentionally plain (no functions, no variables), so
+          #     set -u cannot hit an unbound variable inside the handler.
+          # ==========================================================================
+          trap '
+            echo "";
+            echo ">>> Cancel received (PID=$$, PPID=$PPID); cleaning up child processes...";
+            pkill -TERM -P $$ 2>&1 || true;
+            sleep 5;
+            pkill -KILL -P $$ 2>&1 || true;
+            echo ">>> Cancelling step, exiting 130";
+            exit 130;
+          ' TERM INT
 
           log_i(){ echo -e "\e[32m[INFO] $1\e[0m"; }
           log_w(){ echo -e "\e[33m[WARN] $1\e[0m"; }
