@@ -63,23 +63,9 @@ mkdir -p "${FILES_DIR}/usr/bin"
 mkdir -p "${FILES_DIR}/www/luci-static/resources/view"
 
 # ==============================================================================
-# 阶段 0：Argon
-# ==============================================================================
-log_i "🔥 正在下载 Argon 主题及配置插件..."
-
-rm -rf feeds/luci/themes/luci-theme-argon
-rm -rf feeds/luci/applications/luci-app-argon-config
-rm -rf package/luci-theme-argon
-rm -rf package/luci-app-argon-config
-
-git clone --depth=1 https://github.com/jerrykuku/luci-theme-argon.git package/luci-theme-argon
-git clone --depth=1 https://github.com/jerrykuku/luci-app-argon-config.git package/luci-app-argon-config
-
-log_i "✅ Argon 主题及插件注入完成"
-
-# ==============================================================================
-# 阶段 0.7：清理 baresip
-# ==============================================================================
+# 阶段 0：清理 baresip
+# Argon 主题由 Workflow Step 10 负责克隆，避免双路径冲突
+# ============================================================================
 log_i "🔧 正在清理 baresip 循环依赖软件包..."
 
 find feeds/ \
@@ -424,7 +410,7 @@ chmod 0755 "${FILES_DIR}/etc/uci-defaults/99-zz-cron-trim"
 log_i "✅ 阶段 7 完成"
 
 # ==============================================================================
-# 阶段 9：最终存储自动挂载
+# 阶段 8：最终存储自动挂载
 # ==============================================================================
 log_i "🔥 正在部署最终存储自动挂载架构..."
 
@@ -432,6 +418,9 @@ cat <<'EOF' > "${FILES_DIR}/etc/uci-defaults/93-optimize-fstools"
 #!/bin/sh
 
 command -v uci >/dev/null 2>&1 || exit 0
+
+# 数据盘挂载点：支持环境变量覆盖，默认 /mnt/sdb1
+DATA_MOUNT="${DATA_MOUNT:-/mnt/sdb1}"
 
 uci -q set fstab.@global[0].anon_mount='0'
 uci -q set fstab.@global[0].auto_mount='1'
@@ -444,24 +433,14 @@ if command -v config_load >/dev/null 2>&1; then
 
         local cfg="$1"
         local target
-        local uuid
 
         config_get target "$cfg" target
-        config_get uuid "$cfg" uuid
 
-        case "$target" in
+        # 通过挂载点匹配数据盘（不硬编码 UUID，换盘/克隆镜像后仍生效）
+        [ "$target" = "$DATA_MOUNT" ] || return 0
 
-            /mnt/sdb1)
-
-                [ "$uuid" = "c09e2735-a6a5-443f-9733-de75c1001542" ] ||
-                    return 0
-
-                uci -q set "fstab.$cfg.enabled=1"
-                uci -q set "fstab.$cfg.options=rw,noatime,nodiratime"
-
-                ;;
-
-        esac
+        uci -q set "fstab.$cfg.enabled=1"
+        uci -q set "fstab.$cfg.options=rw,noatime,nodiratime"
     }
 
     config_foreach set_data_mount mount
@@ -594,17 +573,10 @@ EOF
 chmod 0755 "${FILES_DIR}/etc/hotplug.d/block/15-automount"
 
 
-cat <<'EOF' > "${FILES_DIR}/etc/hotplug.d/block/10-mount"
-[ "$ACTION" = "add" -o "$ACTION" = "remove" ] &&
-    /sbin/block hotplug
-EOF
-
-chmod 0644 "${FILES_DIR}/etc/hotplug.d/block/10-mount"
-
-log_i "✅ 阶段 9 完成"
+log_i "✅ 阶段 8 完成"
 
 # ==============================================================================
-# 阶段 10：最终文件检查
+# 阶段 9：最终文件检查 + Shell 语法检查
 # ==============================================================================
 log_i "🔍 正在执行 DIY Part 2 静态文件检查..."
 
@@ -615,7 +587,6 @@ for required_file in \
     "${FILES_DIR}/etc/uci-defaults/99-zz-cron-trim" \
     "${FILES_DIR}/etc/init.d/mount-optimize" \
     "${FILES_DIR}/etc/init.d/network-accel" \
-    "${FILES_DIR}/etc/hotplug.d/block/10-mount" \
     "${FILES_DIR}/etc/hotplug.d/block/15-automount" \
     "${FILES_DIR}/etc/hotplug.d/block/93-optimize-io" \
     "${FILES_DIR}/etc/hotplug.d/mount/94-optimize-mount" \
@@ -634,9 +605,6 @@ done
 
 log_i "✅ 所有必需文件检查通过"
 
-# ==============================================================================
-# 阶段 12：Shell 语法检查
-# ==============================================================================
 log_i "🔍 正在执行 Shell 语法检查..."
 
 if command -v bash >/dev/null 2>&1; then
