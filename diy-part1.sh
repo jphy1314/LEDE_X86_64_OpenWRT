@@ -25,7 +25,6 @@ readonly SCRUB_LIST=(
     "nikki"
     "mosdns"
     "luci-theme-argon"
-    "argon" # 补全简写防御
 )
 
 # 待注入的自定义源 (已彻底移除末尾的 ;main 分支指定，采用默认分支)

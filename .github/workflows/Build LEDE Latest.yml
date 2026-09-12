@@ -592,8 +592,8 @@ jobs:
         with:
           name: OpenWrt_bin${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
           path: openwrt/bin
-          # [优化]: 限制中间产物保留 3 天，防止 GitHub 免费存储空间爆仓
-          retention-days: 3
+          # [优化]: 固件为最终交付产物，保留 30 天便于回溯；中间产物保留 3 天
+          retention-days: 30
 
       - name: Organize Files (Dynamic Path)
         id: organize
