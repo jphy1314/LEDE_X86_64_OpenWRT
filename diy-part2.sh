@@ -62,21 +62,6 @@ mkdir -p "${FILES_DIR}/etc/"{uci-defaults,init.d,hotplug.d/block,hotplug.d/mount
 mkdir -p "${FILES_DIR}/usr/bin"
 mkdir -p "${FILES_DIR}/www/luci-static/resources/view"
 
-# ==============================================================================
-# 阶段 0：清理 baresip
-# Argon 主题由 Workflow Step 10 负责克隆，避免双路径冲突
-# ============================================================================
-log_i "🔧 正在清理 baresip 循环依赖软件包..."
-
-find feeds/ \
-    -type d \
-    -name "baresip" \
-    -exec rm -rf {} + \
-    2>/dev/null || true
-
-rm -rf package/feeds/packages/baresip 2>/dev/null || true
-
-log_i "✅ baresip 冲突包已清除"
 
 # ==============================================================================
 # 阶段 1：系统初始化

@@ -31,7 +31,7 @@ jobs:
     
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 1
 
@@ -102,7 +102,7 @@ jobs:
       # 缓存键由 操作系统 + 分支/引用名 + 核心配置文件的 Hash 组合而成。
       # 当 x86_64.config、diy-part*.sh、工作流或 feeds 发生改动时自动更新缓存键，避免使用失效缓存。
       - name: Cache Ccache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: /home/runner/.ccache
           key: |
@@ -120,7 +120,7 @@ jobs:
       # 【企业级优化】：缓存下载好的源码包，但利用 ! 语法精准剔除 Go 语言的剧毒缓存库
       # ==============================================================================
       - name: Cache Downloaded Sources (DL)
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           # 使用多行语法，第一行包含全部，第二行用 ! 剔除掉容易中毒的目录
           path: |
@@ -559,7 +559,7 @@ jobs:
       # 【企业级可观测性】：如果编译崩溃，自动提取包含详细报错信息的黑匣子日志
       # ==============================================================================
       - name: Upload build logs on failure (崩溃黑匣子)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         if: failure()   # 只有在之前的步骤失败时才会触发
         with:
           name: OpenWrt_Compile_Logs_${{ steps.cache-vars.outputs.date }}
@@ -567,7 +567,7 @@ jobs:
           retention-days: 3
 
       - name: Upload Bin Directory
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         if: steps.compile.outputs.status == 'success' && env.UPLOAD_BIN_DIR == 'true'
         with:
           name: OpenWrt_bin${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
@@ -607,7 +607,7 @@ jobs:
           fi
 
       - name: Upload Firmware Directory
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         if: steps.organize.outputs.status == 'success'
         with:
           name: OpenWrt_firmware${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
