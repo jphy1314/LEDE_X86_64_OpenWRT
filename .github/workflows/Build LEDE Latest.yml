@@ -198,16 +198,40 @@ jobs:
           }
 
           # --------------------------------------------------------------------------
-          # [类 1]: 底层核心依赖包 (将在 package/ 与 feeds/ 中双重扫荡旧版，由 passwall_packages 提权覆盖)
+          # P2修复：包列表已提取到仓库根目录 `package-scrub-list.conf`
+          # 如需修改依赖包或 UI 包，直接编辑该文件，无需修改 Workflow
           # --------------------------------------------------------------------------
-          DEP_PKGS=(
-              xray-core v2ray-geodata sing-box chinadns-ng dns2socks hysteria
-              ipt2socks microsocks naiveproxy shadowsocks-libev shadowsocks-rust
-              shadowsocksr-libev simple-obfs tcping trojan-plus tuic-client
-              v2ray-plugin xray-plugin geoview shadow-tls
-              smartdns luci-app-smartdns
-              luci-theme-argon luci-app-argon-config
-          )
+          # 从外部文件读取 DEP_PKGS（类 1：核心依赖包，文件中 # --- 前为类 1）
+          load_dep_pkgs() {
+              local conf_file="${{ github.workspace }}/package-scrub-list.conf"
+              local -a pkgs=()
+              local line pkg
+              if [ -f "$conf_file" ]; then
+                  while IFS= read -r line || [[ -n "$line" ]]; do
+                      # 只读取第一部分（类 1），在 "# ---" 前停止
+                      [[ "$line" == *"# ---"* ]] && break
+                      [[ "$line" =~ ^[[:space:]]*# ]] && continue
+                      [[ -z "${line// /}" ]] && continue
+                      for pkg in $line; do
+                          [[ -n "$pkg" ]] && pkgs+=("$pkg")
+                      done
+                  done < "$conf_file"
+              fi
+              # 如果文件不存在或解析为空，使用内置备用列表
+              if [ ${#pkgs[@]} -gt 0 ]; then
+                  printf '%s\n' "${pkgs[@]}"
+              else
+                  printf '%s\n' \
+                      "xray-core" "v2ray-geodata" "sing-box" "chinadns-ng" "dns2socks" "hysteria" \
+                      "ipt2socks" "microsocks" "naiveproxy" "shadowsocks-libev" "shadowsocks-rust" \
+                      "shadowsocksr-libev" "simple-obfs" "tcping" "trojan-plus" "tuic-client" \
+                      "v2ray-plugin" "xray-plugin" "geoview" "shadow-tls" \
+                      "smartdns" "luci-app-smartdns" "luci-theme-argon" "luci-app-argon-config"
+              fi
+          }
+
+          # 读取到数组
+          readarray -t DEP_PKGS < <(load_dep_pkgs)
           
           # --------------------------------------------------------------------------
           # [类 2]: UI 主程序 (必须从 package/ 和 feeds/ 里双重删光，确立新版 UI 唯一性)
