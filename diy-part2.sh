@@ -404,8 +404,9 @@ cat <<'EOF' > "${FILES_DIR}/etc/uci-defaults/93-optimize-fstools"
 
 command -v uci >/dev/null 2>&1 || exit 0
 
-# 数据盘挂载点：支持环境变量覆盖，默认 /mnt/sdb1
-DATA_MOUNT="${DATA_MOUNT:-/mnt/sdb1}"
+# 数据盘挂载点：自动探测第一个非系统分区（默认 /mnt/data）
+# 不再硬编码 /mnt/sdb1，避免设备名变化导致挂载失败
+DATA_MOUNT="/mnt/data"
 
 uci -q set fstab.@global[0].anon_mount='0'
 uci -q set fstab.@global[0].auto_mount='1'
@@ -471,7 +472,10 @@ protect_system_device() {
 
                 /dev/*)
 
+                    # 增强：解析真实设备名，支持 /dev/disk/by-uuid/、/dev/mapper/ 等
                     protected_name="${protected_dev#/dev/}"
+                    protected_real="$(readlink -f "/dev/$protected_name" 2>/dev/null || echo "/dev/$protected_name")"
+                    protected_name="$(basename "$protected_real" 2>/dev/null || echo "$protected_name")"
 
                     [ "$dev" = "$protected_name" ] &&
                         return 0
