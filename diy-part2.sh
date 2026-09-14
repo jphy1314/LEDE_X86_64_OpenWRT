@@ -154,7 +154,7 @@ log_i "✅ 阶段 2 完成"
 # ==============================================================================
 log_i "🔥 正在注入 Passwall 默认代理配置..."
 
-cat <<'EOF' > "${FILES_DIR}/etc/uci-defaults/92-passwall-defaults"
+cat <<'DEFAULTS_EOF' > "${FILES_DIR}/etc/uci-defaults/92-passwall-defaults"
 #!/bin/sh
 
 if [ -f /etc/config/passwall ]; then
@@ -165,16 +165,16 @@ if [ -f /usr/share/passwall/0_default_config ]; then
     cp -f /usr/share/passwall/0_default_config /etc/config/passwall
 fi
 
-uci -q batch <<-EOF
+uci -q batch <<'UCI_EOF'
     set passwall.@global[0].enabled='1'
     set passwall.@global[0].socks_enabled='1'
     set passwall.@global[0].tcp_proxy_mode='proxy'
     set passwall.@global[0].udp_proxy_mode='proxy'
     commit passwall
-EOF
+UCI_EOF
 
 exit 0
-EOF
+DEFAULTS_EOF
 
 chmod 0755 "${FILES_DIR}/etc/uci-defaults/92-passwall-defaults"
 
