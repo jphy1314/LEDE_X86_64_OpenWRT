@@ -23,10 +23,6 @@
 #    - 自动 TRIM
 #
 # 5. 智能网卡硬件加速
-#
-# 6. gettext host 编译修复
-#
-# 7. baresip 循环依赖清理
 # ==============================================================================
 
 set -euo pipefail
@@ -80,7 +76,8 @@ uci -q set system.@system[0].hostname="\$TARGET_HOSTNAME"
 uci -q commit network
 uci -q commit system
 
-if command -v uci >/dev/null 2>&1; then
+# 仅在 Samba4 配置文件已存在时进行定制优化，避免阻断默认模板生成
+if [ -f /etc/config/samba4 ] && command -v uci >/dev/null 2>&1; then
 
     if ! uci -q get samba4.@samba[0] >/dev/null 2>&1; then
         uci add samba4 samba
@@ -113,7 +110,7 @@ cat <<'EOF' > "${FILES_DIR}/etc/uci-defaults/91-vpn-firewall"
 
 if command -v uci >/dev/null 2>&1; then
 
-    # IPSec IKE
+    # IPSec IKE (兼容 Firewall4 规范的列表化端口定义)
     uci -q delete firewall.ipsec_allow
     uci set firewall.ipsec_allow=rule
     uci set firewall.ipsec_allow.name='Allow-IPsec'
@@ -131,7 +128,7 @@ if command -v uci >/dev/null 2>&1; then
     uci set firewall.ipsec_esp.proto='esp'
     uci set firewall.ipsec_esp.target='ACCEPT'
 
-    # WireGuard
+    # WireGuard (统一采用 Firewall4 规范的列表化端口定义)
     uci -q delete firewall.wg_allow
     uci set firewall.wg_allow=rule
     uci set firewall.wg_allow.name='Allow-WireGuard'
@@ -158,19 +155,21 @@ log_i "🔥 正在注入 Passwall 默认代理配置..."
 cat <<'DEFAULTS_EOF' > "${FILES_DIR}/etc/uci-defaults/92-passwall-defaults"
 #!/bin/sh
 
-if [ -f /etc/config/passwall ]; then
-    exit 0
-fi
+command -v uci >/dev/null 2>&1 || exit 0
 
-if [ -f /usr/share/passwall/0_default_config ]; then
+# 若不存在配置文件且有模板，则先恢复默认配置模板
+if [ ! -f /etc/config/passwall ] && [ -f /usr/share/passwall/0_default_config ]; then
     cp -f /usr/share/passwall/0_default_config /etc/config/passwall
 fi
 
+[ -f /etc/config/passwall ] || exit 0
+
+# 采用 Passwall 官方标准模式：chnroute (中国列表外分流)
 uci -q batch <<'UCI_EOF'
-    set passwall.@global[0].enabled='1'
     set passwall.@global[0].socks_enabled='1'
-    set passwall.@global[0].tcp_proxy_mode='proxy'
-    set passwall.@global[0].udp_proxy_mode='proxy'
+    set passwall.@global[0].tcp_proxy_mode='chnroute'
+    set passwall.@global[0].udp_proxy_mode='chnroute'
+    set passwall.@global[0].dns_mode='chinadns-ng'
     commit passwall
 UCI_EOF
 
@@ -315,7 +314,7 @@ BASE="/sys/block/\$dev"
 
 [ -d "\$BASE" ] || exit 0
 
-ROT=$(cat "\$BASE/queue/rotational" 2>/dev/null || echo 1)
+ROT=\$(cat "\$BASE/queue/rotational" 2>/dev/null || echo 1)
 
 if [ -f "\$BASE/queue/read_ahead_kb" ]; then
 
@@ -436,34 +435,35 @@ cat <<'EOF' > "${FILES_DIR}/etc/uci-defaults/93-optimize-fstools"
 
 command -v uci >/dev/null 2>&1 || exit 0
 
-# 数据盘挂载点：自动探测第一个非系统分区（默认 /mnt/data）
-# 不再硬编码 /mnt/sdb1，避免设备名变化导致挂载失败
-DATA_MOUNT="/mnt/data"
-
-uci -q set fstab.@global[0].anon_mount='0'
-uci -q set fstab.@global[0].auto_mount='1'
-
+# 引入基础库确保 config_load 和 config_foreach 可用
 if [ -f /lib/functions.sh ]; then
     . /lib/functions.sh
+
+    # 数据盘挂载点：自动探测第一个非系统分区（默认 /mnt/data）
+    # 不再硬编码 /mnt/sdb1，避免设备名变化导致挂载失败
+    DATA_MOUNT="/mnt/data"
+
+    uci -q set fstab.@global[0].anon_mount='0'
+    uci -q set fstab.@global[0].auto_mount='1'
+
+    config_load fstab 2>/dev/null
+
+    set_data_mount() {
+
+        local cfg="$1"
+        local target
+
+        config_get target "$cfg" target
+
+        # 通过挂载点匹配数据盘（不硬编码 UUID，换盘/克隆镜像后仍生效）
+        [ "$target" = "$DATA_MOUNT" ] || return 0
+
+        uci -q set "fstab.$cfg.enabled=1"
+        uci -q set "fstab.$cfg.options=rw,noatime,nodiratime"
+    }
+
+    config_foreach set_data_mount mount
 fi
-
-config_load fstab
-
-set_data_mount() {
-
-    local cfg="$1"
-    local target
-
-    config_get target "$cfg" target
-
-    # 通过挂载点匹配数据盘（不硬编码 UUID，换盘/克隆镜像后仍生效）
-    [ "$target" = "$DATA_MOUNT" ] || return 0
-
-    uci -q set "fstab.$cfg.enabled=1"
-    uci -q set "fstab.$cfg.options=rw,noatime,nodiratime"
-}
-
-config_foreach set_data_mount mount
 
 uci -q commit fstab
 
@@ -493,8 +493,16 @@ protect_system_device() {
     local dev="$1"
     local protected
     local protected_name
+    local protected_real
 
-    for protected in /boot /rom /overlay; do
+    # 1. 优先解析 /dev/root 对应真实底层物理分区（适配 x86 ext4 根系统）
+    if [ -e "/dev/root" ]; then
+        protected_real="$(readlink -f /dev/root 2>/dev/null || true)"
+        [ -n "$protected_real" ] && [ "$dev" = "$(basename "$protected_real")" ] && return 0
+    fi
+
+    # 2. 遍历保护包含 "/"、"/boot"、"/rom"、"/overlay" 在内的全量系统挂载点
+    for protected in / /boot /rom /overlay; do
 
         while read -r protected_dev protected_mp _ _ _; do
 
@@ -521,6 +529,7 @@ protect_system_device() {
     done
 
 
+    # 3. 保护 BIOS / GPT 保留分区
     case "$dev" in
         sd[[:alnum:]]*128|nvme[0-9]*p128|mmcblk[0-9]*p128)
             return 0
@@ -642,15 +651,11 @@ log_i "======================================================"
 log_i "🎉 DIY Part 2 最终版本生成完成"
 log_i "======================================================"
 log_i "🌐 LAN：${TARGET_IP}"
-log_i "🛡️ IPSec：ipsec-vpnd 唯一管理"
-log_i "🔗 WireGuard：保留"
-log_i "🔥 IPSec：IKE / NAT-T / ESP 防火墙规则保留"
-log_i "🟢 LuCI：保存后自动 reload ipsec-vpnd"
-log_i "🔴 LuCI：关闭后自动 reload 并停止 IPSec"
-log_i "💾 存储：fstab + 自动挂载"
+log_i "🔗 WireGuard：保留 (fw4 列表化端口 51820)"
+log_i "🔥 IPSec：IKE / NAT-T (500/4500) / ESP 防火墙规则保留"
+log_i "🛡️ Passwall：默认中国列表分流 (chnroute) + ChinaDNS-NG"
+log_i "💾 存储：fstab + 自动挂载 (支持 ext4 rootfs 及系统分区防御)"
 log_i "⚡ IO：SSD/HDD read_ahead"
 log_i "♻️ TRIM：自动计划任务"
 log_i "🌐 NIC：智能 Offload"
-log_i "🔧 gettext：BISON_LOCALEDIR 修复"
-log_i "🔧 baresip：循环依赖清理"
 log_i "======================================================"
