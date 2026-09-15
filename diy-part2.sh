@@ -118,7 +118,8 @@ if command -v uci >/dev/null 2>&1; then
     uci set firewall.ipsec_allow=rule
     uci set firewall.ipsec_allow.name='Allow-IPsec'
     uci set firewall.ipsec_allow.src='wan'
-    uci set firewall.ipsec_allow.dest_port='500 4500'
+    uci add_list firewall.ipsec_allow.dest_port='500'
+    uci add_list firewall.ipsec_allow.dest_port='4500'
     uci set firewall.ipsec_allow.proto='udp'
     uci set firewall.ipsec_allow.target='ACCEPT'
 
@@ -135,7 +136,7 @@ if command -v uci >/dev/null 2>&1; then
     uci set firewall.wg_allow=rule
     uci set firewall.wg_allow.name='Allow-WireGuard'
     uci set firewall.wg_allow.src='wan'
-    uci set firewall.wg_allow.dest_port='51820'
+    uci add_list firewall.wg_allow.dest_port='51820'
     uci set firewall.wg_allow.proto='udp'
     uci set firewall.wg_allow.target='ACCEPT'
 
@@ -442,27 +443,27 @@ DATA_MOUNT="/mnt/data"
 uci -q set fstab.@global[0].anon_mount='0'
 uci -q set fstab.@global[0].auto_mount='1'
 
-if command -v config_load >/dev/null 2>&1; then
-
-    config_load fstab 2>/dev/null
-
-    set_data_mount() {
-
-        local cfg="$1"
-        local target
-
-        config_get target "$cfg" target
-
-        # 通过挂载点匹配数据盘（不硬编码 UUID，换盘/克隆镜像后仍生效）
-        [ "$target" = "$DATA_MOUNT" ] || return 0
-
-        uci -q set "fstab.$cfg.enabled=1"
-        uci -q set "fstab.$cfg.options=rw,noatime,nodiratime"
-    }
-
-    config_foreach set_data_mount mount
-
+if [ -f /lib/functions.sh ]; then
+    . /lib/functions.sh
 fi
+
+config_load fstab
+
+set_data_mount() {
+
+    local cfg="$1"
+    local target
+
+    config_get target "$cfg" target
+
+    # 通过挂载点匹配数据盘（不硬编码 UUID，换盘/克隆镜像后仍生效）
+    [ "$target" = "$DATA_MOUNT" ] || return 0
+
+    uci -q set "fstab.$cfg.enabled=1"
+    uci -q set "fstab.$cfg.options=rw,noatime,nodiratime"
+}
+
+config_foreach set_data_mount mount
 
 uci -q commit fstab
 
