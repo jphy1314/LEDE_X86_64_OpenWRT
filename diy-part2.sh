@@ -58,6 +58,34 @@ mkdir -p "${FILES_DIR}/etc/"{uci-defaults,init.d,hotplug.d/block,hotplug.d/mount
 mkdir -p "${FILES_DIR}/usr/bin"
 mkdir -p "${FILES_DIR}/www/luci-static/resources/view"
 
+# --------------------------------------------------------------------------
+# 阶段 0：深度清理冲突包 (根据 package-scrub-list.conf)
+# --------------------------------------------------------------------------
+log_i "🔥 正在执行深度包清理 (Scrub)..."
+
+# 动态定位配置文件路径
+SCRUB_CONF="${GITHUB_WORKSPACE:-.}/package-scrub-list.conf"
+[ ! -f "$SCRUB_CONF" ] && SCRUB_CONF="package-scrub-list.conf"
+
+if [ -f "$SCRUB_CONF" ]; then
+    while IFS= read -r pkg || [ -n "$pkg" ]; do
+        # POSIX 兼容：过滤注释行与空行，同时去除首尾空白
+        pkg=$(echo "$pkg" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+        case "$pkg" in
+            \#*|"") continue ;;
+        esac
+        
+        log_i "清理包: $pkg"
+        # 兼容深度清理，消除 feeds/ 与 package/ 下的重复定义
+        find package/ feeds/ -maxdepth 3 -type d -name "$pkg" -exec rm -rf {} + 2>/dev/null || true
+    done < "$SCRUB_CONF"
+else
+    log_w "未找到清理配置文件: $SCRUB_CONF，跳过深度清理"
+fi
+
+log_i "✅ 深度清理完成"
+
+
 
 # ==============================================================================
 # 阶段 1：系统初始化
@@ -67,14 +95,12 @@ log_i "🔥 正在注入系统初始化配置..."
 cat <<EOF > "${FILES_DIR}/etc/uci-defaults/90-system-init"
 #!/bin/sh
 
-TARGET_IP='${TARGET_IP}'
-TARGET_HOSTNAME='${TARGET_HOSTNAME}'
-
-uci -q set network.lan.ipaddr="\$TARGET_IP"
-uci -q set system.@system[0].hostname="\$TARGET_HOSTNAME"
-
-uci -q commit network
-uci -q commit system
+uci -q batch <<UCI_EOF
+set network.lan.ipaddr='${TARGET_IP}'
+set system.@system[0].hostname='${TARGET_HOSTNAME}'
+commit network
+commit system
+UCI_EOF
 
 # 仅在 Samba4 配置文件已存在时进行定制优化，避免阻断默认模板生成
 if [ -f /etc/config/samba4 ] && command -v uci >/dev/null 2>&1; then
