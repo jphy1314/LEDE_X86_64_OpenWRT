@@ -174,39 +174,6 @@ chmod 0755 "${FILES_DIR}/etc/uci-defaults/91-vpn-firewall"
 log_i "✅ 阶段 2 完成"
 
 # ==============================================================================
-# 阶段 2.5：Passwall 默认代理配置
-# ==============================================================================
-log_i "🔥 正在注入 Passwall 默认代理配置..."
-
-cat <<'DEFAULTS_EOF' > "${FILES_DIR}/etc/uci-defaults/92-passwall-defaults"
-#!/bin/sh
-
-command -v uci >/dev/null 2>&1 || exit 0
-
-# 若不存在配置文件且有模板，则先恢复默认配置模板
-if [ ! -f /etc/config/passwall ] && [ -f /usr/share/passwall/0_default_config ]; then
-    cp -f /usr/share/passwall/0_default_config /etc/config/passwall
-fi
-
-[ -f /etc/config/passwall ] || exit 0
-
-# 采用 Passwall 官方标准模式：chnroute (中国列表外分流)
-uci -q batch <<'UCI_EOF'
-    set passwall.@global[0].socks_enabled='1'
-    set passwall.@global[0].tcp_proxy_mode='chnroute'
-    set passwall.@global[0].udp_proxy_mode='chnroute'
-    set passwall.@global[0].dns_mode='chinadns-ng'
-    commit passwall
-UCI_EOF
-
-exit 0
-DEFAULTS_EOF
-
-chmod 0755 "${FILES_DIR}/etc/uci-defaults/92-passwall-defaults"
-
-log_i "✅ 阶段 2.5 完成"
-
-# ==============================================================================
 # 阶段 3：挂载优化
 # ==============================================================================
 log_i "🔥 正在注入挂载提速 Hook..."
@@ -639,7 +606,6 @@ log_i "🔍 正在执行 DIY Part 2 静态文件检查..."
 for required_file in \
     "${FILES_DIR}/etc/uci-defaults/90-system-init" \
     "${FILES_DIR}/etc/uci-defaults/91-vpn-firewall" \
-    "${FILES_DIR}/etc/uci-defaults/92-passwall-defaults" \
     "${FILES_DIR}/etc/uci-defaults/93-optimize-fstools" \
     "${FILES_DIR}/etc/uci-defaults/99-zz-cron-trim" \
     "${FILES_DIR}/etc/init.d/mount-optimize" \
