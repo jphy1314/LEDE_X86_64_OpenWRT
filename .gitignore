@@ -1,0 +1,10 @@
+# Local work artifacts / transient build noise
+AGENTS.md
+memory/
+run_*.log
+
+# Common editor and system noise
+*.swp
+*.swo
+*~
+.DS_Store
