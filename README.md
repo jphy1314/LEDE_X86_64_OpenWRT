@@ -49,6 +49,10 @@ Firewall:
 PassWall:
   SOCKS Enabled
   TCP / UDP Proxy Mode
+  Firewall Tool: iptables
+
+SmartDNS:
+  DNS Proxy with dnsmasq
 ```
 
 首次启动后，请根据实际网络环境配置：
@@ -59,6 +63,8 @@ PassWall:
 * DDNS
 * IPSec / WireGuard
 * PassWall 节点及代理策略
+
+PassWall 与 SmartDNS 联用时，建议将 PassWall 高级设置中的“首选防火墙工具”设置为 `iptables`。当前固件已经包含 `iptables-nft`、`ipset`、PassWall iptables 透明代理等兼容组件；相比原生 `nftables` 路径，`iptables` 路径在 DNS 分流和动态集合注入上更稳定，可减少 SmartDNS 状态异常或 PassWall DNS 显示红色（`NOT RUNNING`）的问题。详细说明见 [`docs/Passwall-SmartDNS-Firewall-Mode.md`](docs/Passwall-SmartDNS-Firewall-Mode.md)。
 
 ## 🎯 Target Platform
 
@@ -120,6 +126,8 @@ package-scrub-list.conf
 以及 GitHub Actions 实际构建结果为准。
 
 使用前建议根据自身硬件及网络环境进行测试，尤其是 IPv6、SmartDNS、PassWall、IPSec 和 WireGuard 等相关功能。
+
+虽然当前固件底层已采用 Firewall4 / nftables，但不建议在未完整验证前移除 `iptables-nft`、`ipset`、PassWall iptables 透明代理等兼容组件。PassWall 的动态 DNS 分流依赖稳定的集合与规则注入链路，这些兼容组件是当前 SmartDNS + PassWall 组合长期稳定运行的重要保障。
 
 ## 🙏 Thanks
 
