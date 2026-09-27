@@ -75,9 +75,17 @@ if [ -f "$SCRUB_CONF" ]; then
             \#*|"") continue ;;
         esac
         
+        # 安全校验：只允许包名形如 [A-Za-z0-9][A-Za-z0-9._-]* 的白名单字符集
+        # 拒绝路径分隔符、通配符、点号、空格、shell 元字符等，防止误删与路径穿越
+        if ! printf '%s' "$pkg" | grep -qE '^[A-Za-z0-9][A-Za-z0-9._-]*$'; then
+            log_w "拒绝非法 pkg 名: $pkg"
+            continue
+        fi
+
         log_i "清理包: $pkg"
         # 兼容深度清理，消除 feeds/ 与 package/ 下的重复定义
-        find package/ feeds/ -maxdepth 3 -type d -name "$pkg" -exec rm -rf {} + 2>/dev/null || true
+        find package/ feeds/ -maxdepth 3 -type d -name "$pkg" -print0 \
+            | xargs -0 -r rm -rf -- 2>/dev/null || true
     done < "$SCRUB_CONF"
 else
     log_w "未找到清理配置文件: $SCRUB_CONF，跳过深度清理"
@@ -575,7 +583,7 @@ MNT="/mnt/$DEVNAME"
 
 mkdir -p "$MNT" 2>/dev/null || exit 0
 
-chmod 777 "$MNT" 2>/dev/null || true
+chmod 0755 "$MNT" 2>/dev/null || true
 
 
 mount \

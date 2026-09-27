@@ -31,13 +31,13 @@ jobs:
     
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 1
 
       # 释放 GitHub Runner 的磁盘空间，OpenWrt 编译通常需要 30GB+ 空间
       - name: Free Disk Space
-        uses: jlumbroso/free-disk-space@main
+        uses: jlumbroso/free-disk-space@36e9a5af4eddb91fc11aec4c6f6f79b3cc0cb523 # main HEAD (repo has no tags)
         with:
           preinstalled-runtimes: true
           android: true
@@ -102,7 +102,7 @@ jobs:
       # 缓存键由 操作系统 + 分支/引用名 + 核心配置文件的 Hash 组合而成。
       # 当 x86_64.config、diy-part*.sh、工作流或 feeds 发生改动时自动更新缓存键，避免使用失效缓存。
       - name: Cache Ccache
-        uses: actions/cache@v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: /home/runner/.ccache
           key: |
@@ -120,7 +120,7 @@ jobs:
       # 【企业级优化】：缓存下载好的源码包，但利用 ! 语法精准剔除 Go 语言的剧毒缓存库
       # ==============================================================================
       - name: Cache Downloaded Sources (DL)
-        uses: actions/cache@v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           # 使用多行语法，第一行包含全部，第二行用 ! 剔除掉容易中毒的目录
           path: |
@@ -195,6 +195,23 @@ jobs:
                   sleep 5
               done
               log_e "命令失败已达最大重试次数: $*"
+          }
+
+          # --------------------------------------------------------------------------
+          # 【供应链加固】pin_clone：clone 上游 + 校验 HEAD 与预期 SHA 匹配
+          # 用法: pin_clone <url> <expected_sha> <dest_dir>
+          # 原理: 上游 repo 未打 tag，直接 pin SHA；若 HEAD 与 pin 不匹配，fail-fast，
+          #       强制人工 review 后更新 pin（防止上游漂移或恶意 push 静默进入固件）。
+          # --------------------------------------------------------------------------
+          pin_clone() {
+              local url="$1" expected="$2" dest="$3"
+              retry git clone --depth 1 "$url" "$dest"
+              local actual
+              actual=$(git -C "$dest" rev-parse HEAD)
+              if [ "$actual" != "$expected" ]; then
+                  log_e "UPSTREAM DRIFT in $url | pinned=$expected actual=$actual - review upstream commits then update SHA in workflow if acceptable"
+              fi
+              log_i "pinned OK: $(basename "$url") @ $(echo "$actual" | cut -c1-12)"
           }
 
           # --------------------------------------------------------------------------
@@ -305,17 +322,17 @@ jobs:
           # ----------------------------
           log_i "4. 克隆社区专属插件..."
           mkdir -p package/community
-          retry git clone --depth 1 https://github.com/pymumu/openwrt-smartdns.git package/smartdns
-          retry git clone --depth 1 https://github.com/pymumu/luci-app-smartdns.git package/luci-app-smartdns
-          retry git clone --depth 1 https://github.com/jerrykuku/luci-theme-argon.git package/community/luci-theme-argon
-          retry git clone --depth 1 https://github.com/jerrykuku/luci-app-argon-config.git package/community/luci-app-argon-config
+          pin_clone https://github.com/pymumu/openwrt-smartdns.git 4be700dc3366275605a2a1996865d83ea9bb9a18 package/smartdns
+          pin_clone https://github.com/pymumu/luci-app-smartdns.git 581e5e816d92d3a663b1b2e331e3f21685968cf1 package/luci-app-smartdns
+          pin_clone https://github.com/jerrykuku/luci-theme-argon.git 0546f975a66796a89ff988524290c4a2e2d01855 package/community/luci-theme-argon
+          pin_clone https://github.com/jerrykuku/luci-app-argon-config.git 3e099a37c3f71d0de677f1b6b0f4bffd57d91dac package/community/luci-app-argon-config
 
           # StrongSwan / ipsec-vpnd 刷新
           # 说明：
           # - coolsnoowolf/packages 里现在已有 strongswan 6.0.7，并且包含 swanctl 包；
           # - 这里固定使用当前最新维护版本的 luci-app-ipsec-vpnd。
           rm -rf feeds/luci/applications/luci-app-ipsec-vpnd package/luci-app-ipsec-vpnd
-          retry git clone --depth 1 https://github.com/szwjp/luci-app-ipsec-vpnd.git package/luci-app-ipsec-vpnd
+          pin_clone https://github.com/szwjp/luci-app-ipsec-vpnd.git f3017fb3567679561403fa7b1e6b45ef5199e064 package/luci-app-ipsec-vpnd
 
           # 【架构师补丁】：彻底消灭 luci-theme-argon 报 wget-any 不存在的警告
           log_i "🔧 正在修补 Argon 主题依赖警告..."
@@ -603,7 +620,7 @@ jobs:
       # 【企业级可观测性】：如果编译崩溃，自动提取包含详细报错信息的黑匣子日志
       # ==============================================================================
       - name: Upload build logs on failure (崩溃黑匣子)
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         if: failure()   # 只有在之前的步骤失败时才会触发
         with:
           name: OpenWrt_Compile_Logs_${{ steps.cache-vars.outputs.date }}
@@ -611,7 +628,7 @@ jobs:
           retention-days: 3
 
       - name: Upload Bin Directory
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         if: steps.compile.outputs.status == 'success' && env.UPLOAD_BIN_DIR == 'true'
         with:
           name: OpenWrt_bin${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
@@ -651,7 +668,7 @@ jobs:
           fi
 
       - name: Upload Firmware Directory
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         if: steps.organize.outputs.status == 'success'
         with:
           name: OpenWrt_firmware${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
