@@ -473,6 +473,22 @@ jobs:
           #   - 有 Makefile 里存在但 .config 里未启用的 → 忽略（正常）
           #   - Makefile 解析失败（结构变化）→ log_w 不阻断，避免误杀
           #
+          log_i "✅ Feeds 处理完成，底层核心已成功解绑与提权升级！"
+
+      - name: Generate Configuration (配置解耦与探针注入)
+        working-directory: ${{ github.workspace }}/openwrt
+        run: |
+          set -euo pipefail
+
+          # 【核心修复】：补齐全部日志函数，防止隔离环境调用抛出 command not found
+          log_i() { echo -e "\e[32m[INFO] $1\e[0m"; }
+          log_w() { echo -e "\e[33m[WARN] $1\e[0m"; }
+          log_e() { echo -e "\e[31m[ERROR] $1\e[0m"; exit 1; }
+          
+          # 1. 导入独立的基础配置清单
+          cat ${{ github.workspace }}/D525_x86_64.config > .config
+
+          # StrongSwan 模块名校验：在 .config 加载后立即跑
           verify_strongswan_modules() {
               local swan_mk="feeds/packages/net/strongswan/Makefile"
               if [ ! -f "$swan_mk" ]; then
@@ -545,20 +561,6 @@ jobs:
           }
           verify_strongswan_modules
 
-          log_i "✅ Feeds 处理完成，底层核心已成功解绑与提权升级！"
-
-      - name: Generate Configuration (配置解耦与探针注入)
-        working-directory: ${{ github.workspace }}/openwrt
-        run: |
-          set -euo pipefail
-
-          # 【核心修复】：补齐全部日志函数，防止隔离环境调用抛出 command not found
-          log_i() { echo -e "\e[32m[INFO] $1\e[0m"; }
-          log_w() { echo -e "\e[33m[WARN] $1\e[0m"; }
-          log_e() { echo -e "\e[31m[ERROR] $1\e[0m"; exit 1; }
-          
-          # 1. 导入独立的基础配置清单
-          cat ${{ github.workspace }}/D525_x86_64.config > .config
           
           # 2. 运行 DIY Part 2 脚本 (移除了物理强塞内核参数的逻辑)
           SCRIPT="${{ github.workspace }}/diy-part2.sh"
