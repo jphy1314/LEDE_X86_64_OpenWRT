@@ -58,45 +58,6 @@ mkdir -p "${FILES_DIR}/etc/"{uci-defaults,init.d,hotplug.d/block,hotplug.d/mount
 mkdir -p "${FILES_DIR}/usr/bin"
 mkdir -p "${FILES_DIR}/www/luci-static/resources/view"
 
-# --------------------------------------------------------------------------
-# 阶段 0：深度清理冲突包 (根据 package-scrub-list.conf)
-# --------------------------------------------------------------------------
-log_i "🔥 正在执行深度包清理 (Scrub)..."
-
-# 动态定位配置文件路径
-SCRUB_CONF="${GITHUB_WORKSPACE:-.}/package-scrub-list.conf"
-[ ! -f "$SCRUB_CONF" ] && SCRUB_CONF="package-scrub-list.conf"
-
-if [ -f "$SCRUB_CONF" ]; then
-    # 配置文件格式：每行可含多个包名（空格分隔），# 开头为注释
-    # 外层按行读 → 内层按空白拆词 → 逐词做白名单校验
-    while IFS= read -r line || [ -n "$line" ]; do
-        # 剥离行内注释：# 前的内容保留
-        line="${line%%#*}"
-        # 跳过空行与纯空白行
-        [ -z "${line// /}" ] && continue
-
-        for pkg in $line; do
-            [ -z "$pkg" ] && continue
-
-            # 安全校验：只允许包名形如 [A-Za-z0-9][A-Za-z0-9._-]* 的白名单字符集
-            # 拒绝路径分隔符、通配符、点号、空格、shell 元字符等，防止误删与路径穿越
-            if ! printf '%s' "$pkg" | grep -qE '^[A-Za-z0-9][A-Za-z0-9._-]*$'; then
-                log_w "拒绝非法 pkg 名: $pkg"
-                continue
-            fi
-
-            log_i "清理包: $pkg"
-            # 兼容深度清理，消除 feeds/ 与 package/ 下的重复定义
-            find package/ feeds/ -maxdepth 3 -type d -name "$pkg" -print0 \
-                | xargs -0 -r rm -rf -- 2>/dev/null || true
-        done
-    done < "$SCRUB_CONF"
-else
-    log_w "未找到清理配置文件: $SCRUB_CONF，跳过深度清理"
-fi
-
-log_i "✅ 深度清理完成"
 
 
 
