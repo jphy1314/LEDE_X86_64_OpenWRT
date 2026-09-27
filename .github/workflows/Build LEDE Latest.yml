@@ -26,8 +26,10 @@ env:
 jobs:
   build:
     runs-on: ubuntu-24.04
-    # [优化]: 全局超时熔断，防止编译死锁耗尽 GitHub 免费额度 (5小时)
-    timeout-minutes: 360 
+    # [优化]: 全局超时熔断，防止编译死锁耗尽 GitHub 免费额度
+    # [数据依据]: 历史 CI 最长 2h16m (2026-09-23 last-known-good), 冷启动约 3h, 240min 有 33% 余量
+    #             若冷启动超 200min, 应检查 ccache restore 是否失效
+    timeout-minutes: 240 
     
     steps:
       - name: Checkout Code
@@ -450,6 +452,99 @@ jobs:
           # ----------------------------
           [ -d feeds ] || log_e "feeds 目录不存在"
           [ -d package ] || log_e "package 目录不存在"
+          # ----------------------------
+          # 6.5 StrongSwan 模块名存在性校验（防上游静默改名）
+          # ----------------------------
+          # 【背景】
+          #   feeds/packages/net/strongswan/Makefile 的 PKG_MOD_AVAILABLE 数组
+          #   列出所有可用模块，模块名一旦变更（如 kernel-libipsec -> kernel-netlink
+          #   或反之），.config 里 CONFIG_PACKAGE_strongswan-mod-* 就会变成
+          #   "which does not exist" 警告，IPSec 功能静默降级。
+          #
+          # 【CI 现状】
+          #   当前 config 启用 xauth-generic + kernel-libipsec。上一次编译 (R26.09.27)
+          #   曾出现 "strongswan-mod-xauth-generic, which does not exist" warning
+          #   （defconfig 早于 feeds install 时的假阳性），需要显式校验真实可用集。
+          #
+          # 【策略】
+          #   从 feeds/packages/net/strongswan/Makefile 抓 PKG_MOD_AVAILABLE 数组，
+          #   与 .config 里所有 CONFIG_PACKAGE_strongswan-mod-*=y 逐项比对。
+          #   - 有 .config 里启用但 Makefile 里不存在的 → log_e fail-fast
+          #   - 有 Makefile 里存在但 .config 里未启用的 → 忽略（正常）
+          #   - Makefile 解析失败（结构变化）→ log_w 不阻断，避免误杀
+          #
+          verify_strongswan_modules() {
+              local swan_mk="feeds/packages/net/strongswan/Makefile"
+              if [ ! -f "$swan_mk" ]; then
+                  log_w "跳过 StrongSwan 校验：$swan_mk 不存在（可能是 feeds 拉取失败）"
+                  return 0
+              fi
+
+              # 抓 PKG_MOD_AVAILABLE:= ... 之后的所有模块名，直到空行 / \ 结束
+              local -a available=()
+              local in_list=0
+              while IFS= read -r line; do
+                  if [[ "$line" == "PKG_MOD_AVAILABLE:="* ]]; then
+                      in_list=1
+                      # 抓这一行剩下的模块（如 "addrblock \"）
+                      local rest="${line#*=}"
+                      rest="${rest//\//}"  # 去反斜杠
+                      # 处理这一行的所有 token
+                      for tok in $rest; do
+                          # 只收字母+短横（跳过 $(if ... ,...) 里的条件宏）
+                          if [[ "$tok" =~ ^[a-z0-9-]+$ ]]; then
+                              available+=("$tok")
+                          fi
+                      done
+                      continue
+                  fi
+                  if [ $in_list -eq 1 ]; then
+                      # 空行或遇到非续行符则结束
+                      [[ -z "$line" ]] && break
+                      [[ "$line" != *"\\" ]] && break
+                      for tok in ${line//\//}; do
+                          if [[ "$tok" =~ ^[a-z0-9-]+$ ]]; then
+                              available+=("$tok")
+                          fi
+                      done
+                  fi
+              done < "$swan_mk"
+
+              if [ ${#available[@]} -lt 5 ]; then
+                  log_w "StrongSwan PKG_MOD_AVAILABLE 解析异常（只解析到 ${#available[@]} 项），跳过校验"
+                  return 0
+              fi
+
+              log_i "StrongSwan 可用模块: ${available[*]:0:15} ... (共 ${#available[@]} 项)"
+
+              # 从 .config 里抓所有已启用的 strongswan-mod-*
+              local -a enabled=()
+              while IFS= read -r line; do
+                  local mod="${line#CONFIG_PACKAGE_strongswan-mod-}"
+                  mod="${mod%=y}"
+                  enabled+=("$mod")
+              done < <(grep '^CONFIG_PACKAGE_strongswan-mod-.*=y$' .config 2>/dev/null)
+
+              local missing=()
+              for mod in "${enabled[@]}"; do
+                  local found=0
+                  for av in "${available[@]}"; do
+                      [[ "$mod" == "$av" ]] && { found=1; break; }
+                  done
+                  if [ $found -eq 0 ]; then
+                      missing+=("$mod")
+                  fi
+              done
+
+              if [ ${#missing[@]} -gt 0 ]; then
+                  log_e "StrongSwan 模块名校验失败：.config 启用但 Makefile 中不存在 - ${missing[*]} | 可用模块: ${available[*]:0:20} ..."
+
+              else
+                  log_i "✅ StrongSwan 模块名校验通过: ${enabled[*]}"
+              fi
+          }
+          verify_strongswan_modules
+
           log_i "✅ Feeds 处理完成，底层核心已成功解绑与提权升级！"
 
       - name: Generate Configuration (配置解耦与探针注入)
