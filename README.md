@@ -142,7 +142,3 @@ package-scrub-list.conf
 * StrongSwan
 * WireGuard
 * 以及所有开源贡献者
-
-**感谢开源，让技术自由流动。**
-
-如果本项目对你有所帮助，欢迎 ⭐ **Star / Fork / Issue**。
