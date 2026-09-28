@@ -211,6 +211,20 @@ jobs:
               local actual
               actual=$(git -C "$dest" rev-parse HEAD)
               if [ "$actual" != "$expected" ]; then
+                  local _repo
+                  _repo=$(basename "$url")
+                  local _commit_msg
+                  _commit_msg="chore: bump pin for ${_repo} to ${actual:0:12}"
+                  log_w "🆕 UPSTREAM DRIFT DETECTED in ${_repo}"
+                  log_w "   Pinned SHA: $expected"
+                  log_w "   Actual SHA: $actual"
+                  log_w "🆕 若要接受上游更新，把 workflow 里的:"
+                  log_w "     pin_clone $url $expected ..."
+                  log_w "   改为:"
+                  log_w "     pin_clone $url $actual ..."
+                  log_w "🆕 然后:"
+                  log_w "     git commit -m "${_commit_msg}""
+                  log_w "     git push"
                   log_e "UPSTREAM DRIFT in $url | pinned=$expected actual=$actual - review upstream commits then update SHA in workflow if acceptable"
               fi
               log_i "pinned OK: $(basename "$url") @ $(echo "$actual" | cut -c1-12)"
@@ -397,6 +411,16 @@ jobs:
                       if [ "$actual_sha" = "$expected_sha" ]; then
                           log_i "✅ SHA 校验通过: $f @ ${actual_sha:0:12}"
                       else
+                          local _commit_msg
+                          _commit_msg="chore: bump rust support pin ($f) to ${actual_sha:0:12}"
+                          log_w "🆕 RUST FILE DRIFT: $f"
+                          log_w "   Pinned SHA256: $expected_sha"
+                          log_w "   Actual SHA256: $actual_sha"
+                          log_w "🆕 若要接受上游更新，把 workflow 里 $f 的 expected_sha 改为:"
+                          log_w "     expected_sha="$actual_sha""
+                          log_w "🆕 然后:"
+                          log_w "     git commit -m "${_commit_msg}""
+                          log_w "     git push"
                           log_e "RUST FILE DRIFT: $f | pinned=$expected_sha actual=$actual_sha - review upstream then update SHA in workflow if acceptable"
                       fi
                   else
