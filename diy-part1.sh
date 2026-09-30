@@ -40,9 +40,10 @@ fi
 cp "${FEEDS_CONF}" "${FEEDS_CONF_BAK}"
 log_info "========== 开始执行 DIY Part 1 (环境净化与源注入) =========="
 
-# ---[ 1. 净化阶段：列级别的精确匹配 ] ---
+# ---[ 1. 净化阶段：精确匹配 feed name（第2列），避免子串误伤 ] ---
 for pattern in "${SCRUB_LIST[@]}"; do
-    matched_feeds=$(awk '!/^#/ && NF>=2 {print $2}' "${FEEDS_CONF}" | grep -iE "(^|[-_])${pattern}([-_]|$)" || true)
+    # 精确匹配 feed name（第2列），不做子串模糊匹配
+    matched_feeds=$(awk '!/^#/ && NF>=2 {print $2}' "${FEEDS_CONF}" | grep -x "${pattern}" || true)
     if [[ -n "${matched_feeds}" ]]; then
         for fn in ${matched_feeds}; do
             log_warn "匹配到关键字 '${pattern}' 的源: '${fn}'，执行精准移除..."

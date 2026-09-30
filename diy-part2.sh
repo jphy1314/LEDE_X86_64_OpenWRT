@@ -214,6 +214,9 @@ start() {
                 ;;
         esac
 
+        # Skip virtual interfaces (no /sys/class/net/$iface/device symlink)
+        [ -L "/sys/class/net/$iface/device" ] || continue
+
         driver=$(ethtool -i "$iface" 2>/dev/null |
             awk '/driver/{print $2}')
 
@@ -360,6 +363,9 @@ while read -r dev mp fs _; do
         *) continue ;;
     esac
 
+    # Skip read-only mounts (must output the line for second grep to check)
+    grep " $mp " /proc/mounts | grep -q "rw," || continue
+    
     fstrim "$mp" 2>/dev/null || true
 
 done < /proc/mounts
