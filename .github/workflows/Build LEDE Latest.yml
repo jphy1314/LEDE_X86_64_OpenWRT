@@ -92,8 +92,8 @@ jobs:
           # 生成按天计算的时间戳，保证每天至少有一次全量/增量 Cache 刷新
           echo "date=$(date +'%Y%m%d')" >> $GITHUB_OUTPUT
           
-          # 【全局锁定版本号】：例如 R26.05.07
-          VERSION_TAG="R$(date +%y.%m.%d)"
+          # 【全局锁定版本号】：例如 R26.05.07.1430
+          VERSION_TAG="R$(date +%y.%m.%d.%H%M)"
           echo "TAG_VERSION=${VERSION_TAG}" >> $GITHUB_ENV
           echo "CURRENT_DATE=$(date +%Y%m%d)" >> $GITHUB_ENV
           echo "🚀 锁定的版本号为: ${VERSION_TAG}"

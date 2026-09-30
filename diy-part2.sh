@@ -549,6 +549,13 @@ MNT="/mnt/$DEVNAME"
 
 mkdir -p "$MNT" 2>/dev/null || exit 0
 
+# Wait for device node to be ready (udev settlement)
+for i in $(seq 1 10); do
+    [ -b "/dev/$DEVNAME" ] && break
+    sleep 0.2
+done
+[ -b "/dev/$DEVNAME" ] || exit 0
+
 chmod 0755 "$MNT" 2>/dev/null || true
 
 
