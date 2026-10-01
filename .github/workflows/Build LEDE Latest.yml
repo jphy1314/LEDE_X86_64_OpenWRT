@@ -600,9 +600,18 @@ jobs:
           # 4. 补全依赖配置
           make defconfig
           
-          # 5. 配置漂移检查：对比原始配置与 defconfig 后的差异，捕获上游选项新增/删除/重命名
+          # 5. 配置漂移检查：只对比显式启用的选项，过滤 is not set 噪声
           echo "=== CONFIG DRIFT CHECK ==="
-          diff -u ${{ github.workspace }}/D525_x86_64.config .config | head -100 || true
+          echo "[只对比 CONFIG_xxx= 有效行，忽略 # CONFIG_xxx is not set 噪声]"
+          ORIGINAL_ACTIVE=$(grep -E '^CONFIG_[^=]+=.*' ${{ github.workspace }}/D525_x86_64.config | sort)
+          GENERATED_ACTIVE=$(grep -E '^CONFIG_[^=]+=.*' .config | sort)
+          DRIFT_COUNT=$(diff <(echo "$ORIGINAL_ACTIVE") <(echo "$GENERATED_ACTIVE") | grep -c '^[<>]' || true)
+          if [ "$DRIFT_COUNT" -gt 0 ]; then
+              echo "⚠️  检测到 ${DRIFT_COUNT} 处漂移，详情如下:"
+              diff -u <(echo "$ORIGINAL_ACTIVE") <(echo "$GENERATED_ACTIVE") || true
+          else
+              echo "✅ 无漂移：所有显式启用选项与上游一致"
+          fi
           echo "=== END DRIFT CHECK ==="
           
           # 6. 开启 CCACHE 优化
