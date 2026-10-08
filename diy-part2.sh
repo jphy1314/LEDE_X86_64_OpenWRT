@@ -351,8 +351,33 @@ cat <<'EOF' > "${FILES_DIR}/usr/bin/auto-fstrim"
 
 command -v fstrim >/dev/null 2>&1 || exit 0
 
-while read -r dev mp fs _; do
+trim_device() {
+    _dev="$1"
+    _base=""
+    _max=""
 
+    case "$_dev" in
+        /dev/loop*|/dev/mapper/*|/dev/nbd*) return 0 ;;
+        /dev/*)
+            _base="$(basename "$_dev")"
+            ;;
+        *) return 0 ;;
+    esac
+
+    if [ -n "$_base" ] && [ -f "/sys/block/${_base}/queue/discard_max_bytes" ]; then
+        _max=$(cat "/sys/block/${_base}/queue/discard_max_bytes" 2>/dev/null || echo 0)
+    elif [ -n "$_base" ] && [ -f "/sys/block/${_base}/queue/discard_granularity" ]; then
+        _max=$(cat "/sys/block/${_base}/queue/discard_granularity" 2>/dev/null || echo 0)
+    fi
+
+    case "$_max" in
+        0|'') return 0 ;;
+    esac
+
+    fstrim -v "$_dev" 2>/dev/null || true
+}
+
+while read -r dev mp fs opts rest; do
     case "$dev" in
         /dev/*) ;;
         *) continue ;;
@@ -363,11 +388,7 @@ while read -r dev mp fs _; do
         *) continue ;;
     esac
 
-    # Skip read-only mounts (must output the line for second grep to check)
-    grep " $mp " /proc/mounts | grep -q "rw," || continue
-    
-    fstrim "$mp" 2>/dev/null || true
-
+    trim_device "$dev"
 done < /proc/mounts
 
 exit 0

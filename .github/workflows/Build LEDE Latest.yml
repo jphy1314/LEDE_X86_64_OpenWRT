@@ -1,5 +1,8 @@
 name: Build LEDE Latest
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
 
 # [优化]: 并发控制，自动取消排队或正在运行的旧任务，节省运算时长
