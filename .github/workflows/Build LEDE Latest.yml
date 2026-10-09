@@ -326,7 +326,7 @@ jobs:
           mkdir -p package/community
           pin_clone https://github.com/pymumu/openwrt-smartdns.git 4be700dc3366275605a2a1996865d83ea9bb9a18 package/smartdns
           pin_clone https://github.com/pymumu/luci-app-smartdns.git 581e5e816d92d3a663b1b2e331e3f21685968cf1 package/luci-app-smartdns
-          pin_clone https://github.com/jerrykuku/luci-theme-argon.git 23c3e525578374d6b20f5e7b93d27874cd01a252 package/community/luci-theme-argon
+          pin_clone https://github.com/jerrykuku/luci-theme-argon.git ba325649c2fc7f0fcbadf38195eafb3231ac28d8 package/community/luci-theme-argon
           pin_clone https://github.com/jerrykuku/luci-app-argon-config.git 3e099a37c3f71d0de677f1b6b0f4bffd57d91dac package/community/luci-app-argon-config
 
           # StrongSwan / ipsec-vpnd 刷新
