@@ -327,7 +327,7 @@ jobs:
           pin_clone https://github.com/pymumu/openwrt-smartdns.git 4be700dc3366275605a2a1996865d83ea9bb9a18 package/smartdns
           pin_clone https://github.com/pymumu/luci-app-smartdns.git 581e5e816d92d3a663b1b2e331e3f21685968cf1 package/luci-app-smartdns
           pin_clone https://github.com/jerrykuku/luci-theme-argon.git ee60fd61a6c5fa7a240fcd69dbb66f1651b27d9f package/community/luci-theme-argon
-          pin_clone https://github.com/jerrykuku/luci-app-argon-config.git 92de4fe133d2a364ef33fcdae50d116ec99d6b52 package/community/luci-app-argon-config
+          pin_clone https://github.com/jerrykuku/luci-app-argon-config.git 3f844c467ce5075e2b0dd61ebf7271640eb08da2 package/community/luci-app-argon-config
 
           # StrongSwan / ipsec-vpnd 刷新
           # 说明：
