@@ -550,53 +550,18 @@ protect_system_device() {
     esac
 
     # 4. 防竞态：如果 fstab 已显式接管该设备，禁止 automount 抢挂到 /mnt/<dev>
+    # 纯 POSIX 实现（BusyBox ash / dash / bash 兼容），严禁使用 <<< 或 <(...)：
+    #   - <<<  是 Bash/Ksh 扩展，dash/busybox 报 `Syntax error: redirection unexpected`
+    #   - <(...)  是 Bash 进程替换，同样非 POSIX
+    #   - printf ... | while 会让 while 跑在子 shell，内部 `return` 无法从外层函数返回
+    # 这里用 grep 退出码直接判定，无子 shell、无特殊重定向。
+    # 匹配规则兼容 uci show 的三种引号形态：
+    #   .device='/dev/sda1'   .device="/dev/sda1"   .device=/dev/sda1
     if command -v uci >/dev/null 2>&1; then
-        cur_target=""
-        cur_device=""
-        fstab_show="$(uci -q show fstab 2>/dev/null || true)"
-
-        case "$fstab_show" in
-            *"$dev"*) :
-            ;;
-            *)
-                return 1
-                ;;
-        esac
-
-        seen_target=0
-        seen_device=0
-        cur_target=""
-        cur_device=""
-
-        while IFS= read -r line; do
-            [ -n "$line" ] || continue
-
-            # OpenWrt `uci show` 输出带单引号：.target='/mnt/data', .device='/dev/sda1'
-            # dash 的 case 每个 pattern 独立评估（非 if-else），所以通用重置 pattern
-            # 必须先判断 seen_device 未被置位，否则 cur_device 会被立即清空。
-            case "$line" in
-                *".target='/mnt/data'"|*".target=\"/mnt/data\""*)
-                    cur_target="/mnt/data"
-                    seen_target=1
-                    ;;
-                *".device='/dev/${dev}'"|*".device=\"/dev/${dev}\""*)
-                    cur_device="/dev/$dev"
-                    seen_device=1
-                    ;;
-                *'.target='*|*".target=\""*)
-                    cur_target=""
-                    ;;
-                *'.device='*|*".device=\""*)
-                    [ "$seen_device" -eq 0 ] && cur_device=""
-                    ;;
-            esac
-
-            if [ "$seen_target" -eq 1 ] && [ "$seen_device" -eq 1 ]; then
-                if [ "$cur_target" = "/mnt/data" ] && [ "$cur_device" = "/dev/$dev" ]; then
-                    return 0
-                fi
-            fi
-        done <<< "$fstab_show"
+        if uci -q show fstab 2>/dev/null | \
+           grep -qE "\.device=['\"]?/dev/${dev}(['\"]|$)"; then
+            return 0
+        fi
     fi
 
     return 1
