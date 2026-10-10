@@ -499,6 +499,9 @@ protect_system_device() {
     local line=""
     local cur_target=""
     local cur_device=""
+    local fstab_show=""
+    local seen_target=0
+    local seen_device=0
 
     # 1. 优先解析 /dev/root 对应真实底层物理分区（适配 x86 ext4 根系统）
     if [ -e "/dev/root" ]; then
@@ -545,15 +548,32 @@ protect_system_device() {
     if command -v uci >/dev/null 2>&1; then
         cur_target=""
         cur_device=""
+        fstab_show="$(uci -q show fstab 2>/dev/null || true)"
+
+        case "$fstab_show" in
+            *"$dev"*) :
+            ;;
+            *)
+                return 1
+                ;;
+        esac
+
+        seen_target=0
+        seen_device=0
+        cur_target=""
+        cur_device=""
 
         while IFS= read -r line; do
             [ -n "$line" ] || continue
+
             case "$line" in
                 *'.target=/mnt/data')
                     cur_target="/mnt/data"
+                    seen_target=1
                     ;;
                 *'.device=/dev/'"$dev")
                     cur_device="/dev/$dev"
+                    seen_device=1
                     ;;
                 *'.target='*)
                     cur_target=""
@@ -563,8 +583,12 @@ protect_system_device() {
                     ;;
             esac
 
-            [ "$cur_target" = "/mnt/data" ] && [ "$cur_device" = "/dev/$dev" ] && return 0
-        done <<< "$(uci -q show fstab 2>/dev/null)"
+            if [ "$seen_target" -eq 1 ] && [ "$seen_device" -eq 1 ]; then
+                if [ "$cur_target" = "/mnt/data" ] && [ "$cur_device" = "/dev/$dev" ]; then
+                    return 0
+                fi
+            fi
+        done < <(printf '%s\n' "$fstab_show")
     fi
 
     return 1
