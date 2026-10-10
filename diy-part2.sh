@@ -93,6 +93,11 @@ if [ -f /etc/config/samba4 ] && command -v uci >/dev/null 2>&1; then
     uci commit samba4
 fi
 
+# 显式 enable init.d 服务，避免只在首次开机创建但不进入 rc.d
+for svc in mount-optimize network-accel; do
+    [ -x "/etc/init.d/$svc" ] && /etc/init.d/$svc enable 2>/dev/null || true
+done
+
 exit 0
 EOF
 
@@ -566,20 +571,23 @@ protect_system_device() {
         while IFS= read -r line; do
             [ -n "$line" ] || continue
 
+            # OpenWrt `uci show` 输出带单引号：.target='/mnt/data', .device='/dev/sda1'
+            # dash 的 case 每个 pattern 独立评估（非 if-else），所以通用重置 pattern
+            # 必须先判断 seen_device 未被置位，否则 cur_device 会被立即清空。
             case "$line" in
-                *'.target=/mnt/data')
+                *".target='/mnt/data'"|*".target=\"/mnt/data\""*)
                     cur_target="/mnt/data"
                     seen_target=1
                     ;;
-                *'.device=/dev/'"$dev")
+                *".device='/dev/${dev}'"|*".device=\"/dev/${dev}\""*)
                     cur_device="/dev/$dev"
                     seen_device=1
                     ;;
-                *'.target='*)
+                *'.target='*|*".target=\""*)
                     cur_target=""
                     ;;
-                *'.device='*)
-                    cur_device=""
+                *'.device='*|*".device=\""*)
+                    [ "$seen_device" -eq 0 ] && cur_device=""
                     ;;
             esac
 
@@ -588,7 +596,7 @@ protect_system_device() {
                     return 0
                 fi
             fi
-        done < <(printf '%s\n' "$fstab_show")
+        done <<< "$fstab_show"
     fi
 
     return 1

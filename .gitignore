@@ -4,6 +4,12 @@ memory/
 run_*.log
 answer.md
 
+# OpenClaw local state (session scratch, tool caches)
+.openclaw/
+
+# Local pre-fix backups for hotfix rollbacks
+*.pre-fix-*
+
 # Common editor and system noise
 *.swp
 *.swo
