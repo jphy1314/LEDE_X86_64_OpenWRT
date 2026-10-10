@@ -353,25 +353,33 @@ command -v fstrim >/dev/null 2>&1 || exit 0
 
 trim_device() {
     _dev="$1"
-    _base=""
+    _name=""
+    _disk=""
     _max=""
 
     case "$_dev" in
         /dev/loop*|/dev/mapper/*|/dev/nbd*) return 0 ;;
         /dev/*)
-            _base="$(basename "$_dev")"
+            _name="$(basename "$_dev")"
+
+            case "$_name" in
+                nvme*p*) _disk="${_name%p*}" ;;
+                mmcblk*p*) _disk="${_name%p*}" ;;
+                sd*[0-9]*|vd*[0-9]*|hd*[0-9]*) _disk="${_name%%[0-9]*}" ;;
+                *) _disk="$_name" ;;
+            esac
             ;;
         *) return 0 ;;
     esac
 
-    if [ -n "$_base" ] && [ -f "/sys/block/${_base}/queue/discard_max_bytes" ]; then
-        _max=$(cat "/sys/block/${_base}/queue/discard_max_bytes" 2>/dev/null || echo 0)
-    elif [ -n "$_base" ] && [ -f "/sys/block/${_base}/queue/discard_granularity" ]; then
-        _max=$(cat "/sys/block/${_base}/queue/discard_granularity" 2>/dev/null || echo 0)
+    if [ -n "$_disk" ] && [ -f "/sys/block/${_disk}/queue/discard_max_bytes" ]; then
+        _max=$(cat "/sys/block/${_disk}/queue/discard_max_bytes" 2>/dev/null || echo 0)
+    elif [ -n "$_disk" ] && [ -f "/sys/block/${_disk}/queue/discard_granularity" ]; then
+        _max=$(cat "/sys/block/${_disk}/queue/discard_granularity" 2>/dev/null || echo 0)
     fi
 
     case "$_max" in
-        0|'') return 0 ;;
+        0|''|*[!0-9]*) return 0 ;;
     esac
 
     fstrim -v "$_dev" 2>/dev/null || true
@@ -488,6 +496,9 @@ protect_system_device() {
     local protected
     local protected_name
     local protected_real
+    local line=""
+    local cur_target=""
+    local cur_device=""
 
     # 1. 优先解析 /dev/root 对应真实底层物理分区（适配 x86 ext4 根系统）
     if [ -e "/dev/root" ]; then
@@ -529,6 +540,32 @@ protect_system_device() {
             return 0
             ;;
     esac
+
+    # 4. 防竞态：如果 fstab 已显式接管该设备，禁止 automount 抢挂到 /mnt/<dev>
+    if command -v uci >/dev/null 2>&1; then
+        cur_target=""
+        cur_device=""
+
+        while IFS= read -r line; do
+            [ -n "$line" ] || continue
+            case "$line" in
+                *'.target=/mnt/data')
+                    cur_target="/mnt/data"
+                    ;;
+                *'.device=/dev/'"$dev")
+                    cur_device="/dev/$dev"
+                    ;;
+                *'.target='*)
+                    cur_target=""
+                    ;;
+                *'.device='*)
+                    cur_device=""
+                    ;;
+            esac
+
+            [ "$cur_target" = "/mnt/data" ] && [ "$cur_device" = "/dev/$dev" ] && return 0
+        done <<< "$(uci -q show fstab 2>/dev/null)"
+    fi
 
     return 1
 }
@@ -653,7 +690,7 @@ log_i "======================================================"
 log_i "🌐 LAN：${TARGET_IP}"
 log_i "🔗 WireGuard：保留 (fw4 列表化端口 51820)"
 log_i "🔥 IPSec：IKE / NAT-T (500/4500) / ESP 防火墙规则保留"
-log_i "🛡️ Passwall：默认中国列表分流 (chnroute) + ChinaDNS-NG"
+log_i "🛡️ Passwall：沿用上游配置（diy-part2 不注入代理策略，避免静默改分流）"
 log_i "💾 存储：fstab + 自动挂载 (支持 ext4 rootfs 及系统分区防御)"
 log_i "⚡ IO：SSD/HDD read_ahead"
 log_i "♻️ TRIM：自动计划任务"
