@@ -93,9 +93,11 @@ if [ -f /etc/config/samba4 ] && command -v uci >/dev/null 2>&1; then
     uci commit samba4
 fi
 
-# 显式 enable init.d 服务，避免只在首次开机创建但不进入 rc.d
+# 显式 enable init.d 服务，避免只在首次开机创建但不进入 rc.d。
+# 注意：此段在 unquoted heredoc 里，循环变量名必须转义为 \$svc，
+# 否则会被外层 bash 在生成时展开（触发 set -u: unbound variable）。
 for svc in mount-optimize network-accel; do
-    [ -x "/etc/init.d/$svc" ] && /etc/init.d/$svc enable 2>/dev/null || true
+    [ -x "/etc/init.d/\$svc" ] && /etc/init.d/\$svc enable 2>/dev/null || true
 done
 
 exit 0
