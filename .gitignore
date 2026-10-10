@@ -9,6 +9,7 @@ answer.md
 
 # Local pre-fix backups for hotfix rollbacks
 *.pre-fix-*
+*.pre-shabump-*
 
 # Common editor and system noise
 *.swp
