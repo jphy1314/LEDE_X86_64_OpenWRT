@@ -16,12 +16,8 @@ permissions:
 
 env:
   REPO_URL: https://github.com/coolsnowwolf/lede
-  # REPO_BRANCH 仅用于 cache key 命名（不同分支的 ccache/dl 分开存），不是 clone 依据。
-  # 真正 clone 到哪个 commit 由 REPO_SHA 决定，保证供应链可复现。
+  # REPO_BRANCH 同时作为 clone 分支与 cache key 命名依据；不再锁定固定 REPO_SHA。
   REPO_BRANCH: master
-  # Lean's LEDE master HEAD @ 2026-10-11 21:02 CST
-  # bump 时需同步更新；查询方式: gh api repos/coolsno…/lede/commits/master --jq .sha
-  REPO_SHA: d5ccef5f796981c79811f27722596173482a35e3
   TZ: Asia/Shanghai
   UPLOAD_BIN_DIR: "false"
   UPLOAD_FIRMWARE: "true"
@@ -86,23 +82,16 @@ jobs:
           sudo apt-get clean
           sudo timedatectl set-timezone "$TZ"
           
-      - name: Clone Source Code (SHA-pinned)
+      - name: Clone Source Code (Rolling master)
         working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          # 两步走：先浅克隆 master 分支（快），再精确 fetch 目标 SHA（可复现）。
-          # 直接用 --depth 1 --branch 会在 master 漂移后拿到不同 commit，故必须显式 pin。
+          # 直接浅克隆 master 分支，始终拉取上游最新可用 HEAD。
+          # 这样能避免旧版源码与滚动更新的 feeds 产生版本断层。
           git clone -b "$REPO_BRANCH" --single-branch --depth 1 "$REPO_URL" openwrt
-          git -C openwrt fetch --depth 1 origin "$REPO_SHA"
-          git -C openwrt checkout "$REPO_SHA"
 
-          # 校验最终 HEAD 与 REPO_SHA 完全一致，防止供应链漂移
           ACTUAL_SHA=$(git -C openwrt rev-parse HEAD)
-          echo "Checked out Lean's LEDE @ ${ACTUAL_SHA} (expected ${REPO_SHA})" >> "$GITHUB_STEP_SUMMARY"
-          if [ "$ACTUAL_SHA" != "$REPO_SHA" ]; then
-            echo "ERROR: SHA mismatch. Expected $REPO_SHA, got $ACTUAL_SHA" >&2
-            exit 1
-          fi
+          echo "Checked out Lean's LEDE @ ${ACTUAL_SHA}" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Generate Cache Key Variables & Set Version
         id: cache-vars
