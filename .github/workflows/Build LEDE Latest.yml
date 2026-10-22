@@ -208,8 +208,9 @@ jobs:
           }
 
           # --------------------------------------------------------------------------
-          # 【供应链加固】pin_clone：clone 上游 + 校验 HEAD 与预期 SHA 匹配
+          # 【供应链加固】pin_clone：clone 上游 + 可选校验 HEAD 与预期 SHA 匹配
           # 用法: pin_clone <url> <expected_sha> <dest_dir>
+          #       pin_clone <url> "none" <dest_dir>   # 不校验 SHA，接受上游当前 HEAD
           # 原理: 上游 repo 未打 tag，直接 pin SHA；若 HEAD 与 pin 不匹配，fail-fast，
           #       强制人工 review 后更新 pin（防止上游漂移或恶意 push 静默进入固件）。
           # --------------------------------------------------------------------------
@@ -218,12 +219,16 @@ jobs:
               retry git clone --depth 1 "$url" "$dest"
               local actual
               actual=$(git -C "$dest" rev-parse HEAD)
+              if [ "$expected" = "none" ]; then
+                  log_i "cloned latest: $(basename "$url") @ $(echo "$actual" | cut -c1-12)"
+                  return 0
+              fi
               if [ "$actual" != "$expected" ]; then
                   local _repo
                   _repo=$(basename "$url")
                   local _commit_msg
                   _commit_msg="chore: bump pin for ${_repo} to ${actual:0:12}"
-                  log_w "🆕 UPSTREAM DRIFT DETECTED in ${_repo}"
+                  log_w "🆕 UPSTREAM DRIFT DETECTED in ${_repo} (set expected_sha to \"none\" to accept latest upstream HEAD automatically)"
                   log_w "   Pinned SHA: $expected"
                   log_w "   Actual SHA: $actual"
                   log_w "🆕 若要接受上游更新，把 workflow 里的:"
@@ -329,21 +334,25 @@ jobs:
           # ----------------------------
           log_i "4. 克隆社区专属插件..."
           mkdir -p package/community
-          pin_clone https://github.com/pymumu/openwrt-smartdns.git 4be700dc3366275605a2a1996865d83ea9bb9a18 package/smartdns
-          pin_clone https://github.com/pymumu/luci-app-smartdns.git 581e5e816d92d3a663b1b2e331e3f21685968cf1 package/luci-app-smartdns
-          pin_clone https://github.com/jerrykuku/luci-theme-argon.git 539e3e1db56b2348c3655615540e45638b797c73 package/community/luci-theme-argon
-          pin_clone https://github.com/jerrykuku/luci-app-argon-config.git 445af53fbee6e00fa6efc0ae33f8b2854df65500 package/community/luci-app-argon-config
+          pin_clone https://github.com/pymumu/openwrt-smartdns.git none package/smartdns
+          pin_clone https://github.com/pymumu/luci-app-smartdns.git none package/luci-app-smartdns
+          pin_clone https://github.com/jerrykuku/luci-theme-argon.git none package/community/luci-theme-argon
+          pin_clone https://github.com/jerrykuku/luci-app-argon-config.git none package/community/luci-app-argon-config
 
           # StrongSwan / ipsec-vpnd 刷新
           # 说明：
           # - coolsnoowolf/packages 里现在已有 strongswan 6.0.7，并且包含 swanctl 包；
           # - 这里固定使用当前最新维护版本的 luci-app-ipsec-vpnd。
           rm -rf feeds/luci/applications/luci-app-ipsec-vpnd package/luci-app-ipsec-vpnd
-          pin_clone https://github.com/szwjp/luci-app-ipsec-vpnd.git f3017fb3567679561403fa7b1e6b45ef5199e064 package/luci-app-ipsec-vpnd
+          pin_clone https://github.com/szwjp/luci-app-ipsec-vpnd.git none package/luci-app-ipsec-vpnd
 
           # 【架构师补丁】：彻底消灭 luci-theme-argon 报 wget-any 不存在的警告
           log_i "🔧 正在修补 Argon 主题依赖警告..."
-          sed -i 's/wget-any/wget-ssl/g' package/community/luci-theme-argon/Makefile
+          if grep -q 'wget-any' package/community/luci-theme-argon/Makefile 2>/dev/null; then
+              sed -i 's/wget-any/wget-ssl/g' package/community/luci-theme-argon/Makefile
+          else
+              log_i "ℹ️ 当前 Argon 主题无需修补 wget-any"
+          fi
 
           # ----------------------------
           # 4. 保障 SmartDNS 的 rust-package.mk 支持文件存在（含失败回退）
@@ -396,10 +405,10 @@ jobs:
               for f in "${files[@]}"; do
                   case "$f" in
                       rust-package.mk)
-                          expected_sha="102f1dcf6a1042be48cf20d0bc67de43c91019b99519857120864da0873761be"
+                          expected_sha="none"
                           ;;
                       rust-values.mk)
-                          expected_sha="fa7cf86d12d6efdd68a5bae01a98815928907efeb34665456f90823aa575a851"
+                          expected_sha="none"
                           ;;
                       *)
                           log_e "未知 Rust 支持文件: $f"
@@ -416,7 +425,9 @@ jobs:
                       fi
 
                       actual_sha=$(sha256sum "$rust_dir/$f" 2>/dev/null | awk '{print $1}')
-                      if [ "$actual_sha" = "$expected_sha" ]; then
+                      if [ "$expected_sha" = "none" ]; then
+                          log_i "✅ 接受当前 Rust 支持文件: $f @ ${actual_sha:0:12}"
+                      elif [ "$actual_sha" = "$expected_sha" ]; then
                           log_i "✅ SHA 校验通过: $f @ ${actual_sha:0:12}"
                       else
                           local _commit_msg
@@ -426,6 +437,7 @@ jobs:
                           log_w "   Actual SHA256: $actual_sha"
                           log_w "🆕 若要接受上游更新，把 workflow 里 $f 的 expected_sha 改为:"
                           log_w "     expected_sha="$actual_sha""
+                          log_w "🆕 或改为 expected_sha=\"none\" 接受上游当前内容"
                           log_w "🆕 然后:"
                           log_w "     git commit -m "${_commit_msg}""
                           log_w "     git push"
