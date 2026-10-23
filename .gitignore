@@ -1,11 +1,19 @@
-# Local work artifacts / transient build noise
+# Repository files
+# (keep project docs, config, scripts, and resources tracked; no ignores here)
+
+# OpenClaw workspace files
 AGENTS.md
+SOUL.md
+USER.md
+IDENTITY.md
+DREAMS.md
 memory/
+.openclaw/
+
+# Local artifacts / transient noise
 run_*.log
 answer.md
-
-# OpenClaw local state (session scratch, tool caches)
-.openclaw/
+.trash-weird-filenames-*/
 
 # Local pre-fix backups for hotfix rollbacks
 *.pre-fix-*
