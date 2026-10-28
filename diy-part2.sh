@@ -360,6 +360,7 @@ command -v fstrim >/dev/null 2>&1 || exit 0
 
 trim_device() {
     _dev="$1"
+    _mp="$2"
     _name=""
     _disk=""
     _max=""
@@ -389,7 +390,11 @@ trim_device() {
         0|''|*[!0-9]*) return 0 ;;
     esac
 
-    fstrim -v "$_dev" 2>/dev/null || true
+    # fstrim 只接受挂载点目录，不接受设备节点路径
+    # 若挂载点解析失败，回退到挂载点目录（避免对设备节点执行 fstrim 报错）
+    if [ -n "$_mp" ] && [ -d "$_mp" ]; then
+        fstrim -v "$_mp" 2>/dev/null || true
+    fi
 }
 
 while read -r dev mp fs opts rest; do
@@ -403,7 +408,7 @@ while read -r dev mp fs opts rest; do
         *) continue ;;
     esac
 
-    trim_device "$dev"
+    trim_device "$dev" "$mp"
 done < /proc/mounts
 
 exit 0
@@ -487,6 +492,16 @@ cat <<'EOF' > "${FILES_DIR}/etc/hotplug.d/block/15-automount"
 
 [ "$ACTION" = "add" ] || exit 0
 [ -z "$DEVNAME" ] && exit 0
+
+# 【防竞态】排他锁：同一设备并发 hotplug 事件只处理一次，避免重复挂载/级联阻塞
+# 使用 mkdir 原子创建作为锁（POSIX 兼容，不依赖 flock（BusyBox 部分版本缺失））
+LOCK_DIR="/var/lock/automount_${DEVNAME}"
+if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+    # 已有其他进程在处理该设备，直接退出
+    exit 0
+fi
+# 注册退出时清理锁
+trap 'rmdir "$LOCK_DIR" 2>/dev/null' EXIT HUP INT TERM
 
 case "$DEVNAME" in
     sd[[:alnum:]]*|nvme[0-9]*p[0-9]*|mmcblk[0-9]*p[0-9]*)
@@ -612,11 +627,15 @@ MNT="/mnt/$DEVNAME"
 
 mkdir -p "$MNT" 2>/dev/null || exit 0
 
-# Wait for device node to be ready (udev settlement)
-for i in $(seq 1 10); do
-    [ -b "/dev/$DEVNAME" ] && break
-    sleep 0.2
-done
+# Wait for device node to be ready (udev settlement) - 缩短为最多 1 秒，避免 hotplug 级联阻塞
+[ -b "/dev/$DEVNAME" ] || {
+    i=0
+    while [ $i -lt 5 ]; do
+        [ -b "/dev/$DEVNAME" ] && break
+        sleep 0.2
+        i=$((i + 1))
+    done
+}
 [ -b "/dev/$DEVNAME" ] || exit 0
 
 chmod 0755 "$MNT" 2>/dev/null || true

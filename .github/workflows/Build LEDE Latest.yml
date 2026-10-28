@@ -284,7 +284,12 @@ jobs:
               while IFS= read -r -d '' dir; do rm -rf "$dir"; done < <(find package/ -type d -name "$pkg" -print0 2>/dev/null || true)
               while IFS= read -r -d '' makefile; do
                   if grep -q -E "^[[:space:]]*PKG_NAME[[:space:]]*:?=[[:space:]]*${safe_pkg}[[:space:]]*$" "$makefile" 2>/dev/null; then
-                      rm -rf "$(dirname "$makefile")"
+                      # 【防误删护盾】仅当 Makefile 所在目录名与目标包名一致时才删除，
+                      # 避免 rm -rf dirname 误伤同目录下的其他合法包（如顶层/大类目录）
+                      pkg_dir="$(dirname "$makefile")"
+                      if [ "$(basename "$pkg_dir")" = "$pkg" ]; then
+                          rm -rf "$pkg_dir"
+                      fi
                   fi
               done < <(find package/ -type f -name "Makefile" -print0 2>/dev/null || true)
 
@@ -298,7 +303,12 @@ jobs:
                   # 🛡️ 绝对护盾：严格避开我们拉取的 Passwall 新源 Makefile
                   if [[ "$makefile" == *passwall_packages* ]] || [[ "$makefile" == *passwall_luci* ]]; then continue; fi
                   if grep -q -E "^[[:space:]]*PKG_NAME[[:space:]]*:?=[[:space:]]*${safe_pkg}[[:space:]]*$" "$makefile" 2>/dev/null; then
-                      rm -rf "$(dirname "$makefile")"
+                      # 【防误删护盾】仅当 Makefile 所在目录名与目标包名一致时才删除，
+                      # 避免 rm -rf dirname 误伤同目录下的其他合法包（如顶层/大类目录）
+                      pkg_dir="$(dirname "$makefile")"
+                      if [ "$(basename "$pkg_dir")" = "$pkg" ]; then
+                          rm -rf "$pkg_dir"
+                      fi
                   fi
               done < <(find feeds/ -type f -name "Makefile" -print0 2>/dev/null || true)
           done
@@ -310,7 +320,12 @@ jobs:
               while IFS= read -r -d '' dir; do rm -rf "$dir"; done < <(find package/ -type d -name "$pkg" -print0 2>/dev/null || true)
               while IFS= read -r -d '' makefile; do
                   if grep -q -E "^[[:space:]]*PKG_NAME[[:space:]]*:?=[[:space:]]*${safe_pkg}[[:space:]]*$" "$makefile" 2>/dev/null; then
-                      rm -rf "$(dirname "$makefile")"
+                      # 【防误删护盾】仅当 Makefile 所在目录名与目标包名一致时才删除，
+                      # 避免 rm -rf dirname 误伤同目录下的其他合法包（如顶层/大类目录）
+                      pkg_dir="$(dirname "$makefile")"
+                      if [ "$(basename "$pkg_dir")" = "$pkg" ]; then
+                          rm -rf "$pkg_dir"
+                      fi
                   fi
               done < <(find package/ -type f -name "Makefile" -print0 2>/dev/null || true)
 
@@ -324,7 +339,12 @@ jobs:
                   # 🛡️ 绝对护盾：严格避开我们拉取的 Passwall 新源 Makefile
                   if [[ "$makefile" == *passwall_packages* ]] || [[ "$makefile" == *passwall_luci* ]]; then continue; fi
                   if grep -q -E "^[[:space:]]*PKG_NAME[[:space:]]*:?=[[:space:]]*${safe_pkg}[[:space:]]*$" "$makefile" 2>/dev/null; then
-                      rm -rf "$(dirname "$makefile")"
+                      # 【防误删护盾】仅当 Makefile 所在目录名与目标包名一致时才删除，
+                      # 避免 rm -rf dirname 误伤同目录下的其他合法包（如顶层/大类目录）
+                      pkg_dir="$(dirname "$makefile")"
+                      if [ "$(basename "$pkg_dir")" = "$pkg" ]; then
+                          rm -rf "$pkg_dir"
+                      fi
                   fi
               done < <(find feeds/ -type f -name "Makefile" -print0 2>/dev/null || true)
           done
@@ -854,14 +874,20 @@ jobs:
           
           echo "🚀 开始上传固件到 Release [ ${TAG} ] ..."
           
-          if [ -z "$(ls -A ${{ env.FIRMWARE }} 2>/dev/null)" ]; then
+          # 【防崩溃护盾】用 Bash 变量校验固件路径，避免 env.FIRMWARE 为空时展开为 /* 误传根目录
+          FIRMWARE_PATH="${FIRMWARE:-}"
+          if [ -z "$FIRMWARE_PATH" ] || [ ! -d "$FIRMWARE_PATH" ]; then
+            echo "❌ 错误: 固件目录无效（FIRMWARE 为空或不存在）！"
+            exit 1
+          fi
+          if [ -z "$(ls -A "$FIRMWARE_PATH" 2>/dev/null)" ]; then
             echo "❌ 错误: 未发现待上传的固件文件！"
             exit 1
           fi
 
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "⚠️ 发现同名 Release [$TAG] 已存在，执行资产覆盖更新..."
-            gh release upload "$TAG" ${{ env.FIRMWARE }}/* --clobber
+            gh release upload "$TAG" "$FIRMWARE_PATH"/* --clobber
             gh release edit "$TAG" --title "$RELEASE_TITLE"
             echo "✅ 资产追加/覆盖成功！Release 标题已刷新为: $RELEASE_TITLE"
           else
@@ -869,7 +895,7 @@ jobs:
             gh release create "$TAG" \
               --title "$RELEASE_TITLE" \
               --notes-file release.txt \
-              ${{ env.FIRMWARE }}/*
+              "$FIRMWARE_PATH"/*
             echo "✅ 全新 Release 创建及固件上传成功！"
           fi
 
@@ -888,14 +914,17 @@ jobs:
           while IFS= read -r keep_id; do
             [ -n "$keep_id" ] && keep_set="${keep_set} ${keep_id}"
           done < <(gh run list --workflow "${{ github.workflow }}" --limit 2 --json databaseId -q '.[].databaseId' | sort -u)
-          gh run list --workflow "${{ github.workflow }}" --limit 100 --json databaseId -q '.[].databaseId' | while IFS= read -r run_id; do
+          # 【管道→进程替换】避免 while 在子 shell 中运行，防止 set -e 下管道破裂导致异常中断
+          while IFS= read -r run_id; do
             [ -n "$run_id" ] || continue
             case " ${keep_set} " in
               *" $run_id "*) continue ;;
             esac
             echo "🗑️ 正在删除冗余运行记录: $run_id"
             gh api -X DELETE "/repos/${{ github.repository }}/actions/runs/$run_id" --silent || true
-          done
+            # 【限流】避免触发 GitHub API 403 Secondary Rate Limit
+            sleep 0.5
+          done < <(gh run list --workflow "${{ github.workflow }}" --limit 100 --json databaseId -q '.[].databaseId')
           echo "✅ Action 运行记录清理完成！"
 
       # 自动清理历史 Release 记录 (企业级原生方案，彻底剔除已废弃的第三方依赖)
@@ -907,11 +936,14 @@ jobs:
           set -euo pipefail
           echo "开始清理过旧的 Releases，仅保留最新 3 个..."
           # 使用 JSON 输出获取所有 tag（免疫一切特殊字符的健壮提取法）
-          gh release list --repo ${{ github.repository }} --limit 100 --json tagName -q '.[].tagName' | tail -n +4 | while IFS= read -r tag; do
+          # 【管道→进程替换】避免 while 在子 shell 中运行，防止 set -e 下管道破裂导致异常中断
+          while IFS= read -r tag; do
             # 严格保留空格，防止 Exit code 2 报错
             if [ -n "$tag" ]; then
               echo "🗑️ 正在删除旧版本: $tag"
               gh release delete "$tag" --cleanup-tag -y || true
+              # 【限流】避免触发 GitHub API 403 Secondary Rate Limit
+              sleep 0.5
             fi
-          done
+          done < <(gh release list --repo ${{ github.repository }} --limit 100 --json tagName -q '.[].tagName' | tail -n +4)
           echo "✅ 清理完成！"

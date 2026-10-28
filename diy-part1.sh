@@ -31,7 +31,9 @@ readonly SCRUB_LIST=(
     "luci-theme-argon"
 )
 
-# 待注入的自定义源 (已彻底移除末尾的 ;main 分支指定，采用默认分支)
+# 待注入的自定义源
+# 说明：当前显式锁定 ;main 分支（上游默认分支），以保证构建可复现；
+# 若上游迁移默认分支，需同步更新此处。
 readonly CUSTOM_FEEDS=(
     "src-git passwall_packages https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git;main"
     "src-git passwall_luci https://github.com/Openwrt-Passwall/openwrt-passwall.git;main"
