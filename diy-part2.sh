@@ -1,4 +1,12 @@
 #!/usr/bin/env bash
+
+# ==============================================================================
+# [修复]: 自动同步上游兼容性补丁 (修复 profiles.json 生成报错)
+# ==============================================================================
+log_i "正在同步上游构建脚本补丁..."
+wget -qO scripts/json_overview_image_info.py https://raw.githubusercontent.com/openwrt/openwrt/master/scripts/json_overview_image_info.py
+chmod +x scripts/json_overview_image_info.py
+log_i "✅ 脚本补丁同步完成"
 # ==============================================================================
 # OpenWrt DIY Part 2 - 企业级生产环境最终基准版
 # ==============================================================================
