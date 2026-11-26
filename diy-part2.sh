@@ -160,6 +160,28 @@ EOF
 
 chmod 0755 "${FILES_DIR}/etc/uci-defaults/91-vpn-firewall"
 
+cat <<'EOF' > "${FILES_DIR}/etc/uci-defaults/92-strongswan-coexist"
+#!/bin/sh
+
+# strongSwan 6.x 起同时默认自启 ipsec(stroke) 与 swanctl 两个 init 脚本，
+# 两者各拉起一个 charon 守护进程并互相冲突：
+#   - 抢占 /var/run/charon.pid，后启动的 charon 启动即退（5 秒崩溃循环）；
+#   - swanctl 的空配置 charon 抢先创建 TUN ipsec0，netifd 把 10.9.8.1/24
+#     挂到它上面，而真正干活的 stroke charon 只能用 ipsec1，fw4 的
+#     ipsec-v zone 只匹配 ipsec0，VPN 客户端流量全部被默认策略 REJECT
+#     （2026-11-26 事故：IPsec 能连但不能上网）。
+# 本镜像只使用 ipsec CLI（stroke），必须禁用 swanctl。
+# uci-defaults 在 S10boot 阶段执行，早于 S90 服务，可保证同一次开机也不会拉起它。
+if [ -x /etc/init.d/swanctl ]; then
+    /etc/init.d/swanctl stop >/dev/null 2>&1 || true
+    /etc/init.d/swanctl disable >/dev/null 2>&1 || true
+fi
+
+exit 0
+EOF
+
+chmod 0755 "${FILES_DIR}/etc/uci-defaults/92-strongswan-coexist"
+
 log_i "✅ 阶段 2 完成"
 
 # ==============================================================================
